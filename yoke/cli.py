@@ -1,4 +1,4 @@
-"""agyloop CLI. M0 skeleton: only `doctor` exists; later milestones add subcommands."""
+"""yoke CLI. M0 skeleton: only `doctor` exists; later milestones add subcommands."""
 import argparse
 import json
 import shutil
@@ -67,7 +67,7 @@ def doctor(live=False, out=print):
 
 
 def main(argv=None):
-    p = argparse.ArgumentParser(prog="agyloop")
+    p = argparse.ArgumentParser(prog="yoke")
     sub = p.add_subparsers(dest="cmd", required=True)
     d = sub.add_parser("doctor", help="check environment")
     d.add_argument("--live", action="store_true", help="one tiny -p call per agent CLI")

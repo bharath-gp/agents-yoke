@@ -6,7 +6,7 @@ Run very big work items through a multi-agent loop: a primary agent (Claude toda
 ## Facts established
 - `agy` installed at ~/.local/bin/agy. Supports `-p/--print`, `--output-format json|stream-json`, `--json-schema`, `--mode plan|accept-edits|auto`, `--sandbox`, `--conversation <id>` resume, `--agent`, `--model`, `--effort`, `mcp` subcommand, `plugin` subcommand.
 - claudex-loop: claude/codex CLIs driven by a runner that records prompt/command/stdout/result per call outside the target repo; reviews read-only; approvals bound to plan hash.
-- Repo /Users/bharath/Code/claude-agy-loop is empty.
+- Repo /Users/bharath/Code/agents-yoke is empty.
 
 ## Architecture (from diagram + answers)
 Colour map: red = primary (Claude), yellow = secondary (agy), black = router.

@@ -1,6 +1,6 @@
 import unittest
 
-from agyloop import cli
+from yoke import cli
 
 
 class TestDoctor(unittest.TestCase):

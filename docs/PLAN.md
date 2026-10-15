@@ -1,4 +1,4 @@
-# Implementation Plan: agyloop (Primary/Secondary Agent Loop)
+# Implementation Plan: yoke (Primary/Secondary Agent Loop)
 
 Source of truth for requirements: [REQUIREMENTS.md](REQUIREMENTS.md). This plan resolves every "open item" there into a decision and splits the work into milestones (M0–M9), each sized for one session. A later session should be able to pick the next unchecked milestone, read only this file plus the code, and implement it.
 
@@ -12,7 +12,7 @@ Status legend per milestone: `[ ]` todo, `[~]` in progress, `[x]` done. Update t
 1. [Environment facts](#s1) — probed CLI flags, output shapes, local models
 2. [Decisions on open items](#s2)
    - 2.1 [Shape of the system](#s2-1) — runner is the loop, thin orchestrator
-   - 2.2 [Where state lives](#s2-2) — run dir layout under `~/.agyloop`
+   - 2.2 [Where state lives](#s2-2) — run dir layout under `~/.yoke`
    - 2.3 [Approvals bound to hashes](#s2-3)
    - 2.4 [Agent adapters](#s2-4) — Claude/agy flag mapping
    - 2.5 [Roles](#s2-5)
@@ -54,7 +54,7 @@ Status legend per milestone: `[ ]` todo, `[~]` in progress, `[x]` done. Update t
 |---|---|---|
 | `agy` | 1.3.5 at `~/.local/bin/agy` | `-p`, `--output-format json`, `--json-schema <string-or-path>`, `--mode plan\|accept-edits\|auto`, `--sandbox`, `--conversation <id>`, `--model`, `--effort low..max`, `--print-timeout`, `--add-dir`, `--project`, `plugin {install,import,validate,list}`, `mcp add [-e K=V] <name> <cmd> [args]`. `agy models` lists `gemini-3.8-flash-*`, `claude-opus-5-5-*`, `claude-sonnet-5-5-*`, `gpt-oss-120b-medium`. |
 | `claude` | 2.1.300 | `-p`, `--output-format json`, `--json-schema <schema>`, `--permission-mode`, `--allowedTools`, `--disallowedTools`, `--resume <id>`, `--session-id <uuid>`, `--model`, `--effort`, `--add-dir`, `--plugin-dir`, `--mcp-config`, `--bg`. |
-| `ollama` | 0.40.4-rc1 | Local models: `tev1:4b`, `nimble-v3:9b-mxfp8`, `qwen3.5:9b-mlx` and `qwen3.8:27b-mlx` (chat models, unused by agyloop). HTTP API on `127.0.0.1:11434`. |
+| `ollama` | 0.40.4-rc1 | Local models: `tev1:4b`, `nimble-v3:9b-mxfp8`, `qwen3.5:9b-mlx` and `qwen3.8:27b-mlx` (chat models, unused by yoke). HTTP API on `127.0.0.1:11434`. |
 | `gh` | 2.97.0 | For GitHub tracker mode. |
 | Python | system 3.9.6; pyenv 3.13; `uv` present | Target **Python ≥ 3.9, stdlib only** (no `tomllib`, no `match`, no `X \| Y` type unions at runtime). |
 | Hardware | Apple M4, 32 GB | Fine for 4B–9B router models; 27B usable but slow. |
@@ -89,14 +89,14 @@ Verified in M0 (agy 1.3.5/1.3.6):
 
 <a id="s2-1"></a>
 ### 2.1 Shape of the system
-- **One stdlib Python package `agyloop`** + a **CLI `agyloop`** does all deterministic work: state, adapters, pipeline, git, router, budgets, audit.
-- **The runner is the loop.** `agyloop run` is a plain, detached Python process that walks the ticket state machine. It is resumable from disk at any point.
-- **The "Orchestrator" primary session is thin.** It is a Claude (or agy) chat that started the runner and calls `agyloop wait`. `wait` blocks until an event needs attention (escalation, run finished, runner died) and prints a ≤20-line summary. The session never reads diffs or logs unless the user asks. This satisfies "orchestrator does no heavy lifting, reads summaries only", and makes session handoff trivial: any fresh session runs `/agyloop:resume`.
-- **Front half (grill → plan → review → tickets) runs inside the interactive primary session** via plugin skills that call `agyloop` subcommands for the mechanical parts (secondary plan review, schema validation, hashing approvals).
+- **One stdlib Python package `yoke`** + a **CLI `yoke`** does all deterministic work: state, adapters, pipeline, git, router, budgets, audit.
+- **The runner is the loop.** `yoke run` is a plain, detached Python process that walks the ticket state machine. It is resumable from disk at any point.
+- **The "Orchestrator" primary session is thin.** It is a Claude (or agy) chat that started the runner and calls `yoke wait`. `wait` blocks until an event needs attention (escalation, run finished, runner died) and prints a ≤20-line summary. The session never reads diffs or logs unless the user asks. This satisfies "orchestrator does no heavy lifting, reads summaries only", and makes session handoff trivial: any fresh session runs `/yoke:resume`.
+- **Front half (grill → plan → review → tickets) runs inside the interactive primary session** via plugin skills that call `yoke` subcommands for the mechanical parts (secondary plan review, schema validation, hashing approvals).
 
 <a id="s2-2"></a>
 ### 2.2 Where state lives
-`$AGYLOOP_HOME` (default `~/.agyloop`) `/runs/<run_id>/` — **outside the target repo** (audit requirement). `run_id = <repo-basename>-<YYYYMMDD-HHMMSS>`.
+`$YOKE_HOME` (default `~/.yoke`) `/runs/<run_id>/` — **outside the target repo** (audit requirement). `run_id = <repo-basename>-<YYYYMMDD-HHMMSS>`.
 
 ```
 runs/<run_id>/
@@ -123,7 +123,7 @@ All writes are atomic (`write tmp` + `os.replace`). State mutations go through o
 
 <a id="s2-3"></a>
 ### 2.3 Approvals bound to hashes
-`agyloop approve plan` stores `sha256(plan.md)`; `agyloop approve tickets` stores `sha256(canonical tickets.json)`. Every later command that depends on them recomputes and **refuses** if the hash changed ("plan changed after approval; re-approve"). `final` approval is recorded before any `agyloop pr`/push helper runs.
+`yoke approve plan` stores `sha256(plan.md)`; `yoke approve tickets` stores `sha256(canonical tickets.json)`. Every later command that depends on them recomputes and **refuses** if the hash changed ("plan changed after approval; re-approve"). `final` approval is recorded before any `yoke pr`/push helper runs.
 
 <a id="s2-4"></a>
 ### 2.4 Agent adapters (agent-agnostic)
@@ -149,7 +149,7 @@ class Adapter:
 | observed model | keys of `modelUsage` | `"unreported"` |
 | never | `--dangerously-skip-permissions` | `--dangerously-skip-permissions` |
 
-**agy shell access (M0 finding, deviation).** agy's headless `accept-edits` edits files but only runs shell commands the user has allow-listed. agyloop will not edit the user's agy settings. Decision: the coder stage only edits files; the runner (not the agent) runs `test_command` and commits, which the close gate already requires. QA/docs stages that need shell use agy only if the user adds `command(...)` rules; `agyloop doctor` (M1+) prints the exact rules to add. `AgyAdapter.parse` must fail the call when `structured_output` is absent or `denied_actions` is non-empty, so a permission denial escalates instead of passing silently.
+**agy shell access (M0 finding, deviation).** agy's headless `accept-edits` edits files but only runs shell commands the user has allow-listed. yoke will not edit the user's agy settings. Decision: the coder stage only edits files; the runner (not the agent) runs `test_command` and commits, which the close gate already requires. QA/docs stages that need shell use agy only if the user adds `command(...)` rules; `yoke doctor` (M1+) prints the exact rules to add. `AgyAdapter.parse` must fail the call when `structured_output` is absent or `denied_actions` is non-empty, so a permission denial escalates instead of passing silently.
 
 `FakeAdapter` (tests) runs `tests/fake_cli.py` which replays scripted JSON responses keyed by stage, so the whole loop is testable offline (claudex-loop style).
 
@@ -165,11 +165,11 @@ Default role map (config `roles`):
              "orchestrator": "primary", "plan_review": "secondary",
              "code": "secondary", "qa": "secondary", "validate": "primary", "docs": "secondary"}}
 ```
-`by_role` values may be `primary`, `secondary`, or a concrete agent name. CLI flags `--primary`/`--secondary` override at `agyloop init`.
+`by_role` values may be `primary`, `secondary`, or a concrete agent name. CLI flags `--primary`/`--secondary` override at `yoke init`.
 
 <a id="s2-6"></a>
 ### 2.6 Config
-JSON (3.9 has no tomllib). Merge order: package `agyloop/defaults.json` ← `~/.agyloop/config.json` ← `<repo>/.agyloop.json` ← CLI flags. Snapshot of the merged config is written to `run.json` at `init` so a resumed run uses the same settings.
+JSON (3.9 has no tomllib). Merge order: package `yoke/defaults.json` ← `~/.yoke/config.json` ← `<repo>/.yoke.json` ← CLI flags. Snapshot of the merged config is written to `run.json` at `init` so a resumed run uses the same settings.
 
 Default budgets/limits:
 
@@ -203,7 +203,7 @@ Type → stages routing (config `routing`, overridable per type with model/effor
 | spike | code, validate (no commit unless validate approves) |
 
 <a id="s2-7"></a>
-### 2.7 Schemas (`agyloop/schemas/*.json`, JSON Schema draft-07 subset)
+### 2.7 Schemas (`yoke/schemas/*.json`, JSON Schema draft-07 subset)
 Validation done by a ~60-line stdlib validator in `schema.py` supporting `type, properties, required, items, enum, additionalProperties:false, minItems, minLength, pattern`. Same files are passed to `--json-schema`. Every agent result is validated again by the runner; invalid → counts as a failed call (one automatic re-ask with the validation error, then attempt failure).
 
 - **ticket**: `id` (`^T-\d{3}$`), `title`, `type` (enum above), `description`, `exit_criteria` (≥1 strings), `depends_on` (ids), `files_hint` (strings), `plan_excerpt` (string, the relevant plan section verbatim), `notes` (optional).
@@ -237,15 +237,15 @@ Retry feedback is a file `attempt-<n>/feedback.md` built from QA failures / vali
 
 Context handoff: prompts **inline** the ticket JSON, plan excerpt, and prior-stage result JSON (small). Copies are saved in the attempt dir for audit. Inlining avoids sandbox path problems with files outside the worktree.
 
-Prompt templates: `agyloop/prompts/<stage>.md` using `string.Template` (`$ticket`, `$plan_excerpt`, `$prior_results`, `$feedback`, `$base_sha`, `$worktree`) — `$` avoids clashing with JSON braces. Every worker prompt states: stay inside the worktree, do not commit, do not push, do not touch git config, return only the schema object.
+Prompt templates: `yoke/prompts/<stage>.md` using `string.Template` (`$ticket`, `$plan_excerpt`, `$prior_results`, `$feedback`, `$base_sha`, `$worktree`) — `$` avoids clashing with JSON braces. Every worker prompt states: stay inside the worktree, do not commit, do not push, do not touch git config, return only the schema object.
 
 <a id="s2-9"></a>
 ### 2.9 Git, worktrees, commits, merging
-- At `agyloop run` (first start): require clean target repo state for the base (warn if dirty; base = `HEAD` sha). Create feature branch `agyloop/<run_id>` at base, plus integration worktree `worktrees/_integration` on it.
-- Per ticket: `git worktree add worktrees/T-001 -b agyloop/<run_id>/T-001 <feature-branch tip>`. Same path for `parallel=1` and `parallel>1` (one code path).
-- Commit: runner (never the agent) does `git add -A && git commit` in the ticket worktree with message from router `commit_message` (fallback: `T-001: <title>`), trailer `Agyloop-Ticket: T-001`.
-- **Merge strategy** (serialized by a merge lock): in ticket worktree `git rebase <feature-branch>`; if conflict → `git rebase --abort`, feedback "rebase conflict on files X; rebase onto <feature-branch> and resolve" → attempt += 1 → code stage (coder resolves). If rebase changed anything, rerun test command. Then in `_integration`: `git merge --ff-only agyloop/<run_id>/T-001`. Result: linear history, one commit per ticket.
-- Cleanup: remove ticket worktree after close (keep branch until final review). `agyloop clean` removes all worktrees/branches of a run after the user is done.
+- At `yoke run` (first start): require clean target repo state for the base (warn if dirty; base = `HEAD` sha). Create feature branch `yoke/<run_id>` at base, plus integration worktree `worktrees/_integration` on it.
+- Per ticket: `git worktree add worktrees/T-001 -b yoke/<run_id>/T-001 <feature-branch tip>`. Same path for `parallel=1` and `parallel>1` (one code path).
+- Commit: runner (never the agent) does `git add -A && git commit` in the ticket worktree with message from router `commit_message` (fallback: `T-001: <title>`), trailer `Yoke-Ticket: T-001`.
+- **Merge strategy** (serialized by a merge lock): in ticket worktree `git rebase <feature-branch>`; if conflict → `git rebase --abort`, feedback "rebase conflict on files X; rebase onto <feature-branch> and resolve" → attempt += 1 → code stage (coder resolves). If rebase changed anything, rerun test command. Then in `_integration`: `git merge --ff-only yoke/<run_id>/T-001`. Result: linear history, one commit per ticket.
+- Cleanup: remove ticket worktree after close (keep branch until final review). `yoke clean` removes all worktrees/branches of a run after the user is done.
 - **No push, ever, by the runner.** Push protection for workers: env `GIT_CONFIG_COUNT=1, GIT_CONFIG_KEY_0=core.hooksPath, GIT_CONFIG_VALUE_0=<pkg>/githooks` where `githooks/pre-push` exits 1; plus Claude `--disallowedTools "Bash(git push:*)"`; plus agy `--sandbox`; plus prompt rule. Post-call check: `git -C wt log` must show no new commits by the agent (warn + record if it did).
 
 <a id="s2-10"></a>
@@ -258,20 +258,20 @@ Prompt templates: `agyloop/prompts/<stage>.md` using `string.Template` (`$ticket
 - **Default decision model: `tev1:4b`.** 10/10 on 10 ticket-type classifications at ~0.75 s each (first call ~2.9 s load), 4/5 on failure triage (the miss was an ambiguous sample). `nimble-v3:9b-mxfp8`: same scores, ~1.6 s, and **CC BY-NC 4.0 (noncommercial only)**, so keep it as an optional config override, not the default. `tev1:4b` runs with `num_ctx` 2048 (its readme: keep state short, longest trained input ~1.5k tokens): truncate `state` to ~1500 tokens, tail-biased for logs. Use `probabilities`/`confidence` for `min_confidence`; noul values are not calibrated (retryable read 0.28-0.44 on failures), so threshold them on your own data. Neither model supports `/api/chat` (HTTP 400).
 - **Fallback chain for decision functions, never blocks:** Ollama unreachable / HTTP error / invalid JSON / schema-invalid / `confidence < min_confidence` → small primary-LLM call (`claude -p --model claude-haiku-5-5 --effort low --json-schema ...`, audited like any call) → if that fails too → deterministic default (`classify`: `feature`; `triage`: `retryable=true, category=other`; `summary`: truncation; `commit_message`: `T-xxx: title`; `assert`: escalate as "unknown"). Every fallback logged with reason.
 - `route_ticket` is deterministic: `routing[type]` + role map + per-stage model/effort. No LLM.
-- `mcp_server.py`: stdlib JSON-RPC 2.0 over stdio implementing MCP `initialize`, `notifications/initialized`, `tools/list`, `tools/call`, `ping`. Exposes the router functions as tools `agyloop_classify_ticket`, `agyloop_triage_failure`, `agyloop_summarize`, `agyloop_commit_message`, `agyloop_assert`, `agyloop_health`, plus read-only `agyloop_status` (run summary). The runner imports `router.py` directly (no MCP hop); MCP is for agent sessions.
+- `mcp_server.py`: stdlib JSON-RPC 2.0 over stdio implementing MCP `initialize`, `notifications/initialized`, `tools/list`, `tools/call`, `ping`. Exposes the router functions as tools `yoke_classify_ticket`, `yoke_triage_failure`, `yoke_summarize`, `yoke_commit_message`, `yoke_assert`, `yoke_health`, plus read-only `yoke_status` (run summary). The runner imports `router.py` directly (no MCP hop); MCP is for agent sessions.
 
 <a id="s2-11"></a>
 ### 2.11 Orchestrator handoff & compaction
 - Runner is independent of any chat session; killing the orchestrator session loses nothing.
-- `agyloop wait [--run R] [--timeout 3000]` returns on: escalation opened, run finished, runner died, or timeout (prints "still running: k/n closed"). The orchestrator skill loops `wait` and, on escalation, presents it to the user.
-- **Automatic handoff**: plugin `SessionStart` hook (matchers `startup|resume|compact`) runs `agyloop status --brief --active`, injecting ≤15 lines about active runs into any new or compacted session. So compaction (Claude auto-compact) and fresh sessions both re-acquire state automatically.
-- `/agyloop:resume`: `agyloop status`; if runner pid dead and run not finished → `agyloop run --resume --detach`; then continue the `wait` loop.
+- `yoke wait [--run R] [--timeout 3000]` returns on: escalation opened, run finished, runner died, or timeout (prints "still running: k/n closed"). The orchestrator skill loops `wait` and, on escalation, presents it to the user.
+- **Automatic handoff**: plugin `SessionStart` hook (matchers `startup|resume|compact`) runs `yoke status --brief --active`, injecting ≤15 lines about active runs into any new or compacted session. So compaction (Claude auto-compact) and fresh sessions both re-acquire state automatically.
+- `/yoke:resume`: `yoke status`; if runner pid dead and run not finished → `yoke run --resume --detach`; then continue the `wait` loop.
 - Runner crash recovery on `--resume`: kill recorded worker process groups still alive; for each `in_progress` ticket, restart the current stage (same attempt; the half-done call's dir is renamed `<stage>.interrupted`); worktree changes are kept.
 
 <a id="s2-12"></a>
 ### 2.12 Process control, budgets
 - Each agent call: `subprocess.Popen(cmd, cwd=..., stdout=file, stderr=file, start_new_session=True, env=...)`; `wait(timeout)`; on timeout `os.killpg(SIGTERM)`, after `kill_grace_s` `SIGKILL`; meta records `timed_out: true`. pid stored in `meta.json` while running.
-- Runner detach: `agyloop run --detach` re-execs itself with `start_new_session=True`, stdout to `runner.log`, writes pid to `runner.lock`.
+- Runner detach: `yoke run --detach` re-execs itself with `start_new_session=True`, stdout to `runner.log`, writes pid to `runner.lock`.
 - Budget counters in `run.json`: total agent calls; when `max_agent_calls_total` hit → stop scheduling, escalate "budget exhausted". No token/cost cap (record `usage`/`total_cost_usd` only).
 
 <a id="s2-13"></a>
@@ -281,17 +281,17 @@ Prompt templates: `agyloop/prompts/<stage>.md` using `string.Template` (`$ticket
 <a id="s2-14"></a>
 ### 2.14 Tracker: local vs GitHub
 - `local` (default when no GitHub remote): tickets in `tickets.json` only.
-- `github`: on `approve tickets`, create one issue per ticket (`gh issue create --title "T-001: ..." --body <rendered> --label agyloop`) — the approval prompt states this will happen; issue numbers saved on tickets. Comments on block/escalation; issues are closed by the PR (`Closes #n` lines). Pushing the feature branch and `gh pr create` happen **only** via `agyloop pr` after `approve final`, which the user runs explicitly. Never auto-push, never merge.
+- `github`: on `approve tickets`, create one issue per ticket (`gh issue create --title "T-001: ..." --body <rendered> --label yoke`) — the approval prompt states this will happen; issue numbers saved on tickets. Comments on block/escalation; issues are closed by the PR (`Closes #n` lines). Pushing the feature branch and `gh pr create` happen **only** via `yoke pr` after `approve final`, which the user runs explicitly. Never auto-push, never merge.
 
 <a id="s2-15"></a>
 ### 2.15 Packaging
 Repo layout (final):
 
 ```
-.claude-plugin/plugin.json        # name "agyloop", version, description
+.claude-plugin/plugin.json        # name "yoke", version, description
 .claude-plugin/marketplace.json   # single-plugin local marketplace for `claude plugin install`
-.mcp.json                         # {"agyloop-router": {"command": "agyloop", "args": ["mcp"]}}
-hooks/hooks.json                  # SessionStart → agyloop status --brief --active
+.mcp.json                         # {"yoke-router": {"command": "yoke", "args": ["mcp"]}}
+hooks/hooks.json                  # SessionStart → yoke status --brief --active
 skills/grill/SKILL.md             # requirements gathering → requirements.md
 skills/plan/SKILL.md              # planner + secondary review rounds + arbitration + plan approval
 skills/tickets/SKILL.md           # wayfinder → tickets.json → ticket approval
@@ -299,52 +299,52 @@ skills/run/SKILL.md               # start runner, orchestrator wait loop, escala
 skills/resume/SKILL.md            # handoff entry point
 skills/status/SKILL.md
 skills/finish/SKILL.md            # final review gate, optional PR
-pyproject.toml                    # name agyloop, requires-python >=3.9, no deps, script agyloop=agyloop.cli:main
-agyloop/__init__.py
-agyloop/cli.py                    # argparse subcommands
-agyloop/config.py  agyloop/defaults.json
-agyloop/state.py                  # run dir, atomic json, locks, events, status rendering
-agyloop/schema.py  agyloop/schemas/*.json
-agyloop/adapters.py               # Claude, Agy, Fake
-agyloop/calls.py                  # run_call(): audit dir, Popen, timeout/kill, parse, validate, re-ask
-agyloop/prompts/*.md
-agyloop/planreview.py             # bounded plan review rounds
-agyloop/pipeline.py               # per-ticket state machine
-agyloop/scheduler.py              # deps, parallel pool, budgets, escalations
-agyloop/gitops.py                 # worktrees, commit, rebase/ff merge, cleanup
-agyloop/router.py                 # ollama + fallback
-agyloop/mcp_server.py
-agyloop/tracker.py                # local / github (gh)
-agyloop/githooks/pre-push
+pyproject.toml                    # name yoke, requires-python >=3.9, no deps, script yoke=yoke.cli:main
+yoke/__init__.py
+yoke/cli.py                    # argparse subcommands
+yoke/config.py  yoke/defaults.json
+yoke/state.py                  # run dir, atomic json, locks, events, status rendering
+yoke/schema.py  yoke/schemas/*.json
+yoke/adapters.py               # Claude, Agy, Fake
+yoke/calls.py                  # run_call(): audit dir, Popen, timeout/kill, parse, validate, re-ask
+yoke/prompts/*.md
+yoke/planreview.py             # bounded plan review rounds
+yoke/pipeline.py               # per-ticket state machine
+yoke/scheduler.py              # deps, parallel pool, budgets, escalations
+yoke/gitops.py                 # worktrees, commit, rebase/ff merge, cleanup
+yoke/router.py                 # ollama + fallback
+yoke/mcp_server.py
+yoke/tracker.py                # local / github (gh)
+yoke/githooks/pre-push
 tests/fake_cli.py  tests/test_*.py  tests/e2e.sh
 README.md
 ```
 
 Install:
-- CLI: `uv tool install --editable /path/to/claude-agy-loop` (puts `agyloop` on PATH). Skills and `.mcp.json` call `agyloop` from PATH so they work in any host agent.
-- Claude Code: `claude plugin marketplace add /path/to/claude-agy-loop` then `claude plugin install agyloop@agyloop` (or `--plugin-dir` for dev).
-- agy: `agy plugin import claude` (imports installed Claude plugins) or `agy plugin install <path>`; validate with `agy plugin validate .`. Router MCP fallback: `agy mcp add agyloop-router agyloop mcp`. M7 verifies which path works and documents it.
-- `agyloop doctor`: checks `claude`/`agy`/`ollama`/`gh`/`git` presence + versions, auth (one tiny `-p` call each, opt-in `--live`), Ollama model pulled, Python version. Prints fixes.
+- CLI: `uv tool install --editable /path/to/agents-yoke` (puts `yoke` on PATH). Skills and `.mcp.json` call `yoke` from PATH so they work in any host agent.
+- Claude Code: `claude plugin marketplace add /path/to/agents-yoke` then `claude plugin install yoke@yoke` (or `--plugin-dir` for dev).
+- agy: `agy plugin import claude` (imports installed Claude plugins) or `agy plugin install <path>`; validate with `agy plugin validate .`. Router MCP fallback: `agy mcp add yoke-router yoke mcp`. M7 verifies which path works and documents it.
+- `yoke doctor`: checks `claude`/`agy`/`ollama`/`gh`/`git` presence + versions, auth (one tiny `-p` call each, opt-in `--live`), Ollama model pulled, Python version. Prints fixes.
 
 <a id="s2-16"></a>
 ### 2.16 CLI surface (final)
 ```
-agyloop init [--repo PATH] [--primary claude] [--secondary agy] [--requirements FILE]   → prints run_id
-agyloop review-plan [--run R]            # one secondary read-only review round on plan.md → result path + summary
-agyloop approve plan|tickets|final [--run R]
-agyloop tickets import FILE [--run R]    # validate schema+deps, classify missing types via router, write tickets.json
-agyloop tickets show [--run R]           # table: id, type, stages, deps, title
-agyloop run [--run R] [--parallel N] [--detach] [--resume]
-agyloop wait [--run R] [--timeout S]
-agyloop status [--run R] [--brief] [--active] [--json]
-agyloop escalations [--run R]
-agyloop unblock T-xxx --note TEXT | --skip | --reset-attempts   # user responses to escalations
-agyloop stop [--run R]                   # SIGTERM runner; workers killed; resumable
-agyloop pr [--run R]                     # requires approve final; push branch + gh pr create
-agyloop clean [--run R]
-agyloop route T-xxx [--run R]            # debug: show stages/agents/models for a ticket
-agyloop mcp                              # stdio MCP server
-agyloop doctor [--live]
+yoke init [--repo PATH] [--primary claude] [--secondary agy] [--requirements FILE]   → prints run_id
+yoke review-plan [--run R]            # one secondary read-only review round on plan.md → result path + summary
+yoke approve plan|tickets|final [--run R]
+yoke tickets import FILE [--run R]    # validate schema+deps, classify missing types via router, write tickets.json
+yoke tickets show [--run R]           # table: id, type, stages, deps, title
+yoke run [--run R] [--parallel N] [--detach] [--resume]
+yoke wait [--run R] [--timeout S]
+yoke status [--run R] [--brief] [--active] [--json]
+yoke escalations [--run R]
+yoke unblock T-xxx --note TEXT | --skip | --reset-attempts   # user responses to escalations
+yoke stop [--run R]                   # SIGTERM runner; workers killed; resumable
+yoke pr [--run R]                     # requires approve final; push branch + gh pr create
+yoke clean [--run R]
+yoke route T-xxx [--run R]            # debug: show stages/agents/models for a ticket
+yoke mcp                              # stdio MCP server
+yoke doctor [--live]
 ```
 `--run` defaults to the most recent run whose `repo` == cwd's git toplevel.
 
@@ -365,9 +365,9 @@ Goal: remove unknowns before building on them.
 5. Confirm Claude `--resume <id>` works with `-p --json-schema`.
 6. Confirm env `GIT_CONFIG_*` reaches agy's sandboxed shell (pre-push hook fires).
 7. Ollama: `POST /api/chat` with `format: <schema>` on `qwen3.5:9b-mlx` and `tev1:4b`; record latency and schema adherence on 5 sample ticket classifications. Pick default router model.
-8. Scaffold `pyproject.toml`, `agyloop/__init__.py`, `agyloop/cli.py` (argparse skeleton, `doctor` only), `tests/`.
-- Done when: §1/§2.4/§2.10 updated with findings; `agyloop doctor` runs.
-- Notes: Probes done, findings in §1/§2.4/§2.10. Deviations later tickets depend on: (a) agy `--mode auto` unavailable, use `accept-edits`; (b) agy shell needs user allow rules, so coder edits only and the runner runs tests/commits; (c) agy denials show as exit 0 + `status: SUCCESS` + no `structured_output` + `denied_actions`; (d) Ollama runs only decision models (`/v1/systemone`, default `tev1:4b`); generative router calls (`summarize`, `commit_message`) go to a cheap agent model (`router.llm_model`), no local chat model (see §2.10). Scaffold: `pyproject.toml`, `agyloop/cli.py` (`doctor [--live]`), `tests/test_cli.py`.
+8. Scaffold `pyproject.toml`, `yoke/__init__.py`, `yoke/cli.py` (argparse skeleton, `doctor` only), `tests/`.
+- Done when: §1/§2.4/§2.10 updated with findings; `yoke doctor` runs.
+- Notes: Probes done, findings in §1/§2.4/§2.10. Deviations later tickets depend on: (a) agy `--mode auto` unavailable, use `accept-edits`; (b) agy shell needs user allow rules, so coder edits only and the runner runs tests/commits; (c) agy denials show as exit 0 + `status: SUCCESS` + no `structured_output` + `denied_actions`; (d) Ollama runs only decision models (`/v1/systemone`, default `tev1:4b`); generative router calls (`summarize`, `commit_message`) go to a cheap agent model (`router.llm_model`), no local chat model (see §2.10). Scaffold: `pyproject.toml`, `yoke/cli.py` (`doctor [--live]`), `tests/test_cli.py`.
 
 <a id="m1"></a>
 ### M1 — Core: config, state, adapters, audited calls `[ ]`
@@ -386,7 +386,7 @@ Files: `config.py`, `defaults.json`, `state.py`, `schema.py`, `adapters.py`, `ca
 Files: `planreview.py`, `prompts/plan_review.md`, `schemas/plan-review.json`, `cli.py` (`init`, `review-plan`, `approve`), `tests/test_planreview.py`.
 - `init`: create run, copy requirements, snapshot config, print run_id.
 - `review-plan`: one round; secondary in read mode, cwd = target repo (read-only), prompt inlines requirements + plan; saves `plan-review/round-<n>/`; refuses when `n > max_plan_review_rounds` (tells primary to arbitrate and ask the user).
-- Arbitration is done by the primary session (skill), which appends decisions to `plan-review/arbitration.md` (`agyloop` does not do arbitration).
+- Arbitration is done by the primary session (skill), which appends decisions to `plan-review/arbitration.md` (`yoke` does not do arbitration).
 - `approve plan|tickets|final`: hash binding (§2.3); `approve tickets` requires plan approved and hash unchanged.
 - Tests: rounds bounded, hash mismatch refusal, fake secondary review flow.
 - Notes:
@@ -422,27 +422,27 @@ Files: `scheduler.py`, `gitops.py`, `tests/test_parallel.py`.
 ### M6 — MCP server `[ ]`
 Files: `mcp_server.py`, `.mcp.json`, `cli.py` (`mcp`), `tests/test_mcp.py`.
 - Newline-delimited JSON-RPC over stdio; protocol version echo from `initialize`; tool input schemas from router schemas.
-- Tests: spawn `agyloop mcp`, send initialize/tools/list/tools/call (Ollama-down path), assert responses.
-- Manual check: `claude --mcp-config .mcp.json -p "call agyloop_health"`; `agy mcp add agyloop-router agyloop mcp` then list tools.
+- Tests: spawn `yoke mcp`, send initialize/tools/list/tools/call (Ollama-down path), assert responses.
+- Manual check: `claude --mcp-config .mcp.json -p "call yoke_health"`; `agy mcp add yoke-router yoke mcp` then list tools.
 - Notes:
 
 <a id="m7"></a>
 ### M7 — Plugin packaging, skills, hooks `[ ]`
 Files: `.claude-plugin/{plugin.json,marketplace.json}`, `skills/*/SKILL.md`, `hooks/hooks.json`, `README.md`.
-- Skills are host-agnostic: instructions + `agyloop` commands, no Claude-only tool names required.
-  - `grill`: interview loop (one question at a time, propose defaults), write `requirements.md`, run `agyloop init --requirements`.
-  - `plan`: write `plan.md` in run dir; loop `agyloop review-plan` ≤ max rounds; for each finding decide accept/reject with reason in `arbitration.md`, revise plan; show plan + unresolved disagreements to user; on explicit yes, `agyloop approve plan`.
-  - `tickets`: split plan into tickets JSON (exit criteria must be checkable, plan_excerpt verbatim, deps minimal); `agyloop tickets import`; show `agyloop tickets show`; state tracker side effects (GitHub issues); on yes, `agyloop approve tickets`.
-  - `run`: ask parallel N (default 1); `agyloop run --detach --parallel N`; loop `agyloop wait`; on escalation present it and act via `unblock` after user decides; on done → `finish`.
-  - `resume`, `status`, `finish` (summary of commits, `git diff --stat base..feature`, open issues; on yes `agyloop approve final`; offer `agyloop pr` only for GitHub and only on explicit yes).
-- `hooks.json`: SessionStart → `agyloop status --brief --active` (exit 0 silently when no runs).
+- Skills are host-agnostic: instructions + `yoke` commands, no Claude-only tool names required.
+  - `grill`: interview loop (one question at a time, propose defaults), write `requirements.md`, run `yoke init --requirements`.
+  - `plan`: write `plan.md` in run dir; loop `yoke review-plan` ≤ max rounds; for each finding decide accept/reject with reason in `arbitration.md`, revise plan; show plan + unresolved disagreements to user; on explicit yes, `yoke approve plan`.
+  - `tickets`: split plan into tickets JSON (exit criteria must be checkable, plan_excerpt verbatim, deps minimal); `yoke tickets import`; show `yoke tickets show`; state tracker side effects (GitHub issues); on yes, `yoke approve tickets`.
+  - `run`: ask parallel N (default 1); `yoke run --detach --parallel N`; loop `yoke wait`; on escalation present it and act via `unblock` after user decides; on done → `finish`.
+  - `resume`, `status`, `finish` (summary of commits, `git diff --stat base..feature`, open issues; on yes `yoke approve final`; offer `yoke pr` only for GitHub and only on explicit yes).
+- `hooks.json`: SessionStart → `yoke status --brief --active` (exit 0 silently when no runs).
 - Verify: `claude plugin validate` (if available) / `--plugin-dir` smoke; `agy plugin validate .`; try `agy plugin import claude` and `agy plugin install <path>`; document what works.
 - Notes:
 
 <a id="m8"></a>
 ### M8 — GitHub tracker `[ ]`
 Files: `tracker.py`, `cli.py` (`pr`), `tests/test_tracker.py` (gh faked via PATH shim).
-- `tracker.detect(repo)`, `create_issues(tickets)`, `comment(ticket, text)`, `pr(run)` (push feature branch with `git push -u origin`, `gh pr create --base <default> --head agyloop/<run_id> --body` with `Closes #n` lines). `pr` refuses without valid final approval.
+- `tracker.detect(repo)`, `create_issues(tickets)`, `comment(ticket, text)`, `pr(run)` (push feature branch with `git push -u origin`, `gh pr create --base <default> --head yoke/<run_id> --body` with `Closes #n` lines). `pr` refuses without valid final approval.
 - Notes:
 
 <a id="m9"></a>
@@ -466,13 +466,13 @@ Files: `scheduler.py` (crash recovery §2.11), `cli.py` (`wait`, `clean`), `test
 | Never push / sandboxed workers | M1 cmd tests (flags), M4 pre-push + agent-commit detection |
 | Hashed approvals | M2 tests |
 | Budgets (attempts, wall-clock, totals) | M1 timeout test, M4 attempts, M4 total-calls test |
-| Audit outside repo | M1 call test asserts files under `$AGYLOOP_HOME` |
+| Audit outside repo | M1 call test asserts files under `$YOKE_HOME` |
 
 <a id="s5"></a>
 ## 5. Deliberately out of scope (add when needed)
 - Token/cost caps (requirements say none initially; usage is recorded).
-- Auto-merge of PRs or pushing without `agyloop pr`.
-- Web dashboard (status.json + `agyloop status` suffice).
+- Auto-merge of PRs or pushing without `yoke pr`.
+- Web dashboard (status.json + `yoke status` suffice).
 - More than two agents in one run beyond per-role overrides.
 
 <a id="appA"></a>
@@ -513,19 +513,19 @@ Files: `scheduler.py` (crash recovery §2.11), `cli.py` (`wait`, `clean`), `test
 
 | File | Purpose | Spec | Built in |
 |---|---|---|---|
-| `pyproject.toml` | package, `agyloop` script | [2.15](#s2-15) | [M0](#m0) |
-| `agyloop/cli.py` | argparse subcommands | [2.16](#s2-16) | [M0](#m0)–[M9](#m9) |
-| `agyloop/config.py`, `defaults.json` | config merge, role lookup | [2.5](#s2-5), [2.6](#s2-6) | [M1](#m1) |
-| `agyloop/state.py` | run dir, atomic JSON, events, status | [2.2](#s2-2) | [M1](#m1) |
-| `agyloop/schema.py`, `schemas/*.json` | stdlib validator, schemas | [2.7](#s2-7) | [M1](#m1)–[M4](#m4) |
-| `agyloop/adapters.py` | Claude / agy / Fake adapters | [2.4](#s2-4) | [M1](#m1) |
-| `agyloop/calls.py` | audited call, timeout kill, re-ask | [2.12](#s2-12), [2.13](#s2-13) | [M1](#m1) |
-| `agyloop/planreview.py`, `prompts/plan_review.md` | bounded plan review | [2.3](#s2-3) | [M2](#m2) |
-| `agyloop/router.py` | Ollama router + fallback | [2.10](#s2-10) | [M3](#m3) |
-| `agyloop/gitops.py`, `githooks/pre-push` | worktrees, commit, merge, push block | [2.9](#s2-9) | [M4](#m4), [M5](#m5) |
-| `agyloop/pipeline.py`, `prompts/{code,qa,validate,docs}.md` | per-ticket state machine | [2.8](#s2-8) | [M4](#m4) |
-| `agyloop/scheduler.py` | deps, pool, budgets, resume | [2.8](#s2-8), [2.11](#s2-11), [2.12](#s2-12) | [M4](#m4), [M5](#m5), [M9](#m9) |
-| `agyloop/mcp_server.py`, `.mcp.json` | stdio MCP server | [2.10](#s2-10) | [M6](#m6) |
+| `pyproject.toml` | package, `yoke` script | [2.15](#s2-15) | [M0](#m0) |
+| `yoke/cli.py` | argparse subcommands | [2.16](#s2-16) | [M0](#m0)–[M9](#m9) |
+| `yoke/config.py`, `defaults.json` | config merge, role lookup | [2.5](#s2-5), [2.6](#s2-6) | [M1](#m1) |
+| `yoke/state.py` | run dir, atomic JSON, events, status | [2.2](#s2-2) | [M1](#m1) |
+| `yoke/schema.py`, `schemas/*.json` | stdlib validator, schemas | [2.7](#s2-7) | [M1](#m1)–[M4](#m4) |
+| `yoke/adapters.py` | Claude / agy / Fake adapters | [2.4](#s2-4) | [M1](#m1) |
+| `yoke/calls.py` | audited call, timeout kill, re-ask | [2.12](#s2-12), [2.13](#s2-13) | [M1](#m1) |
+| `yoke/planreview.py`, `prompts/plan_review.md` | bounded plan review | [2.3](#s2-3) | [M2](#m2) |
+| `yoke/router.py` | Ollama router + fallback | [2.10](#s2-10) | [M3](#m3) |
+| `yoke/gitops.py`, `githooks/pre-push` | worktrees, commit, merge, push block | [2.9](#s2-9) | [M4](#m4), [M5](#m5) |
+| `yoke/pipeline.py`, `prompts/{code,qa,validate,docs}.md` | per-ticket state machine | [2.8](#s2-8) | [M4](#m4) |
+| `yoke/scheduler.py` | deps, pool, budgets, resume | [2.8](#s2-8), [2.11](#s2-11), [2.12](#s2-12) | [M4](#m4), [M5](#m5), [M9](#m9) |
+| `yoke/mcp_server.py`, `.mcp.json` | stdio MCP server | [2.10](#s2-10) | [M6](#m6) |
 | `.claude-plugin/*`, `skills/*/SKILL.md`, `hooks/hooks.json` | plugin, skills, SessionStart hook | [2.11](#s2-11), [2.15](#s2-15) | [M7](#m7) |
-| `agyloop/tracker.py` | local / GitHub tracker, `pr` | [2.14](#s2-14) | [M8](#m8) |
+| `yoke/tracker.py` | local / GitHub tracker, `pr` | [2.14](#s2-14) | [M8](#m8) |
 | `tests/fake_cli.py`, `tests/test_*.py`, `tests/e2e.sh` | fake CLI, unit + e2e tests | [4](#s4) | [M1](#m1)–[M9](#m9) |
