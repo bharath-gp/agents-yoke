@@ -71,7 +71,16 @@ Observed `agy -p --output-format json --json-schema ...` output (one JSON object
 - agy does **not** report the model used → audit records `observed.model = "unreported"`.
 - In `--mode plan` agy wrote a plan artifact under `~/.gemini/antigravity-cli/brain/<conversation_id>/`. Harmless; note it in docs.
 
-Expected `claude -p --output-format json` fields (verify in M0): `type`, `subtype`, `is_error`, `result`, `session_id`, `structured_output`, `num_turns`, `duration_ms`, `total_cost_usd`, `usage`, `modelUsage` (keys = observed model ids).
+Verified in M0 (claude 2.1.300) `claude -p --output-format json --json-schema <schema-string>`: one object with `type` ("result"), `subtype` ("success"), `is_error`, `result` (free text), `session_id`, `structured_output`, `num_turns`, `duration_ms`, `total_cost_usd`, `usage`, `modelUsage` (keys = observed model ids, e.g. `claude-sonnet-5-5`), `permission_denials`, `terminal_reason`. `--resume <session_id>` with `-p --json-schema` works and returns the **same** `session_id`.
+
+Verified in M0 (agy 1.3.5/1.3.6):
+- `--print-timeout` takes a Go duration with unit (`180s`), a bare number is a usage error (exit 2).
+- **Headless permissions.** In `-p` mode agy cannot prompt, so any tool outside its allow list is auto-denied: agy prints `jetski: no output produced ...` on stderr, exits 0, JSON has `status: "SUCCESS"`, **no `structured_output`** and a `denied_actions: [{action, display_name}]` array. The adapter must treat missing `structured_output` or non-empty `denied_actions` as an error, never as success.
+- `--mode accept-edits` + `--sandbox`: file writes inside cwd work; shell commands only run if allowed by `permissions.allow` rules (`command(<prefix>)`) in `~/.gemini/antigravity-cli/settings.json` or per-project `permissionGrants.permissionGrants.allow` in `~/.gemini/config/projects/<id>.json`. Observed allowed on this machine: `ls`, `git add`, `git commit`, `git status/log/show/diff`, `uv`, `gh`; denied: `echo`, `git config`. `--mode auto` is **not available for this account** (agy warns and falls back to the default mode, which denies writes), so it is not an option.
+- Writes outside cwd (`../x`, `/tmp/x`) are denied under `--sandbox` (confined to the workspace).
+- `--conversation <id>` resume works in `-p` with `--json-schema` and keeps the same `conversation_id`.
+- `GIT_CONFIG_COUNT/KEY_n/VALUE_n` set in the agy process env reach the shell commands agy runs (a `core.hooksPath` pre-commit hook fired on an agy-run `git commit`).
+- agy keeps per-folder project records under `~/.gemini/config/projects/`; `--project`/`--new-project` were not needed for the probes.
 
 ---
 
@@ -133,12 +142,14 @@ class Adapter:
 |---|---|---|
 | base | `claude -p <prompt> --output-format json --json-schema <schema-json-string>` | `agy -p <prompt> --output-format json --json-schema <schema-path>` |
 | read-only | `--permission-mode plan --allowedTools "Read Grep Glob Bash(git diff:*) Bash(git log:*) Bash(git show:*)"` | `--mode plan --sandbox` |
-| write | `--permission-mode acceptEdits --allowedTools <config allowlist> --disallowedTools "Bash(git push:*)" "Bash(git commit:*)"` | `--mode <M0 result> --sandbox` |
+| write | `--permission-mode acceptEdits --allowedTools <config allowlist> --disallowedTools "Bash(git push:*)" "Bash(git commit:*)"` | `--mode accept-edits --sandbox` (M0: `auto` unavailable; shell needs user allow rules, see below) |
 | resume | `--resume <session_id>` | `--conversation <conversation_id>` |
 | model/effort | `--model`, `--effort` | `--model`, `--effort` |
 | session id | `session_id` | `conversation_id` |
 | observed model | keys of `modelUsage` | `"unreported"` |
 | never | `--dangerously-skip-permissions` | `--dangerously-skip-permissions` |
+
+**agy shell access (M0 finding, deviation).** agy's headless `accept-edits` edits files but only runs shell commands the user has allow-listed. agyloop will not edit the user's agy settings. Decision: the coder stage only edits files; the runner (not the agent) runs `test_command` and commits, which the close gate already requires. QA/docs stages that need shell use agy only if the user adds `command(...)` rules; `agyloop doctor` (M1+) prints the exact rules to add. `AgyAdapter.parse` must fail the call when `structured_output` is absent or `denied_actions` is non-empty, so a permission denial escalates instead of passing silently.
 
 `FakeAdapter` (tests) runs `tests/fake_cli.py` which replays scripted JSON responses keyed by stage, so the whole loop is testable offline (claudex-loop style).
 
@@ -239,7 +250,7 @@ Prompt templates: `agyloop/prompts/<stage>.md` using `string.Template` (`$ticket
 <a id="s2-10"></a>
 ### 2.10 Decision router + Ollama (MCP from day one)
 - `router.py` = plain functions `classify_ticket, route_ticket, triage_failure, summarize, commit_message, assert_check, health`. Each returns `{"result":..., "source": "ollama"|"fallback"|"default", "model":..., "confidence":..., "fallback_reason":...}` and logs an event.
-- Ollama call: `POST /api/chat` with `format: <json schema>`, `stream: false`, `options.temperature: 0`, timeout 60 s, via `urllib.request`.
+- Ollama call: `POST /api/chat` with `format: <json schema>`, `stream: false`, **`think: false`**, `options.temperature: 0`, timeout 60 s, via `urllib.request`. M0 probe (5 sample ticket classifications, all schema-valid and correct): `qwen3.5:9b-mlx` takes ~1.4 s with `think:false` but 25-92 s with thinking on, so `think:false` is mandatory. `tev1:4b` and `nimble-v3:9b-mxfp8` return HTTP 400 ("does not support chat"). **Default router model: `qwen3.5:9b-mlx`.** `qwen3.8:27b-mlx` not probed.
 - **Fallback chain, never blocks:** Ollama unreachable / HTTP error / invalid JSON / schema-invalid / `confidence < min_confidence` → small primary-LLM call (`claude -p --model claude-haiku-5-5 --effort low --json-schema ...`, audited like any call) → if that fails too → deterministic default (`classify`: `feature`; `triage`: `retryable=true, category=other`; `summary`: truncation; `commit_message`: `T-xxx: title`; `assert`: escalate as "unknown"). Every fallback logged with reason.
 - `route_ticket` is deterministic: `routing[type]` + role map + per-stage model/effort. No LLM.
 - `mcp_server.py`: stdlib JSON-RPC 2.0 over stdio implementing MCP `initialize`, `notifications/initialized`, `tools/list`, `tools/call`, `ping`. Exposes the router functions as tools `agyloop_classify_ticket`, `agyloop_triage_failure`, `agyloop_summarize`, `agyloop_commit_message`, `agyloop_assert`, `agyloop_health`, plus read-only `agyloop_status` (run summary). The runner imports `router.py` directly (no MCP hop); MCP is for agent sessions.
@@ -340,7 +351,7 @@ agyloop doctor [--live]
 Each milestone ends with: tests green (`python3 -m unittest discover -s tests`), checkbox updated here, one commit.
 
 <a id="m0"></a>
-### M0 — Spikes and scaffold `[ ]`
+### M0 — Spikes and scaffold `[x]`
 Goal: remove unknowns before building on them.
 1. Probe `claude -p --output-format json --json-schema '<schema>'` → record real field names (session id, structured output, model usage) in §1.
 2. agy write mode: in a throwaway git repo, run `agy -p "create hello.txt and run 'ls'" --sandbox --mode accept-edits` and again with `--mode auto`. Determine which mode edits files **and** runs shell (tests) non-interactively without hanging or needing skip-permissions. Record chosen mode in §2.4.
@@ -351,7 +362,7 @@ Goal: remove unknowns before building on them.
 7. Ollama: `POST /api/chat` with `format: <schema>` on `qwen3.5:9b-mlx` and `tev1:4b`; record latency and schema adherence on 5 sample ticket classifications. Pick default router model.
 8. Scaffold `pyproject.toml`, `agyloop/__init__.py`, `agyloop/cli.py` (argparse skeleton, `doctor` only), `tests/`.
 - Done when: §1/§2.4/§2.10 updated with findings; `agyloop doctor` runs.
-- Notes:
+- Notes: Probes done, findings in §1/§2.4/§2.10. Deviations later tickets depend on: (a) agy `--mode auto` unavailable, use `accept-edits`; (b) agy shell needs user allow rules, so coder edits only and the runner runs tests/commits; (c) agy denials show as exit 0 + `status: SUCCESS` + no `structured_output` + `denied_actions`; (d) Ollama needs `think:false`, default model `qwen3.5:9b-mlx`. Scaffold: `pyproject.toml`, `agyloop/cli.py` (`doctor [--live]`), `tests/test_cli.py`.
 
 <a id="m1"></a>
 ### M1 — Core: config, state, adapters, audited calls `[ ]`
