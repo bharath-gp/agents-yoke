@@ -7,7 +7,8 @@ import sys
 import urllib.request
 
 OLLAMA_URL = "http://127.0.0.1:11434"
-ROUTER_MODEL = "qwen3.5:9b-mlx"  # M0 probe: 5/5 on classification, ~1.4s with think=false
+DECISION_MODEL = "tev1:4b"  # /v1/systemone; M0 spike: 10/10 ticket types, ~0.75s
+CHAT_MODEL = "qwen3.5:9b-mlx"  # /api/chat with think=false, for summaries and commit messages
 TOOLS = [("claude", True), ("agy", True), ("git", True), ("gh", False), ("ollama", False)]
 
 
@@ -53,10 +54,9 @@ def doctor(live=False, out=print):
     models = _ollama_models()
     if models is None:
         out("ollama server not reachable at %s (router falls back to claude)" % OLLAMA_URL)
-    elif ROUTER_MODEL not in models:
-        out("ollama model %s not pulled: ollama pull %s" % (ROUTER_MODEL, ROUTER_MODEL))
     else:
-        out("ollama model %s ok" % ROUTER_MODEL)
+        for m in (DECISION_MODEL, CHAT_MODEL):
+            out("ollama model %s %s" % (m, "ok" if m in models else "not pulled: ollama pull " + m))
     if live:
         for name, args in (("claude", ["-p", "Reply ok", "--output-format", "json"]),
                            ("agy", ["-p", "Reply ok", "--output-format", "json"])):
