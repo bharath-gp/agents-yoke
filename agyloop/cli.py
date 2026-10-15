@@ -8,7 +8,6 @@ import urllib.request
 
 OLLAMA_URL = "http://127.0.0.1:11434"
 DECISION_MODEL = "tev1:4b"  # /v1/systemone; M0 spike: 10/10 ticket types, ~0.75s
-CHAT_MODEL = "qwen3.5:9b-mlx"  # /api/chat with think=false, for summaries and commit messages
 TOOLS = [("claude", True), ("agy", True), ("git", True), ("gh", False), ("ollama", False)]
 
 
@@ -55,7 +54,7 @@ def doctor(live=False, out=print):
     if models is None:
         out("ollama server not reachable at %s (router falls back to claude)" % OLLAMA_URL)
     else:
-        for m in (DECISION_MODEL, CHAT_MODEL):
+        for m in (DECISION_MODEL,):
             out("ollama model %s %s" % (m, "ok" if m in models else "not pulled: ollama pull " + m))
     if live:
         for name, args in (("claude", ["-p", "Reply ok", "--output-format", "json"]),

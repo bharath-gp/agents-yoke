@@ -54,7 +54,7 @@ Status legend per milestone: `[ ]` todo, `[~]` in progress, `[x]` done. Update t
 |---|---|---|
 | `agy` | 1.3.5 at `~/.local/bin/agy` | `-p`, `--output-format json`, `--json-schema <string-or-path>`, `--mode plan\|accept-edits\|auto`, `--sandbox`, `--conversation <id>`, `--model`, `--effort low..max`, `--print-timeout`, `--add-dir`, `--project`, `plugin {install,import,validate,list}`, `mcp add [-e K=V] <name> <cmd> [args]`. `agy models` lists `gemini-3.8-flash-*`, `claude-opus-5-5-*`, `claude-sonnet-5-5-*`, `gpt-oss-120b-medium`. |
 | `claude` | 2.1.300 | `-p`, `--output-format json`, `--json-schema <schema>`, `--permission-mode`, `--allowedTools`, `--disallowedTools`, `--resume <id>`, `--session-id <uuid>`, `--model`, `--effort`, `--add-dir`, `--plugin-dir`, `--mcp-config`, `--bg`. |
-| `ollama` | 0.40.4-rc1 | Local models: `tev1:4b`, `qwen3.5:9b-mlx`, `nimble-v3:9b-mxfp8`, `qwen3.8:27b-mlx`. HTTP API on `127.0.0.1:11434`. |
+| `ollama` | 0.40.4-rc1 | Local models: `tev1:4b`, `nimble-v3:9b-mxfp8`, `qwen3.5:9b-mlx` and `qwen3.8:27b-mlx` (chat models, unused by agyloop). HTTP API on `127.0.0.1:11434`. |
 | `gh` | 2.97.0 | For GitHub tracker mode. |
 | Python | system 3.9.6; pyenv 3.13; `uv` present | Target **Python ≥ 3.9, stdlib only** (no `tomllib`, no `match`, no `X \| Y` type unions at runtime). |
 | Hardware | Apple M4, 32 GB | Fine for 4B–9B router models; 27B usable but slow. |
@@ -183,7 +183,8 @@ Default budgets/limits:
 | `timeouts_s` | plan_review 900, code 2400, qa 1800, validate 1200, docs 900, router_fallback 120 |
 | `kill_grace_s` | 15 |
 | `router.ollama_url` | `http://127.0.0.1:11434` |
-| `router.model` | `qwen3.5:9b-mlx` (fast alt: `tev1:4b`) |
+| `router.model` | `tev1:4b` (decision model, `/v1/systemone`; optional override `nimble-v3:9b-mxfp8`, noncommercial) |
+| `router.llm_model` | `claude-haiku-5-5` (cheap agent call for generative router functions and decision fallback) |
 | `router.min_confidence` | 0.7 |
 | `router.fallback` | `{"agent": "claude", "model": "claude-haiku-5-5", "effort": "low"}` |
 | `test_command` | `null` (QA result supplies it; repo config may pin it) |
@@ -250,12 +251,12 @@ Prompt templates: `agyloop/prompts/<stage>.md` using `string.Template` (`$ticket
 <a id="s2-10"></a>
 ### 2.10 Decision router + Ollama (MCP from day one)
 - `router.py` = plain functions `classify_ticket, route_ticket, triage_failure, summarize, commit_message, assert_check, health`. Each returns `{"result":..., "source": "ollama"|"fallback"|"default", "model":..., "confidence":..., "fallback_reason":...}` and logs an event.
-- **Two Ollama paths (M0 spike, rerun after learning tev1/nimble are decision models).**
+- **Ollama only runs decision models; generative work goes to the agents (user decision).** No chat/LLM model is used locally.
   - *Decision questions* (`classify_ticket`, `triage_failure`, `assert_check`): `POST /v1/systemone` with `{"model","state","questions":{name:{"type":"choice"|"noul"|"score","instructions","criteria"}}}` (up to 64 questions per call). Response `answers.<name>`: `choice` + `probabilities` + `confidence`, or `noul` (P(true)), or `score`; plus `usage`. Single forward pass, no generation. Add a `none`/`other` option. `state` is data, so pass ticket/log text there.
-  - *Generative* (`summarize`, `commit_message`): `POST /api/chat` with `format: <json schema>`, `stream:false`, **`think:false`**, `options.temperature:0` on `qwen3.5:9b-mlx` (~1.4 s with think off, 25-92 s on; 5/5 on classification).
-  - Both: 60 s timeout, `urllib.request`.
+  - *Generative* (`summarize`, `commit_message`): a cheap agent call (`claude -p --model <router.llm_model> --effort low --json-schema ...`), audited like any call; on failure the deterministic default.
+  - Ollama call: 60 s timeout, `urllib.request`.
 - **Default decision model: `tev1:4b`.** 10/10 on 10 ticket-type classifications at ~0.75 s each (first call ~2.9 s load), 4/5 on failure triage (the miss was an ambiguous sample). `nimble-v3:9b-mxfp8`: same scores, ~1.6 s, and **CC BY-NC 4.0 (noncommercial only)**, so keep it as an optional config override, not the default. `tev1:4b` runs with `num_ctx` 2048 (its readme: keep state short, longest trained input ~1.5k tokens): truncate `state` to ~1500 tokens, tail-biased for logs. Use `probabilities`/`confidence` for `min_confidence`; noul values are not calibrated (retryable read 0.28-0.44 on failures), so threshold them on your own data. Neither model supports `/api/chat` (HTTP 400).
-- **Fallback chain, never blocks:** Ollama unreachable / HTTP error / invalid JSON / schema-invalid / `confidence < min_confidence` → small primary-LLM call (`claude -p --model claude-haiku-5-5 --effort low --json-schema ...`, audited like any call) → if that fails too → deterministic default (`classify`: `feature`; `triage`: `retryable=true, category=other`; `summary`: truncation; `commit_message`: `T-xxx: title`; `assert`: escalate as "unknown"). Every fallback logged with reason.
+- **Fallback chain for decision functions, never blocks:** Ollama unreachable / HTTP error / invalid JSON / schema-invalid / `confidence < min_confidence` → small primary-LLM call (`claude -p --model claude-haiku-5-5 --effort low --json-schema ...`, audited like any call) → if that fails too → deterministic default (`classify`: `feature`; `triage`: `retryable=true, category=other`; `summary`: truncation; `commit_message`: `T-xxx: title`; `assert`: escalate as "unknown"). Every fallback logged with reason.
 - `route_ticket` is deterministic: `routing[type]` + role map + per-stage model/effort. No LLM.
 - `mcp_server.py`: stdlib JSON-RPC 2.0 over stdio implementing MCP `initialize`, `notifications/initialized`, `tools/list`, `tools/call`, `ping`. Exposes the router functions as tools `agyloop_classify_ticket`, `agyloop_triage_failure`, `agyloop_summarize`, `agyloop_commit_message`, `agyloop_assert`, `agyloop_health`, plus read-only `agyloop_status` (run summary). The runner imports `router.py` directly (no MCP hop); MCP is for agent sessions.
 
@@ -366,7 +367,7 @@ Goal: remove unknowns before building on them.
 7. Ollama: `POST /api/chat` with `format: <schema>` on `qwen3.5:9b-mlx` and `tev1:4b`; record latency and schema adherence on 5 sample ticket classifications. Pick default router model.
 8. Scaffold `pyproject.toml`, `agyloop/__init__.py`, `agyloop/cli.py` (argparse skeleton, `doctor` only), `tests/`.
 - Done when: §1/§2.4/§2.10 updated with findings; `agyloop doctor` runs.
-- Notes: Probes done, findings in §1/§2.4/§2.10. Deviations later tickets depend on: (a) agy `--mode auto` unavailable, use `accept-edits`; (b) agy shell needs user allow rules, so coder edits only and the runner runs tests/commits; (c) agy denials show as exit 0 + `status: SUCCESS` + no `structured_output` + `denied_actions`; (d) router has two Ollama paths: `/v1/systemone` with `tev1:4b` for decisions, `/api/chat` with `think:false` on `qwen3.5:9b-mlx` for generative calls (see §2.10). Scaffold: `pyproject.toml`, `agyloop/cli.py` (`doctor [--live]`), `tests/test_cli.py`.
+- Notes: Probes done, findings in §1/§2.4/§2.10. Deviations later tickets depend on: (a) agy `--mode auto` unavailable, use `accept-edits`; (b) agy shell needs user allow rules, so coder edits only and the runner runs tests/commits; (c) agy denials show as exit 0 + `status: SUCCESS` + no `structured_output` + `denied_actions`; (d) Ollama runs only decision models (`/v1/systemone`, default `tev1:4b`); generative router calls (`summarize`, `commit_message`) go to a cheap agent model (`router.llm_model`), no local chat model (see §2.10). Scaffold: `pyproject.toml`, `agyloop/cli.py` (`doctor [--live]`), `tests/test_cli.py`.
 
 <a id="m1"></a>
 ### M1 — Core: config, state, adapters, audited calls `[ ]`

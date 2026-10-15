@@ -11,7 +11,7 @@
 3. A ticket is committed to a feature branch only when its exit criteria are met, QA passes and validation approves. Nothing is pushed or merged without your explicit command.
 4. All state and a full audit trail (prompts, commands, outputs, models) live in `~/.agyloop`, outside the target repo, so any new session can resume from disk.
 
-A local Ollama model handles small routing and triage decisions, with a fallback to a small Claude call so the loop never blocks.
+A local Ollama decision model (tev1) handles small routing and triage decisions, with a fallback to a small Claude call so the loop never blocks.
 
 ## Docs
 
