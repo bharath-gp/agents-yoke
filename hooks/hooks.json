@@ -1,0 +1,12 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|compact",
+        "hooks": [
+          {"type": "command", "command": "command -v yoke >/dev/null 2>&1 && yoke status --brief --active || true"}
+        ]
+      }
+    ]
+  }
+}

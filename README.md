@@ -2,7 +2,7 @@
 
 `yoke`: run very large work items through a multi-agent loop. A primary agent (Claude) gathers requirements, plans, splits the plan into tickets and validates results. A secondary agent (Antigravity `agy`) codes, writes tests and updates docs. Agents are pluggable per role through adapters.
 
-**Status:** M0-M3 done (scaffold, core, front half, tickets and router). The runner, git pipeline, MCP server and plugin (M4-M9) are not built yet.
+**Status:** M0-M8 done except M9 (resume, `wait`, end-to-end). Plugin: skills `/yoke:grill plan tickets run resume status finish`.
 
 ## Try it
 
@@ -16,6 +16,14 @@ yoke approve plan                 # hash-bound; also: tickets, final
 yoke tickets import tickets.json  # validate, classify missing types; then `yoke tickets show`
 yoke route T-001                  # stages, agents and models for a ticket
 ```
+
+Plugin (needs `yoke` on PATH):
+
+```bash
+claude plugin marketplace add /path/to/agents-yoke && claude plugin install yoke@yoke   # Claude Code
+agy plugin install /path/to/agents-yoke                                                  # agy
+```
+
 
 ## How it works
 

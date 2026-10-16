@@ -20,6 +20,9 @@ def add_parsers(sub):
     s = sub.add_parser("status", help="run summary")
     s.add_argument("--run")
     s.add_argument("--json", action="store_true")
+    s.add_argument("--brief", action="store_true", help="at most 15 lines")
+    s.add_argument("--active", action="store_true",
+                   help="latest unfinished run for this repo; print nothing and exit 0 if none")
     e = sub.add_parser("escalations", help="list open escalations")
     e.add_argument("--run")
     u = sub.add_parser("unblock", help="answer an escalation")
@@ -44,8 +47,42 @@ def _kill_workers(run):
                 pass
 
 
+def brief(run):
+    """<=15 lines for the SessionStart hook: status plus the next command to run."""
+    s = run.status()
+    pid = scheduler.read_lock(run)
+    alive = bool(pid and scheduler._alive(pid))
+    if s["state"] == "done":
+        hint = "all tickets closed; run /yoke:finish"
+    elif alive:
+        hint = "runner alive (pid %d); run /yoke:run to keep waiting" % pid
+    else:
+        hint = "runner not running; run /yoke:resume"
+    if s["escalations"]:
+        hint = "%d open escalation(s): `yoke escalations`; " % s["escalations"] + hint
+    return "\n".join(["yoke run %s [%s]" % (s["run_id"], s["state"]),
+                      "tickets %d, agent calls %d/%s" % (s["tickets_total"], s["agent_calls"], s["max_agent_calls"]),
+                      hint])
+
+
+def _active_run():
+    from . import cli
+    run = state.Run.latest_for_repo(cli._git_toplevel(os.getcwd()))
+    if run and (run.read_json("run.json")["state"] != "done" or "final" not in run.read_json("approvals.json", {})):
+        return run
+    return None
+
+
 def dispatch(args):
     from . import cli
+    if args.cmd == "status" and args.active:  # hook path: never fail, never print when idle
+        try:
+            run = _active_run()
+            if run:
+                print(brief(run))
+        except Exception:
+            pass
+        return 0
     run = cli._run(args)
     if args.cmd == "run":
         try:
@@ -67,7 +104,7 @@ def dispatch(args):
         print(run.render_status())
         return 0 if final == "done" else 2
     if args.cmd == "status":
-        print(json.dumps(run.status(), indent=2) if args.json else run.render_status())
+        print(json.dumps(run.status(), indent=2) if args.json else brief(run) if args.brief else run.render_status())
     elif args.cmd == "escalations":
         for e in run.read_json("escalations.json", []):
             print("#%d %s: %s" % (e["id"], e["ticket"] or "-", e["reason"]))
