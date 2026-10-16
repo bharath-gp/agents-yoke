@@ -2,7 +2,20 @@
 
 `yoke`: run very large work items through a multi-agent loop. A primary agent (Claude) gathers requirements, plans, splits the plan into tickets and validates results. A secondary agent (Antigravity `agy`) codes, writes tests and updates docs. Agents are pluggable per role through adapters.
 
-**Status:** design complete, implementation not started.
+**Status:** M0-M3 done (scaffold, core, front half, tickets and router). The runner, git pipeline, MCP server and plugin (M4-M9) are not built yet.
+
+## Try it
+
+```bash
+uv tool install --editable .      # puts `yoke` on PATH
+python3 -m unittest discover -s tests
+yoke doctor                       # check claude, agy, git, gh, ollama
+yoke init --requirements req.md   # prints run_id; write plan.md into ~/.yoke/runs/<run_id>/
+yoke review-plan                  # one read-only secondary review round
+yoke approve plan                 # hash-bound; also: tickets, final
+yoke tickets import tickets.json  # validate, classify missing types; then `yoke tickets show`
+yoke route T-001                  # stages, agents and models for a ticket
+```
 
 ## How it works
 

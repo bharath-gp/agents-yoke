@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## State of the repo
 
-Pre-implementation. Only `docs/` exists: [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) (discovery output) and [docs/PLAN.md](docs/PLAN.md) (source of truth for design; resolves every open item in the requirements). The product is `yoke`, a primary/secondary agent loop: Claude plans and validates, Antigravity (`agy`) codes, runs QA and writes docs. Code is built milestone by milestone (M0-M9).
+Implementation in progress: M0-M3 done (`yoke/` has config, state, schema, adapters, calls, planreview, tickets, router; CLI has `doctor`, `init`, `review-plan`, `approve`, `tickets`, `route`). Design lives in `docs/`: [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) (discovery output) and [docs/PLAN.md](docs/PLAN.md) (source of truth for design; resolves every open item in the requirements). The product is `yoke`, a primary/secondary agent loop: Claude plans and validates, Antigravity (`agy`) codes, runs QA and writes docs. Code is built milestone by milestone (M0-M9).
 
 ## Workflow
 
@@ -12,7 +12,7 @@ Pre-implementation. Only `docs/` exists: [docs/REQUIREMENTS.md](docs/REQUIREMENT
 - Before implementing a milestone, read its entry in PLAN.md section 3 and the decision sections it lists. PLAN.md anchors (`#s2-8`, `#m4`, ...) are stable; do not rename them.
 - When a milestone finishes: tick its checkbox and fill its "Notes" line in PLAN.md, one commit. M0 must also update PLAN.md sections 1, 2.4 and 2.10 with probe findings; later milestones depend on them.
 
-## Commands (once M0/M1 land)
+## Commands
 
 ```bash
 python3 -m unittest discover -s tests                 # all tests
