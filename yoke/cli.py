@@ -1,4 +1,4 @@
-"""yoke CLI: doctor, init, review-plan, approve; later milestones add subcommands."""
+"""yoke CLI: doctor, init, review-plan, approve, tickets, route; runner commands live in runcmds.py."""
 import argparse
 import json
 import os
@@ -7,7 +7,7 @@ import subprocess
 import sys
 import urllib.request
 
-from . import router, state, tickets as tickets_mod
+from . import router, runcmds, state, tickets as tickets_mod
 
 OLLAMA_URL = "http://127.0.0.1:11434"
 DECISION_MODEL = "tev1:4b"  # /v1/systemone; M0 spike: 10/10 ticket types, ~0.75s
@@ -162,7 +162,10 @@ def main(argv=None):
     rt = sub.add_parser("route", help="show the stage route for a ticket")
     rt.add_argument("ticket")
     rt.add_argument("--run")
+    runcmds.add_parsers(sub)
     args = p.parse_args(argv)
+    if args.cmd in runcmds.CMDS:
+        return runcmds.dispatch(args)
     if args.cmd == "tickets":
         if args.action == "import" and not args.file:
             p.error("tickets import needs a file")

@@ -1,0 +1,21 @@
+{
+  "type": "object",
+  "required": ["status", "test_command", "tests_added", "commands_run", "failures", "summary"],
+  "additionalProperties": false,
+  "properties": {
+    "status": {"type": "string", "enum": ["pass", "fail", "blocked"]},
+    "test_command": {"type": "string"},
+    "tests_added": {"type": "array", "items": {"type": "string"}},
+    "commands_run": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["cmd", "exit_code"],
+        "additionalProperties": false,
+        "properties": {"cmd": {"type": "string"}, "exit_code": {"type": "integer"}}
+      }
+    },
+    "failures": {"type": "array", "items": {"type": "string"}},
+    "summary": {"type": "string"}
+  }
+}

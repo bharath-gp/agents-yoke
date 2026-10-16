@@ -6,6 +6,8 @@ FAKE_SCRIPT: JSON file {stage: [response, ...]}, responses consumed in order per
   {"sleep": 999, "child_pidfile": "path"}            optionally spawn a child, then sleep
   {"exit": 1}                                        exit with that code
   {"raw": "text"}                                    print text verbatim
+Any response may add "write": {path: text} (files created in cwd) and "commit": true (git add -A
+and commit in cwd, simulating a misbehaving agent) before printing.
 """
 import json
 import os
@@ -33,6 +35,13 @@ def main():
         child = subprocess.Popen(["sleep", "999"])
         with open(resp["child_pidfile"], "w") as f:
             f.write(str(child.pid))
+    for rel, text in resp.get("write", {}).items():
+        os.makedirs(os.path.dirname(os.path.abspath(rel)), exist_ok=True)
+        with open(rel, "w") as f:
+            f.write(text)
+    if resp.get("commit"):
+        subprocess.run(["git", "add", "-A"], check=True)
+        subprocess.run(["git", "commit", "-qm", "agent commit"], check=True)
     if "sleep" in resp:
         time.sleep(resp["sleep"])
     if "exit" in resp:

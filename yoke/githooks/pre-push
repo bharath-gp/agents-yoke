@@ -1,0 +1,3 @@
+#!/bin/sh
+echo "yoke: pushing is disabled for agent workers" >&2
+exit 1
