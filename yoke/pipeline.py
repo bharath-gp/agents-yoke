@@ -167,7 +167,14 @@ def _close(run, adapter_for, ticket, st, wt, stages, results, test_cmd, rerun_rc
         before = gitops.head_sha(wt)
         ok, files = gitops.rebase_onto(wt, info["branch"])
         if not ok:
-            return "Rebase conflict on files %s; rebase onto %s and resolve." % (", ".join(files), info["branch"])
+            tip = gitops.head_sha(run.path("worktrees/_integration"))
+            files = gitops.reapply_on(wt, tip) or files
+            st["base_sha"] = tip  # validate diffs against the new base
+            st["commit"] = None
+            save_state(run, tid, st)
+            return ("Rebase conflict on files %s. Your changes were re-applied on the latest %s and the "
+                    "conflict markers are in the working tree; resolve them keeping both sides' intent."
+                    % (", ".join(files), info["branch"]))
         if test_cmd and gitops.head_sha(wt) != before:
             rc, tail = _rerun(run, test_cmd, wt)
             if rc != 0:
