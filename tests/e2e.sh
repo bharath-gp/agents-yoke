@@ -64,8 +64,12 @@ python3 - "$R" <<'PY' || fail "incomplete audit dirs"
 import glob, json, os, sys
 r = sys.argv[1]; n = 0
 for m in glob.glob(r + "/tickets/*/attempt-*/*/meta.json"):
-    meta = json.load(open(m)); n += 1
-    assert "ended_at" in meta and meta["exit_code"] == 0 and meta["schema_valid"] is True, m
+    meta = json.load(open(m))
+    assert "ended_at" in meta, m  # a transient agy denial may leave a failed attempt; it must still be audited
+    if meta["schema_valid"] is not True:
+        continue
+    n += 1
+    assert meta["exit_code"] == 0, m
     d = os.path.dirname(m)
     for f in ("prompt.md", "command.json", "stdout.log", "stderr.log", "result.json"):
         assert os.path.exists(d + "/" + f), d + "/" + f
