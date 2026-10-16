@@ -2,13 +2,15 @@
 import glob
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
+import time
 
-from . import planreview, scheduler, state
+from . import gitops, planreview, scheduler, state
 
-CMDS = ("run", "status", "escalations", "unblock", "stop")
+CMDS = ("run", "status", "escalations", "unblock", "stop", "wait", "clean")
 
 
 def add_parsers(sub):
@@ -31,20 +33,44 @@ def add_parsers(sub):
     u.add_argument("--note")
     u.add_argument("--skip", action="store_true")
     u.add_argument("--reset-attempts", action="store_true")
+    w = sub.add_parser("wait", help="block until escalation, run end, runner death or timeout")
+    w.add_argument("--run")
+    w.add_argument("--timeout", type=int, default=3000)
+    c = sub.add_parser("clean", help="remove the run's worktrees")
+    c.add_argument("--run")
     st = sub.add_parser("stop", help="SIGTERM the runner and its workers")
     st.add_argument("--run")
 
 
-def _kill_workers(run):
-    """Workers run in their own process group; meta.json without ended_at is a live call."""
-    for p in glob.glob(run.path("tickets/*/attempt-*/*/meta.json")):
-        with open(p) as f:
-            meta = json.load(f)
-        if meta.get("pid") and "ended_at" not in meta:
-            try:
-                os.killpg(meta["pid"], signal.SIGTERM)
-            except (ProcessLookupError, PermissionError):
-                pass
+def wait_for(run, timeout, poll=2):
+    """Block until an escalation opens, the run ends, or the runner dies. -> (reason, message)."""
+    end = time.time() + timeout
+    while True:
+        info = run.read_json("run.json")
+        esc = run.read_json("escalations.json", [])
+        pid = scheduler.read_lock(run)
+        if esc:
+            return "escalation", "; ".join("#%d %s: %s" % (e["id"], e["ticket"] or "-", e["reason"]) for e in esc)
+        if info["state"] in ("done", "needs_user", "stopped"):
+            return info["state"], run.render_status()
+        if info["state"] == "running" and not (pid and scheduler._alive(pid)):
+            return "died", "runner died; use /yoke:resume (yoke run --resume --detach)"
+        if time.time() >= end:
+            s = run.status()
+            return "timeout", "still running: %d/%d closed" % (s["tickets"].get("closed", 0), s["tickets_total"])
+        time.sleep(poll)
+
+
+def clean(run):
+    """Remove the run's worktrees (branches and audit records stay)."""
+    pid = scheduler.read_lock(run)
+    if pid and scheduler._alive(pid):
+        raise scheduler.LockError("runner active (pid %d)" % pid)
+    repo = run.read_json("run.json")["repo"]
+    for wt in glob.glob(run.path("worktrees/*")):
+        gitops.remove_worktree(repo, wt)
+    shutil.rmtree(run.path("worktrees"), ignore_errors=True)
+    gitops.git(repo, "worktree", "prune", check=False)
 
 
 def brief(run):
@@ -103,6 +129,18 @@ def dispatch(args):
             return 1
         print(run.render_status())
         return 0 if final == "done" else 2
+    if args.cmd == "wait":
+        reason, msg = wait_for(run, args.timeout)
+        print(msg)
+        return {"timeout": 0, "done": 0, "stopped": 0}.get(reason, 2)
+    if args.cmd == "clean":
+        try:
+            clean(run)
+        except scheduler.LockError as e:
+            print("yoke: %s" % e, file=sys.stderr)
+            return 1
+        print("cleaned worktrees")
+        return 0
     if args.cmd == "status":
         print(json.dumps(run.status(), indent=2) if args.json else brief(run) if args.brief else run.render_status())
     elif args.cmd == "escalations":
@@ -120,6 +158,6 @@ def dispatch(args):
             print("no runner active")
             return 0
         os.kill(pid, signal.SIGTERM)
-        _kill_workers(run)
+        scheduler.kill_workers(run)
         print("stopped runner %d" % pid)
     return 0

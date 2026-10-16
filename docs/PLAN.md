@@ -446,11 +446,11 @@ Files: `tracker.py`, `cli.py` (`pr`), `tests/test_tracker.py` (gh faked via PATH
 
 
 <a id="m9"></a>
-### M9 — Resume, handoff, end-to-end `[ ]`
+### M9 — Resume, handoff, end-to-end `[x]`
 Files: `scheduler.py` (crash recovery §2.11), `cli.py` (`wait`, `clean`), `tests/test_resume.py`, `tests/e2e.sh`.
 - Tests: kill runner mid-stage (fake sleep) → `run --resume` reruns stage, completes; worker pgid killed on resume; `wait` returns on escalation.
 - `tests/e2e.sh` (manual, real CLIs): create disposable repo in `$TMPDIR` (tiny Python lib), canned requirements + 3-ticket tickets.json (one depends on another), run with real claude+agy+ollama, parallel 2; then repeat with Ollama stopped (fallback path); check 3 commits, no push, audit dirs complete.
-- Notes:
+- Notes: Built `scheduler.recover` (called by every `scheduler.run`: kills worker process groups from `meta.json` without `ended_at`, guarded by `getpgid(pid)==pid`; renames the stage dir to `<stage>.interrupted[N]`; then the whole attempt of each in_progress ticket restarts, same attempt number, worktree kept, coder session reused only from attempt 2 on), `scheduler.kill_workers` (moved from runcmds; `stop` uses it), `yoke wait [--timeout 3000]` (`runcmds.wait_for`; reasons escalation|done|needs_user|stopped|died|timeout; exit 0 for done/stopped/timeout, 2 otherwise), `yoke clean` (removes worktrees, keeps branches and audit; refuses a live runner), `tests/test_resume.py` (7 tests, 113 total green), `tests/e2e.sh [normal|fallback]`. E2E on real claude 2.1.300 + agy 1.3.6 + ollama tev1:4b, 3 tickets (one dep, one untyped), parallel 2: normal pass PASS (13 calls, 3 commits, nothing pushed to a bare origin, classify via ollama); fallback pass PASS (router Ollama URL pointed at a dead port instead of stopping the server, so Ollama was never touched; classify went to the claude-haiku fallback; 3 commits, nothing pushed). Findings: (a) first e2e exposed #12 (agy tried `RunCommand` in headless mode, each denial burned an attempt; fixed by no-shell prompts); (b) agy still has rare transient denials (e.g. `ViewFile`) that cost one attempt and recover on retry, seen once in the fallback pass, so e2e audit checks require every call audited with `ended_at`, not every call successful; (c) restart after a crash re-runs the attempt from the first stage, not only the interrupted one (a ponytail simplification); (d) not tested live: `--detach` plus `yoke wait` against a real detached runner, and a real kill/resume with real agents (covered with the fake CLI).
 
 ---
 

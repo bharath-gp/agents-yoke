@@ -1,5 +1,7 @@
 """Sequential scheduler (PLAN 2.8, 2.11, 2.12): approvals, runner lock, next-ready pick, budgets,
 unblock, and the parallel ticket pool (`parallel` workers, one shared merge lock)."""
+import glob
+import json
 import os
 import signal
 import threading
@@ -46,10 +48,42 @@ def _status(run, tid):
     return pipeline.ticket_state(run, tid)["status"]
 
 
+def kill_workers(run):
+    """Workers run in their own process group; meta.json without ended_at is a live call.
+    Returns the audit dirs of those calls."""
+    live = []
+    for p in glob.glob(run.path("tickets/*/attempt-*/**/meta.json"), recursive=True):
+        with open(p) as f:
+            meta = json.load(f)
+        pid = meta.get("pid")
+        if pid and "ended_at" not in meta:
+            live.append(os.path.dirname(p))
+            try:
+                if os.getpgid(pid) == pid:  # guard against a recycled pid
+                    os.killpg(pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
+    return live
+
+
+def recover(run):
+    """Crash recovery (PLAN 2.11): kill orphaned workers, set aside their half-done stage dirs.
+    Tickets stay in_progress and restart their attempt; worktree changes are kept."""
+    root = run.path("tickets")
+    for d in {os.sep.join(os.path.relpath(d, root).split(os.sep)[:3]) for d in kill_workers(run)}:
+        src, dst, n = os.path.join(root, d), os.path.join(root, d) + ".interrupted", 1
+        while os.path.exists(dst):
+            n += 1
+            dst = "%s.interrupted%d" % (src, n)
+        os.rename(src, dst)
+        run.event("interrupted", dir=os.path.relpath(src, run.dir))
+
+
 def run(run_, adapter_for=None, env=None):
     """Walk the tickets until done or nothing more can progress. Returns the final run state."""
     planreview.check_approval(run_, "tickets")  # includes plan
     acquire_lock(run_)
+    recover(run_)
     if threading.current_thread() is threading.main_thread():
         signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(SystemExit(143)))
     final = "stopped"
