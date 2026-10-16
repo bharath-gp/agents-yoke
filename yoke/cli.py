@@ -7,7 +7,7 @@ import subprocess
 import sys
 import urllib.request
 
-from . import router, runcmds, state, tickets as tickets_mod
+from . import router, runcmds, state, tracker, tickets as tickets_mod
 
 OLLAMA_URL = "http://127.0.0.1:11434"
 DECISION_MODEL = "tev1:4b"  # /v1/systemone; M0 spike: 10/10 ticket types, ~0.75s
@@ -113,6 +113,22 @@ def _front_half(args):
         print("yoke: %s" % e, file=sys.stderr)
         return 1
     print("approved %s sha256 %s" % (args.kind, entry["sha256"][:12]))
+    if args.kind == "tickets" and tracker.detect(run.read_json("run.json")["repo"], run.cfg) == "github":
+        try:
+            print("github issues: %d" % len(tracker.create_issues(run)))
+        except tracker.TrackerError as e:
+            print("yoke: approved, but issue creation failed (re-run `yoke approve tickets` to resume): %s" % e,
+                  file=sys.stderr)
+            return 1
+    return 0
+
+
+def pr_cmd(args):
+    try:
+        print(tracker.pr(_run(args)))
+    except tracker.TrackerError as e:
+        print("yoke: %s" % e, file=sys.stderr)
+        return 1
     return 0
 
 
@@ -162,6 +178,8 @@ def main(argv=None):
     rt = sub.add_parser("route", help="show the stage route for a ticket")
     rt.add_argument("ticket")
     rt.add_argument("--run")
+    pr = sub.add_parser("pr", help="push the feature branch and open a PR (needs approve final)")
+    pr.add_argument("--run")
     runcmds.add_parsers(sub)
     sub.add_parser("mcp", help="stdio MCP server exposing the router")
     args = p.parse_args(argv)
@@ -177,6 +195,8 @@ def main(argv=None):
         return tickets_cmd(args)
     if args.cmd == "route":
         return route_cmd(args)
+    if args.cmd == "pr":
+        return pr_cmd(args)
     if args.cmd == "doctor":
         return 1 if doctor(live=args.live) else 0
     return _front_half(args)
