@@ -1,0 +1,14 @@
+{
+  "name": "yoke",
+  "description": "yoke: primary/secondary agent loop plugin",
+  "owner": {
+    "name": "Bharath G P"
+  },
+  "plugins": [
+    {
+      "name": "yoke",
+      "source": "./",
+      "description": "Primary/secondary agent loop driven by the `yoke` CLI (install the CLI first: uv tool install --editable .)."
+    }
+  ]
+}
