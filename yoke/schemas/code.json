@@ -1,0 +1,14 @@
+{
+  "type": "object",
+  "required": ["status", "summary", "files_changed", "assumptions", "open_questions", "notes_for_qa"],
+  "additionalProperties": false,
+  "properties": {
+    "status": {"type": "string", "enum": ["done", "blocked"]},
+    "summary": {"type": "string"},
+    "files_changed": {"type": "array", "items": {"type": "string"}},
+    "assumptions": {"type": "array", "items": {"type": "string"}},
+    "open_questions": {"type": "array", "items": {"type": "string"}},
+    "notes_for_qa": {"type": "string"},
+    "blocked_reason": {"type": "string"}
+  }
+}

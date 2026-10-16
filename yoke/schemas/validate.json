@@ -1,0 +1,28 @@
+{
+  "type": "object",
+  "required": ["verdict", "exit_criteria", "issues", "feedback_for_coder", "summary"],
+  "additionalProperties": false,
+  "properties": {
+    "verdict": {"type": "string", "enum": ["approve", "reject"]},
+    "exit_criteria": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["criterion", "met", "evidence"],
+        "additionalProperties": false,
+        "properties": {"criterion": {"type": "string"}, "met": {"type": "boolean"}, "evidence": {"type": "string"}}
+      }
+    },
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["severity", "file", "description"],
+        "additionalProperties": false,
+        "properties": {"severity": {"type": "string"}, "file": {"type": "string"}, "description": {"type": "string"}}
+      }
+    },
+    "feedback_for_coder": {"type": "string"},
+    "summary": {"type": "string"}
+  }
+}
