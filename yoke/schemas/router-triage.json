@@ -1,0 +1,31 @@
+{
+  "type": "object",
+  "required": [
+    "category",
+    "retryable",
+    "confidence",
+    "hint"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "category": {
+      "type": "string",
+      "enum": [
+        "test_failure",
+        "env_problem",
+        "spec_gap",
+        "agent_error",
+        "other"
+      ]
+    },
+    "retryable": {
+      "type": "boolean"
+    },
+    "confidence": {
+      "type": "number"
+    },
+    "hint": {
+      "type": "string"
+    }
+  }
+}

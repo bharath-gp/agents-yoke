@@ -7,6 +7,8 @@ import subprocess
 import sys
 import urllib.request
 
+from . import router, state, tickets as tickets_mod
+
 OLLAMA_URL = "http://127.0.0.1:11434"
 DECISION_MODEL = "tev1:4b"  # /v1/systemone; M0 spike: 10/10 ticket types, ~0.75s
 TOOLS = [("claude", True), ("agy", True), ("git", True), ("gh", False), ("ollama", False)]
@@ -75,7 +77,6 @@ def _git_toplevel(path):
 
 def _run(args):
     """--run R, else the latest run for cwd's git toplevel (PLAN 2.16)."""
-    from . import state
     if args.run:
         return state.Run.load(args.run)
     run = state.Run.latest_for_repo(_git_toplevel(os.getcwd()))
@@ -115,6 +116,30 @@ def _front_half(args):
     return 0
 
 
+def tickets_cmd(args):
+    run = _run(args)
+    if args.action == "import":
+        errs, ts = tickets_mod.import_tickets(run, args.file)
+        for e in errs:
+            print("error: " + e, file=sys.stderr)
+        if not errs:
+            print("imported %d tickets" % len(ts))
+        return 1 if errs else 0
+    for t in run.read_json("tickets.json", {"tickets": []})["tickets"]:
+        print("%s [%s] %s%s" % (t["id"], t["type"], t["title"],
+                                "  (after %s)" % ",".join(t["depends_on"]) if t["depends_on"] else ""))
+    return 0
+
+
+def route_cmd(args):
+    run = _run(args)
+    t = next((t for t in run.read_json("tickets.json")["tickets"] if t["id"] == args.ticket), None)
+    if t is None:
+        sys.exit("yoke: no such ticket " + args.ticket)
+    print(json.dumps(router.route_ticket(run.cfg, t), indent=2))
+    return 0
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="yoke")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -130,7 +155,20 @@ def main(argv=None):
     a.add_argument("--run")
     d = sub.add_parser("doctor", help="check environment")
     d.add_argument("--live", action="store_true", help="one tiny -p call per agent CLI")
+    tk = sub.add_parser("tickets", help="import or show tickets")
+    tk.add_argument("action", choices=["import", "show"])
+    tk.add_argument("file", nargs="?", help="tickets JSON (import)")
+    tk.add_argument("--run")
+    rt = sub.add_parser("route", help="show the stage route for a ticket")
+    rt.add_argument("ticket")
+    rt.add_argument("--run")
     args = p.parse_args(argv)
+    if args.cmd == "tickets":
+        if args.action == "import" and not args.file:
+            p.error("tickets import needs a file")
+        return tickets_cmd(args)
+    if args.cmd == "route":
+        return route_cmd(args)
     if args.cmd == "doctor":
         return 1 if doctor(live=args.live) else 0
     return _front_half(args)

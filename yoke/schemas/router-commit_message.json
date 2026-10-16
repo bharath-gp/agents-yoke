@@ -1,0 +1,17 @@
+{
+  "type": "object",
+  "required": [
+    "subject",
+    "body"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "subject": {
+      "type": "string",
+      "minLength": 1
+    },
+    "body": {
+      "type": "string"
+    }
+  }
+}

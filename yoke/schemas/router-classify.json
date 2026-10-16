@@ -1,0 +1,29 @@
+{
+  "type": "object",
+  "required": [
+    "type",
+    "confidence",
+    "reason"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "type": {
+      "type": "string",
+      "enum": [
+        "feature",
+        "bugfix",
+        "refactor",
+        "test",
+        "docs",
+        "chore",
+        "spike"
+      ]
+    },
+    "confidence": {
+      "type": "number"
+    },
+    "reason": {
+      "type": "string"
+    }
+  }
+}
