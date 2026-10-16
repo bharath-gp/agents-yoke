@@ -163,9 +163,14 @@ def main(argv=None):
     rt.add_argument("ticket")
     rt.add_argument("--run")
     runcmds.add_parsers(sub)
+    sub.add_parser("mcp", help="stdio MCP server exposing the router")
     args = p.parse_args(argv)
     if args.cmd in runcmds.CMDS:
         return runcmds.dispatch(args)
+    if args.cmd == "mcp":
+        from . import mcp_server
+        mcp_server.serve()
+        return 0
     if args.cmd == "tickets":
         if args.action == "import" and not args.file:
             p.error("tickets import needs a file")
