@@ -6,7 +6,7 @@ import os
 import string
 import subprocess
 
-from . import adapters, calls, config, gitops, planreview, router, schema, state
+from . import adapters, calls, config, gitops, planreview, router, schema, state, tracker
 
 PKG = os.path.dirname(os.path.abspath(__file__))
 
@@ -43,6 +43,8 @@ def escalate(run, tid, reason):
         esc.append({"id": len(esc) + 1, "ticket": tid, "reason": reason, "at": state.now()})
         run.write_json("escalations.json", esc)
     run.event("escalation", ticket=tid, reason=reason)
+    if tid:
+        tracker.comment(run, tid, "yoke escalation: " + reason)
 
 
 def _feedback_path(run, tid, attempt):

@@ -439,10 +439,11 @@ Files: `.claude-plugin/{plugin.json,marketplace.json}`, `skills/*/SKILL.md`, `ho
 - Notes:
 
 <a id="m8"></a>
-### M8 — GitHub tracker `[ ]`
+### M8 — GitHub tracker `[x]`
 Files: `tracker.py`, `cli.py` (`pr`), `tests/test_tracker.py` (gh faked via PATH shim).
 - `tracker.detect(repo)`, `create_issues(tickets)`, `comment(ticket, text)`, `pr(run)` (push feature branch with `git push -u origin`, `gh pr create --base <default> --head yoke/<run_id> --body` with `Closes #n` lines). `pr` refuses without valid final approval.
-- Notes:
+- Notes: Built `tracker.py` (`detect(repo, cfg)`, `create_issues(run)`, `comment(run, tid, text)`, `pr(run)`, `TrackerError`), `cli.py` (`pr`; `approve tickets` creates issues; 14 lines), one hook line in `pipeline.escalate` (comments on the ticket's issue, never raises), `tests/test_tracker.py` (gh faked by a PATH shim, real git with a bare remote; 92 tests green). Live check on private `bharath-gp/yoke-scratch` (https://github.com/bharath-gp/yoke-scratch): issues, label, push, PR with `Closes #n`, escalation comment all worked. Deviations later tickets depend on: (a) issue numbers are stored in `issues.json` `{T-001: {number, url}}`, NOT on tickets (tickets.json is hash-approved; editing it would void the approval); (b) `create_issues` runs inside `yoke approve tickets` when `tracker.detect` is github, skips tickets already in `issues.json`, and a gh failure leaves the approval recorded, exits 1 and is resumed by re-running `yoke approve tickets`; creates label `yoke` with `gh label create --force`; (c) `detect`: config `local`/`github` wins, `auto` = origin URL contains github.com and `gh repo view` succeeds; (d) `pr` also requires tracker github, resolves the base via `gh repo view` default branch, pushes `run.json` `branch` with `git push -u origin`, stores `pr_url` in run.json, and is the only code that pushes; (e) comments only on escalations with a ticket id (not on budget escalations); (f) `yoke pr` is idempotent-unsafe: a second call fails at `gh pr create` if a PR exists.
+
 
 <a id="m9"></a>
 ### M9 — Resume, handoff, end-to-end `[ ]`
