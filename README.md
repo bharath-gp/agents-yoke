@@ -1,42 +1,61 @@
-# agents-yoke
+# yoke
 
-`yoke`: run very large work items through a multi-agent loop. A primary agent (Claude) gathers requirements, plans, splits the plan into tickets and validates results. A secondary agent (Antigravity `agy`) codes, writes tests and updates docs. Agents are pluggable per role through adapters.
-
-**Status:** M0-M8 done except M9 (resume, `wait`, end-to-end). Plugin: skills `/yoke:grill plan tickets run resume status finish`.
-
-## Try it
-
-```bash
-uv tool install --editable .      # puts `yoke` on PATH
-python3 -m unittest discover -s tests
-yoke doctor                       # check claude, agy, git, gh, ollama
-yoke init --requirements req.md   # prints run_id; write plan.md into ~/.yoke/runs/<run_id>/
-yoke review-plan                  # one read-only secondary review round
-yoke approve plan                 # hash-bound; also: tickets, final
-yoke tickets import tickets.json  # validate, classify missing types; then `yoke tickets show`
-yoke route T-001                  # stages, agents and models for a ticket
-```
-
-Plugin (needs `yoke` on PATH):
-
-```bash
-claude plugin marketplace add /path/to/agents-yoke && claude plugin install yoke@yoke   # Claude Code
-agy plugin install /path/to/agents-yoke                                                  # agy
-```
-
+Multi-agent loop for large work items. Claude (primary) gathers requirements, plans, splits tickets and validates; Antigravity `agy` (secondary) codes, writes tests and docs. Agents are pluggable per role via `yoke/adapters.py`.
 
 ## How it works
 
-1. Interactive front half: requirements grilling, plan, bounded read-only plan review by the secondary agent, ticket split. You approve the plan and the ticket list.
-2. Unattended back half: a detached runner works each ticket through code, QA, validate and docs, retrying with feedback up to a limit, then escalating to you. Independent tickets can run in parallel, one git worktree each.
-3. A ticket is committed to a feature branch only when its exit criteria are met, QA passes and validation approves. Nothing is pushed or merged without your explicit command.
-4. All state and a full audit trail (prompts, commands, outputs, models) live in `~/.yoke`, outside the target repo, so any new session can resume from disk.
+1. Interactive: requirements, `plan.md`, one read-only secondary plan review, ticket split. You approve the plan and tickets (hash-bound).
+2. Unattended: a detached runner takes each ticket through code, QA, validate, docs. Failures retry with feedback up to a limit, then escalate to you. Independent tickets run in parallel, one git worktree each (`--parallel N`).
+3. A ticket is committed to feature branch `yoke/<run_id>` only when QA passes and the validator approves. The runner never pushes; `yoke pr` does, after `approve final`.
+4. State and audit trail (prompts, commands, outputs) live in `~/.yoke/runs/<run_id>/` (`$YOKE_HOME` overrides), outside the target repo. Any session can resume from disk.
 
-A local Ollama decision model (tev1) handles small routing and triage decisions, with a fallback to a small Claude call so the loop never blocks.
+A local Ollama model (`tev1:4b`) handles small routing/triage decisions; fallback is a small Claude call, so the loop never blocks.
+
+## Prerequisites
+
+Python >= 3.9, `git`, `claude`, `agy`, `ollama` with `tev1:4b`, `gh` (only for GitHub issues and `yoke pr`). Check with `yoke doctor [--live]`.
+
+## Install
+
+```bash
+uv tool install --editable .      # puts `yoke` on PATH
+```
+
+Plugin (skills `/yoke:grill plan tickets run resume status finish`, a SessionStart status hook, MCP server `yoke`; needs `yoke` on PATH):
+
+```bash
+claude plugin marketplace add /path/to/agents-yoke && claude plugin install yoke@yoke
+agy plugin install /path/to/agents-yoke
+```
+
+`agy plugin import claude` and `agy plugin validate .` do not work for this repo.
+
+## Typical flow
+
+```bash
+yoke init --requirements req.md   # prints run_id; write plan.md into ~/.yoke/runs/<run_id>/
+yoke review-plan                  # one read-only secondary review round
+yoke approve plan                 # also: tickets (creates GitHub issues if tracker=github), final
+yoke tickets import tickets.json  # validate, classify untyped tickets; `yoke tickets show`
+yoke route T-001                  # stages and agents for a ticket
+yoke run --detach --parallel 2    # background runner; always resumes from disk
+yoke wait                         # blocks until escalation, done, needs_user, stopped, died or timeout
+yoke status [--json|--brief]      # also: escalations, unblock T-001 [--reset-attempts], stop
+yoke approve final && yoke pr     # push branch, open PR
+yoke clean                        # remove worktrees (keeps branches and audit)
+```
+
+Subcommands take `--run <id>`; default is the latest run for the current repo. `yoke mcp` is a stdio MCP server exposing the router.
+
+## Tests
+
+```bash
+python3 -m unittest discover -s tests
+tests/e2e.sh [normal|fallback]    # manual: real claude + agy + ollama on a disposable repo, spends quota
+```
 
 ## Docs
 
 - [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md): what the system must do.
-- [docs/PLAN.md](docs/PLAN.md): design decisions and milestones M0-M9.
-- Progress: GitHub issue #1 (the map) and its milestone sub-issues.
+- [docs/PLAN.md](docs/PLAN.md): design decisions, plus per-milestone notes on what was built.
 - [CLAUDE.md](CLAUDE.md): guidance for Claude Code sessions in this repo.
