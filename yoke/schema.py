@@ -17,8 +17,12 @@ _TYPES = {
 }
 
 
+def schema_path(name):
+    return os.path.join(SCHEMA_DIR, name + ".json")
+
+
 def load_schema(name):
-    with open(os.path.join(SCHEMA_DIR, name + ".json")) as f:
+    with open(schema_path(name)) as f:
         return json.load(f)
 
 

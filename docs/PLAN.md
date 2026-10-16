@@ -392,12 +392,12 @@ Files: `planreview.py`, `prompts/plan_review.md`, `schemas/plan-review.json`, `c
 - Notes:
 
 <a id="m3"></a>
-### M3 — Tickets + router `[ ]`
+### M3 — Tickets + router `[x]`
 Files: `router.py`, `schemas/ticket*.json`, `schemas/router-*.json`, `cli.py` (`tickets import|show`, `route`), `tests/test_router.py`, `tests/test_tickets.py`.
 - `tickets import`: schema check, unique ids, deps exist, cycle check (DFS), `≤ max_tickets`; missing/invalid `type` → `router.classify_ticket`; write `tickets.json`; invalidates any previous tickets approval.
 - `router.*` per §2.10 with fallback chain; `route_ticket` deterministic.
 - Tests: Ollama down (bad port) → fallback used and logged; fallback down (fake CLI exit 1) → deterministic default; low confidence → fallback; cycle detection; route table per type.
-- Notes:
+- Notes: Built `router.py`, `tickets.py`, `schemas/{ticket,ticket-list,router-*}.json`, `cli.py` (`tickets import FILE|show`, `route T-001`, both take `--run`, default latest run for cwd), `schema.schema_path(name)`, `tests/test_router.py`, `tests/test_tickets.py` (stub Ollama HTTP server + FakeAdapter, 41 tests green). Deviations later tickets depend on: (a) router functions take `run` first: `classify_ticket(run, ticket, adapter=None)`, `triage_failure(run, log, adapter=None)`, `assert_check(run, claim, evidence, adapter=None)`, `summarize(run, text, adapter=None)`, `commit_message(run, ticket, diffstat='', adapter=None)`; `route_ticket(cfg, ticket)` and `health(cfg)` take cfg only; `adapter` defaults to `adapters.get(router.fallback.agent)`; fallback calls use stage `router` (audit `calls/router-<id>/`, `YOKE_STAGE=router`), model `router.llm_model`; (b) real `/v1/systemone` shapes: `choice` needs `criteria` as `{option: description|null}` (a list is HTTP 400), noul answer key is `noul`; Ollama `choice` `other` is not a valid ticket type so it is schema-invalid and falls back; (c) triage `retryable` = noul >= 0.2 (`RETRYABLE_MIN`, uncalibrated, tune later); assert default is `answer=false, confidence=0, reason="unknown"`; (d) `route_ticket` returns `{type, stages:[{stage, agent, ...overrides}]}`, overrides read from `routing[type].overrides[stage]` (e.g. model/effort), none in defaults.json; (e) `tickets import` classifies any ticket whose `type` is missing or not in the enum, then validates, and on success drops `approvals.json["tickets"]`; nothing is written on error; (f) `mcp_server.py` is M6's, not built here.
 
 <a id="m4"></a>
 ### M4 — Sequential pipeline + git `[ ]`
