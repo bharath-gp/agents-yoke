@@ -1,6 +1,7 @@
-"""yoke CLI. M0 skeleton: only `doctor` exists; later milestones add subcommands."""
+"""yoke CLI: doctor, init, review-plan, approve; later milestones add subcommands."""
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -66,14 +67,73 @@ def doctor(live=False, out=print):
     return problems
 
 
+def _git_toplevel(path):
+    r = subprocess.run(["git", "-C", path, "rev-parse", "--show-toplevel"],
+                       capture_output=True, text=True)
+    return os.path.realpath(r.stdout.strip() if r.returncode == 0 else path)
+
+
+def _run(args):
+    """--run R, else the latest run for cwd's git toplevel (PLAN 2.16)."""
+    from . import state
+    if args.run:
+        return state.Run.load(args.run)
+    run = state.Run.latest_for_repo(_git_toplevel(os.getcwd()))
+    if not run:
+        raise SystemExit("yoke: no run for this repo; run `yoke init`")
+    return run
+
+
+def _front_half(args):
+    from . import planreview
+    if args.cmd == "init":
+        roles = {k: v for k, v in (("primary", args.primary), ("secondary", args.secondary)) if v}
+        run = planreview.init_run(args.repo or _git_toplevel(os.getcwd()), args.requirements,
+                                  {"roles": roles} if roles else None)
+        print(run.run_id)
+        return 0
+    run = _run(args)
+    if args.cmd == "review-plan":
+        try:
+            n, res = planreview.review_round(run)
+        except (RuntimeError, planreview.ApprovalError) as e:
+            print("yoke: %s" % e, file=sys.stderr)
+            return 1
+        print("round %d: %s" % (n, run.path("plan-review/round-%d" % n)))
+        if res.ok and res.schema_valid:
+            out = res.structured_output
+            print("verdict %s, %d findings: %s" % (out["verdict"], len(out["findings"]), out["summary"]))
+            return 0
+        print("review failed: %s" % res.error, file=sys.stderr)
+        return 1
+    try:
+        entry = planreview.approve(run, args.kind)
+    except planreview.ApprovalError as e:
+        print("yoke: %s" % e, file=sys.stderr)
+        return 1
+    print("approved %s sha256 %s" % (args.kind, entry["sha256"][:12]))
+    return 0
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="yoke")
     sub = p.add_subparsers(dest="cmd", required=True)
+    i = sub.add_parser("init", help="create a run")
+    i.add_argument("--repo")
+    i.add_argument("--primary")
+    i.add_argument("--secondary")
+    i.add_argument("--requirements", help="file copied to requirements.md")
+    r = sub.add_parser("review-plan", help="one secondary read-only review round on plan.md")
+    r.add_argument("--run")
+    a = sub.add_parser("approve", help="record hash-bound approval")
+    a.add_argument("kind", choices=("plan", "tickets", "final"))
+    a.add_argument("--run")
     d = sub.add_parser("doctor", help="check environment")
     d.add_argument("--live", action="store_true", help="one tiny -p call per agent CLI")
     args = p.parse_args(argv)
     if args.cmd == "doctor":
         return 1 if doctor(live=args.live) else 0
+    return _front_half(args)
 
 
 if __name__ == "__main__":
