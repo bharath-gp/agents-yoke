@@ -2,6 +2,9 @@
 Everything shells out to `git -C`. The runner never pushes."""
 import os
 import subprocess
+import threading
+
+_WT_LOCK = threading.Lock()  # concurrent `git worktree add/remove` race on shared .git files
 
 
 class GitError(Exception):
@@ -25,13 +28,14 @@ def _branch_exists(repo, branch):
 
 def add_worktree(repo, wt, branch, start):
     """Worktree at `wt` on new `branch` cut from `start`; reuses an existing worktree."""
-    if os.path.isdir(wt):
-        return
-    os.makedirs(os.path.dirname(wt), exist_ok=True)
-    if _branch_exists(repo, branch):
-        git(repo, "worktree", "add", wt, branch)
-    else:
-        git(repo, "worktree", "add", "-b", branch, wt, start)
+    with _WT_LOCK:
+        if os.path.isdir(wt):
+            return
+        os.makedirs(os.path.dirname(wt), exist_ok=True)
+        if _branch_exists(repo, branch):
+            git(repo, "worktree", "add", wt, branch)
+        else:
+            git(repo, "worktree", "add", "-b", branch, wt, start)
 
 
 def ensure_feature_branch(repo, branch, base_sha, integration_wt):
@@ -63,12 +67,23 @@ def rebase_onto(wt, onto):
     return False, sorted(files)
 
 
+def reapply_on(wt, tip):
+    """After a rebase conflict: move the worktree to `tip` and re-apply the ticket commit uncommitted,
+    so conflict markers sit in the working tree for the coder. Returns the conflicted files."""
+    ticket_commit = head_sha(wt)
+    git(wt, "reset", "-q", "--hard", tip)
+    git(wt, "cherry-pick", "-n", ticket_commit, check=False)
+    git(wt, "cherry-pick", "--quit", check=False)
+    return sorted(git(wt, "diff", "--name-only", "--diff-filter=U", check=False).stdout.split())
+
+
 def ff_merge(integration_wt, branch):
     git(integration_wt, "merge", "--ff-only", "-q", branch)
 
 
 def remove_worktree(repo, wt):
-    git(repo, "worktree", "remove", "--force", wt, check=False)
+    with _WT_LOCK:
+        git(repo, "worktree", "remove", "--force", wt, check=False)
 
 
 def agent_made_commits(wt, since_sha):

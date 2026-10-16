@@ -14,6 +14,7 @@ CMDS = ("run", "status", "escalations", "unblock", "stop")
 def add_parsers(sub):
     r = sub.add_parser("run", help="run the ticket pipeline")
     r.add_argument("--run")
+    r.add_argument("--parallel", type=int, help="tickets in flight at once (saved in the run config)")
     r.add_argument("--detach", action="store_true", help="re-exec in the background (runner.log)")
     r.add_argument("--resume", action="store_true", help="accepted for symmetry; runs always resume from disk")
     s = sub.add_parser("status", help="run summary")
@@ -49,6 +50,8 @@ def dispatch(args):
     if args.cmd == "run":
         try:
             planreview.check_approval(run, "tickets")
+            if args.parallel:
+                run.update(config=dict(run.cfg, parallel=max(1, args.parallel)))
             if args.detach:
                 scheduler.acquire_lock(run)  # fail fast in the parent
                 log = open(run.path("runner.log"), "a")

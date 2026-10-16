@@ -1,8 +1,9 @@
 """Sequential scheduler (PLAN 2.8, 2.11, 2.12): approvals, runner lock, next-ready pick, budgets,
-unblock. M5 adds the parallel pool on top."""
+unblock, and the parallel ticket pool (`parallel` workers, one shared merge lock)."""
 import os
 import signal
 import threading
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
 from . import gitops, pipeline, planreview, state
 
@@ -66,27 +67,40 @@ def run(run_, adapter_for=None, env=None):
 
 
 def _loop(run_, adapter_for, env):
-    while True:
-        tickets = run_.read_json("tickets.json")["tickets"]
-        sts = {t["id"]: _status(run_, t["id"]) for t in tickets}
-        for t in tickets:  # dependents of a skipped ticket cannot ever run
-            bad = [d for d in t["depends_on"] if sts[d] == "skipped"]
-            if sts[t["id"]] == "pending" and bad:
-                st = pipeline.ticket_state(run_, t["id"])
-                st["status"] = "blocked"
-                pipeline.save_state(run_, t["id"], st)
-                pipeline.escalate(run_, t["id"], "depends on skipped %s" % ", ".join(bad))
-                sts[t["id"]] = "blocked"
-        ready = [t for t in tickets if sts[t["id"]] in ("pending", "in_progress")
-                 and all(sts[d] == "closed" for d in t["depends_on"])]
-        ready.sort(key=lambda t: sts[t["id"]] != "in_progress")
-        if not ready:
-            return "done" if all(s in ("closed", "skipped") for s in sts.values()) else "needs_user"
-        try:
-            pipeline.run_ticket(run_, ready[0], adapter_for, env)
-        except pipeline.BudgetExhausted:
-            pipeline.escalate(run_, None, "budget exhausted: max_agent_calls_total reached")
-            return "needs_user"
+    parallel = max(1, run_.cfg.get("parallel", 1))
+    merge_lock = threading.Lock()
+    running, out_of_budget = {}, False  # future -> ticket id
+    with ThreadPoolExecutor(max_workers=parallel) as pool:
+        while True:
+            tickets = run_.read_json("tickets.json")["tickets"]
+            sts = {t["id"]: _status(run_, t["id"]) for t in tickets}
+            for t in tickets:  # dependents of a skipped ticket cannot ever run
+                bad = [d for d in t["depends_on"] if sts[d] == "skipped"]
+                if sts[t["id"]] == "pending" and bad:
+                    st = pipeline.ticket_state(run_, t["id"])
+                    st["status"] = "blocked"
+                    pipeline.save_state(run_, t["id"], st)
+                    pipeline.escalate(run_, t["id"], "depends on skipped %s" % ", ".join(bad))
+                    sts[t["id"]] = "blocked"
+            busy = set(running.values())
+            ready = [t for t in tickets if t["id"] not in busy and sts[t["id"]] in ("pending", "in_progress")
+                     and all(sts[d] == "closed" for d in t["depends_on"])]
+            ready.sort(key=lambda t: sts[t["id"]] != "in_progress")
+            while ready and len(running) < parallel and not out_of_budget:
+                t = ready.pop(0)
+                running[pool.submit(pipeline.run_ticket, run_, t, adapter_for, env, merge_lock)] = t["id"]
+            if not running:
+                if out_of_budget:
+                    pipeline.escalate(run_, None, "budget exhausted: max_agent_calls_total reached")
+                    return "needs_user"
+                return "done" if all(s in ("closed", "skipped") for s in sts.values()) else "needs_user"
+            done, _ = wait(running, return_when=FIRST_COMPLETED)
+            for f in done:
+                del running[f]
+                try:
+                    f.result()
+                except pipeline.BudgetExhausted:
+                    out_of_budget = True  # let in-flight tickets stop at their next call
 
 
 def unblock(run_, tid, note=None, skip=False, reset_attempts=False):

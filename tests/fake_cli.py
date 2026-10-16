@@ -9,6 +9,7 @@ FAKE_SCRIPT: JSON file {stage: [response, ...]}, responses consumed in order per
 Any response may add "write": {path: text} (files created in cwd) and "commit": true (git add -A
 and commit in cwd, simulating a misbehaving agent) before printing.
 """
+import fcntl
 import json
 import os
 import subprocess
@@ -22,14 +23,16 @@ def main():
     with open(script) as f:
         responses = json.load(f)[stage]
     pos_file = script + ".pos"
-    pos = {}
-    if os.path.exists(pos_file):
-        with open(pos_file) as f:
-            pos = json.load(f)
-    i = pos.get(stage, 0)
-    pos[stage] = i + 1
-    with open(pos_file, "w") as f:
-        json.dump(pos, f)
+    with open(script + ".lock", "w") as lock:  # parallel tickets consume the script concurrently
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        pos = {}
+        if os.path.exists(pos_file):
+            with open(pos_file) as f:
+                pos = json.load(f)
+        i = pos.get(stage, 0)
+        pos[stage] = i + 1
+        with open(pos_file, "w") as f:
+            json.dump(pos, f)
     resp = responses[min(i, len(responses) - 1)]
     if "child_pidfile" in resp:
         child = subprocess.Popen(["sleep", "999"])
