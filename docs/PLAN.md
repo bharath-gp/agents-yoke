@@ -419,12 +419,12 @@ Files: `scheduler.py`, `gitops.py`, `tests/test_parallel.py`.
 - Notes:
 
 <a id="m6"></a>
-### M6 — MCP server `[ ]`
+### M6 — MCP server `[x]`
 Files: `mcp_server.py`, `.mcp.json`, `cli.py` (`mcp`), `tests/test_mcp.py`.
 - Newline-delimited JSON-RPC over stdio; protocol version echo from `initialize`; tool input schemas from router schemas.
 - Tests: spawn `yoke mcp`, send initialize/tools/list/tools/call (Ollama-down path), assert responses.
 - Manual check: `claude --mcp-config .mcp.json -p "call yoke_health"`; `agy mcp add yoke-router yoke mcp` then list tools.
-- Notes:
+- Notes: Built `mcp_server.py` (`handle`, `serve`, `call_tool`), `.mcp.json`, `cli.py` (`mcp`, 4 lines), `tests/test_mcp.py` (8 tests, 61 total green; subprocess with PATH = git only so the fallback agent fails offline). Deviations later tickets depend on: (a) tool input schemas are inline in `mcp_server.TOOLS` (router `schemas/router-*.json` describe outputs, not inputs); (b) the server needs no `initialize` state and answers any method order; protocol version is echoed, default `2025-03-26`; (c) run resolution is `YOKE_RUN`, else latest run for cwd's git toplevel; `yoke_health` works with no run (uses default config), every other tool returns an `isError` result when there is no run, as do unknown tools, missing required args and any handler exception; (d) results are one text block holding the router JSON (`{result, source, ...}`), `yoke_status` returns `Run.status()`; (e) manual: `claude --mcp-config` with `yoke_health` returned `{"ollama": true, "model": true}`; `agy mcp add yoke-router yoke mcp` NOT run (it edits the user's global agy config; M7/README should document it); `yoke` is not on PATH in this checkout, so `.mcp.json` assumes `uv tool install --editable .`.
 
 <a id="m7"></a>
 ### M7 — Plugin packaging, skills, hooks `[ ]`

@@ -162,7 +162,12 @@ def main(argv=None):
     rt = sub.add_parser("route", help="show the stage route for a ticket")
     rt.add_argument("ticket")
     rt.add_argument("--run")
+    sub.add_parser("mcp", help="stdio MCP server exposing the router")
     args = p.parse_args(argv)
+    if args.cmd == "mcp":
+        from . import mcp_server
+        mcp_server.serve()
+        return 0
     if args.cmd == "tickets":
         if args.action == "import" and not args.file:
             p.error("tickets import needs a file")
