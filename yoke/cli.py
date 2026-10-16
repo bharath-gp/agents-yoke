@@ -1,5 +1,6 @@
 """yoke CLI: doctor, init, review-plan, approve, tickets, route; runner commands live in runcmds.py."""
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -7,7 +8,7 @@ import subprocess
 import sys
 import urllib.request
 
-from . import router, runcmds, state, tracker, tickets as tickets_mod
+from . import config, router, runcmds, state, tracker, tickets as tickets_mod
 
 OLLAMA_URL = "http://127.0.0.1:11434"
 DECISION_MODEL = "tev1:4b"  # /v1/systemone; M0 spike: 10/10 ticket types, ~0.75s
@@ -67,6 +68,33 @@ def doctor(live=False, out=print):
             if not ok:
                 problems.append("live " + name)
     return problems
+
+
+def setup_markers():
+    """(user marker, marker for the cwd repo); project setup is keyed by repo path, outside the repo."""
+    home = config.yoke_home()
+    key = hashlib.sha1(_git_toplevel(os.getcwd()).encode()).hexdigest()[:12]
+    return os.path.join(home, "setup.json"), os.path.join(home, "projects", key + ".json")
+
+
+def setup_cmd(args):
+    """`--check`: exit 1 with a hint until setup passed for the user or this repo. Else run doctor, record it."""
+    user, project = setup_markers()
+    if args.check:
+        if os.path.exists(user) or os.path.exists(project):
+            return 0
+        print("yoke is not set up: run /yoke:setup")
+        return 1
+    problems = doctor(live=args.live)
+    if problems:
+        print("setup incomplete, fix: %s" % ", ".join(problems), file=sys.stderr)
+        return 1
+    rec = {"setup": True, "doctor_live": args.live}
+    if args.scope == "project":
+        rec["repo"] = _git_toplevel(os.getcwd())
+    state._write_atomic(user if args.scope == "user" else project, json.dumps(rec))
+    print("setup complete (%s)" % args.scope)
+    return 0
 
 
 def _git_toplevel(path):
@@ -171,6 +199,11 @@ def main(argv=None):
     a.add_argument("--run")
     d = sub.add_parser("doctor", help="check environment")
     d.add_argument("--live", action="store_true", help="one tiny -p call per agent CLI")
+    su = sub.add_parser("setup", help="first-time setup check (skills require it)")
+    su.add_argument("--check", action="store_true", help="only report whether setup was completed")
+    su.add_argument("--scope", choices=("user", "project"), default="user",
+                    help="user: all repos; project: only the current git repo")
+    su.add_argument("--live", action="store_true", help="also run the live agent calls")
     tk = sub.add_parser("tickets", help="import or show tickets")
     tk.add_argument("action", choices=["import", "show"])
     tk.add_argument("file", nargs="?", help="tickets JSON (import)")
@@ -197,6 +230,8 @@ def main(argv=None):
         return route_cmd(args)
     if args.cmd == "pr":
         return pr_cmd(args)
+    if args.cmd == "setup":
+        return setup_cmd(args)
     if args.cmd == "doctor":
         return 1 if doctor(live=args.live) else 0
     return _front_half(args)

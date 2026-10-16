@@ -5,6 +5,8 @@ description: Interview the user to pin down requirements for a large work item, 
 
 # grill
 
+Gate: run `yoke setup --check` first. If it fails or `yoke` is not found, stop and tell the user to run `/yoke:setup`.
+
 Goal: a requirements file the plan can be built from, then a run.
 
 1. Ask ONE question at a time. With each question, propose a default answer and say why; the user can just accept it.

@@ -17,20 +17,29 @@ Python >= 3.9, `git`, `claude`, `agy`, `ollama` with `tev1:4b`, `gh` (only for G
 
 ## Install
 
-```bash
-uv tool install --editable .      # puts `yoke` on PATH
-```
-
-Plugin (skills `/yoke:grill plan tickets run resume status finish`, a SessionStart status hook, MCP server `yoke`; needs `yoke` on PATH):
+yoke is used from inside coding agents, as a plugin. Fastest, for Claude Code and Antigravity (installs the CLI too, asks user-wide vs this repo):
 
 ```bash
-claude plugin marketplace add /path/to/agents-yoke && claude plugin install yoke@yoke
-agy plugin install /path/to/agents-yoke
+npx github:bharath-gp/agents-yoke                # flags: --scope user|project|local, --only claude,agy, --no-cli, --dry-run
 ```
 
-`agy plugin import claude` and `agy plugin validate .` do not work for this repo.
+Then in the agent run `/yoke:setup` (agy: the `setup` skill). Scopes: `user` = all your projects; `project` = this repo only, shared through git (`.claude/settings.json`); `local` = this repo only, not shared. agy has no scope option, so it is always user-wide.
+
+Claude Code without npx:
+
+```
+/plugin marketplace add bharath-gp/agents-yoke
+/plugin install yoke@yoke        # pick user or project scope
+/yoke:setup
+```
+
+`/yoke:setup` installs the `yoke` CLI if missing (`uv tool install` from GitHub, `pipx` fallback), runs the environment check and records success, either user-wide (`~/.yoke/setup.json`) or for the current repo only (`~/.yoke/projects/`). Every other skill (`/yoke:grill plan tickets run resume status finish`) first runs `yoke setup --check` and tells you to run `/yoke:setup` if it fails. A SessionStart hook shows the same hint. Rerun setup or the installer to update. The repo must be readable with your git credentials (it is private until made public).
+
+Development: `uv tool install --editable .`, then `claude plugin marketplace add . && claude plugin install yoke@yoke`.
 
 ## Typical flow
+
+The skills run these for you; the raw commands are for scripting and debugging.
 
 ```bash
 yoke init --requirements req.md   # prints run_id; write plan.md into ~/.yoke/runs/<run_id>/

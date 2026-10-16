@@ -3,14 +3,16 @@ import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 from yoke import cli, config, state
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SKILLS = ("grill", "plan", "tickets", "run", "resume", "status", "finish")
+SKILLS = ("setup", "grill", "plan", "tickets", "run", "resume", "status", "finish")
 
 
 def load(rel):
@@ -48,9 +50,65 @@ class TestPackaging(unittest.TestCase):
         for name in SKILLS:
             with open(os.path.join(ROOT, "skills", name, "SKILL.md")) as f:
                 subs.update(re.findall(r"`yoke ([a-z-]+)", f.read()))
-        known = {"init", "review-plan", "approve", "tickets", "run", "wait", "status", "escalations",
+        known = {"setup", "init", "review-plan", "approve", "tickets", "run", "wait", "status", "escalations",
                  "unblock", "stop", "pr", "route", "doctor"}
         self.assertFalse(subs - known, subs - known)
+
+
+    def test_skills_gate_on_setup(self):
+        for name in SKILLS:
+            if name == "setup":
+                continue
+            with open(os.path.join(ROOT, "skills", name, "SKILL.md")) as f:
+                self.assertIn("`yoke setup --check`", f.read(), name)
+
+
+class TestInstaller(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("node"), "node not installed")
+    def test_dry_run_scope(self):
+        out = subprocess.run(
+            ["node", os.path.join(ROOT, "bin", "install.js"), "--dry-run", "--only", "claude,agy", "--scope", "project"],
+            capture_output=True, text=True, check=True).stdout
+        self.assertIn("claude plugin marketplace add bharath-gp/agents-yoke --scope project", out)
+        self.assertIn("claude plugin install yoke@yoke --scope project", out)
+        self.assertIn("agy plugin install", out)
+
+
+class TestSetup(unittest.TestCase):
+    def test_check_until_setup_done(self):
+        home = tempfile.mkdtemp()
+        with mock.patch.dict(os.environ, {"YOKE_HOME": home}):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                self.assertEqual(cli.main(["setup", "--check"]), 1)
+            self.assertIn("/yoke:setup", buf.getvalue())
+            with mock.patch.object(cli, "doctor", return_value=[]), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(cli.main(["setup"]), 0)
+            self.assertEqual(cli.main(["setup", "--check"]), 0)
+
+    def test_project_scope_is_per_repo(self):
+        home = tempfile.mkdtemp()
+        repo1, repo2 = (os.path.realpath(tempfile.mkdtemp()) for _ in range(2))
+        quiet = contextlib.redirect_stdout(io.StringIO())
+        with mock.patch.dict(os.environ, {"YOKE_HOME": home}), \
+                mock.patch.object(cli, "doctor", return_value=[]), quiet:
+            cwd = os.getcwd()
+            try:
+                os.chdir(repo1)
+                self.assertEqual(cli.main(["setup", "--scope", "project"]), 0)
+                self.assertEqual(cli.main(["setup", "--check"]), 0)
+                os.chdir(repo2)
+                self.assertEqual(cli.main(["setup", "--check"]), 1)
+            finally:
+                os.chdir(cwd)
+
+    def test_setup_fails_on_problems(self):
+        home = tempfile.mkdtemp()
+        with mock.patch.dict(os.environ, {"YOKE_HOME": home}), \
+                mock.patch.object(cli, "doctor", return_value=["agy"]), \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(cli.main(["setup"]), 1)
+            self.assertFalse(os.path.exists(cli.setup_markers()[0]))
 
 
 class TestBriefStatus(unittest.TestCase):

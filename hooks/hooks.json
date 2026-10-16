@@ -4,7 +4,7 @@
       {
         "matcher": "startup|resume|compact",
         "hooks": [
-          {"type": "command", "command": "command -v yoke >/dev/null 2>&1 && yoke status --brief --active || true"}
+          {"type": "command", "command": "if command -v yoke >/dev/null 2>&1; then yoke setup --check && yoke status --brief --active; else echo 'yoke is not set up: run /yoke:setup'; fi; true"}
         ]
       }
     ]

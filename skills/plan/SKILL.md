@@ -5,6 +5,8 @@ description: Write plan.md for a yoke run, run bounded secondary-agent review ro
 
 # plan
 
+Gate: run `yoke setup --check` first. If it fails or `yoke` is not found, stop and tell the user to run `/yoke:setup`.
+
 The run dir is `$YOKE_HOME/runs/<run_id>/` (default `~/.yoke/runs/<run_id>/`); `yoke status` shows the run id.
 
 1. Write `plan.md` in the run dir from `requirements.md`. Include: approach, milestones or work breakdown, how each piece is verified, risks. Be concrete enough that tickets can quote it verbatim.

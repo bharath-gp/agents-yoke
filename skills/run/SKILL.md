@@ -5,6 +5,8 @@ description: Start the yoke runner on approved tickets and supervise it with a w
 
 # run
 
+Gate: run `yoke setup --check` first. If it fails or `yoke` is not found, stop and tell the user to run `/yoke:setup`.
+
 You are a thin orchestrator. Do not read diffs or logs unless the user asks.
 
 1. Ask the user how many tickets to run in parallel (default 1).

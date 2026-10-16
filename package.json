@@ -1,0 +1,11 @@
+{
+  "name": "yoke-installer",
+  "version": "0.1.0",
+  "description": "Installer for yoke: the CLI plus its plugin for Claude Code and Antigravity (agy).",
+  "bin": {"yoke-install": "bin/install.js"},
+  "files": ["bin"],
+  "engines": {"node": ">=16"},
+  "repository": {"type": "git", "url": "git+https://github.com/bharath-gp/agents-yoke.git"},
+  "license": "UNLICENSED",
+  "private": true
+}
