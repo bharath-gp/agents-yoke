@@ -1,0 +1,55 @@
+{
+  "roles": {
+    "primary": "claude",
+    "secondary": "agy",
+    "by_role": {
+      "requirements": "primary",
+      "planner": "primary",
+      "wayfinder": "primary",
+      "orchestrator": "primary",
+      "plan_review": "secondary",
+      "code": "secondary",
+      "qa": "secondary",
+      "validate": "primary",
+      "docs": "secondary"
+    }
+  },
+  "max_attempts_per_ticket": 3,
+  "max_plan_review_rounds": 3,
+  "max_tickets": 40,
+  "max_agent_calls_total": 300,
+  "parallel": 1,
+  "timeouts_s": {
+    "plan_review": 900,
+    "code": 2400,
+    "qa": 1800,
+    "validate": 1200,
+    "docs": 900,
+    "router_fallback": 120
+  },
+  "kill_grace_s": 15,
+  "router": {
+    "ollama_url": "http://127.0.0.1:11434",
+    "model": "tev1:4b",
+    "llm_model": "claude-haiku-5-5",
+    "min_confidence": 0.7,
+    "fallback": {"agent": "claude", "model": "claude-haiku-5-5", "effort": "low"}
+  },
+  "test_command": null,
+  "tracker": "auto",
+  "agents": {
+    "claude": {
+      "write_allowed_tools": ["Read", "Edit", "Write", "Grep", "Glob", "Bash(ls:*)", "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)"]
+    },
+    "agy": {}
+  },
+  "routing": {
+    "feature": {"stages": ["code", "qa", "validate", "docs"]},
+    "bugfix": {"stages": ["code", "qa", "validate", "docs"]},
+    "refactor": {"stages": ["code", "qa", "validate"]},
+    "test": {"stages": ["qa", "validate"]},
+    "docs": {"stages": ["docs", "validate"]},
+    "chore": {"stages": ["code", "validate"]},
+    "spike": {"stages": ["code", "validate"]}
+  }
+}

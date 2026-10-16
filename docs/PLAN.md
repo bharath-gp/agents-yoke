@@ -370,7 +370,7 @@ Goal: remove unknowns before building on them.
 - Notes: Probes done, findings in §1/§2.4/§2.10. Deviations later tickets depend on: (a) agy `--mode auto` unavailable, use `accept-edits`; (b) agy shell needs user allow rules, so coder edits only and the runner runs tests/commits; (c) agy denials show as exit 0 + `status: SUCCESS` + no `structured_output` + `denied_actions`; (d) Ollama runs only decision models (`/v1/systemone`, default `tev1:4b`); generative router calls (`summarize`, `commit_message`) go to a cheap agent model (`router.llm_model`), no local chat model (see §2.10). Scaffold: `pyproject.toml`, `yoke/cli.py` (`doctor [--live]`), `tests/test_cli.py`.
 
 <a id="m1"></a>
-### M1 — Core: config, state, adapters, audited calls `[ ]`
+### M1 — Core: config, state, adapters, audited calls `[x]`
 Files: `config.py`, `defaults.json`, `state.py`, `schema.py`, `adapters.py`, `calls.py`, `tests/fake_cli.py`, `tests/test_core.py`.
 - `config.load(repo) -> dict` (deep merge order §2.6), `config.agent_for(cfg, role)`.
 - `state.Run` class: `create(repo, cfg)`, `load(run_id)`, `latest_for_repo(path)`, `write_json(rel, obj)` (atomic), `read_json`, `event(kind, **data)`, `render_status()`.
@@ -379,7 +379,7 @@ Files: `config.py`, `defaults.json`, `state.py`, `schema.py`, `adapters.py`, `ca
 - `calls.run_call(run, spec, *, stage, ticket=None, attempt=None) -> CallResult`: creates audit dir, writes prompt/command, Popen with process group, timeout kill, parses, validates schema, one re-ask on schema failure (resume same session, prompt = errors), writes meta/result, increments budget counter, emits events.
 - `fake_cli.py`: reads `FAKE_SCRIPT` (JSON file mapping `stage` → list of responses consumed in order; supports `{"sleep": 999}` for timeout tests and `{"exit": 1}`), prints adapter-shaped JSON.
 - Tests: cmd building for both adapters (no `--dangerously-skip-permissions` ever; read mode flags); parse of recorded real outputs from M0; timeout kills process group; schema re-ask; atomic write; config merge.
-- Notes:
+- Notes: Built `config.py` + `defaults.json`, `state.py`, `schema.py`, `adapters.py`, `calls.py`, `tests/fake_cli.py`, `tests/test_core.py` (26 tests green). Deviations later tickets depend on: (a) signature is `calls.run_call(run, adapter, spec, *, stage, ticket=None, attempt=None)`, the caller passes the adapter (`adapters.get(config.agent_for(cfg, role))`, or `FakeAdapter(cli)` in tests); (b) `CallSpec` gained `allowed_tools` (claude write allowlist, default `agents.claude.write_allowed_tools` in defaults.json); (c) `run_call` sets env `YOKE_STAGE` for every call (FakeAdapter keys scripts by it) and audit dirs are `tickets/<T>/attempt-<n>/<stage>/`, `plan-review/round-<attempt>/`, else `calls/<stage>-<call_id>/`; the schema re-ask lands in `<dir>/reask/` and counts as a call; `result.json` is written only for schema-valid output; (d) `Run.event()` also rewrites `status.json`; `Run.update(**kv)` patches `run.json`, `Run.incr_calls()` is the budget counter (no limit enforcement yet, scheduler's job); (e) `schemas/*.json` do not exist yet, `schema.load_schema(name)` is ready for them; each milestone adds its own; (f) FakeAdapter response shapes: `{structured_output, session_id}`, `{sleep, child_pidfile}`, `{exit}`, `{raw}`; (g) not built: `interrupted` call-dir renaming (M9), `status --brief` formatting (M7 hook), Run lock file / pid handling (M4).
 
 <a id="m2"></a>
 ### M2 — Front half: init, plan review, approvals `[ ]`

@@ -14,3 +14,6 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 packages = ["yoke"]
+
+[tool.setuptools.package-data]
+yoke = ["defaults.json", "schemas/*.json", "prompts/*.md", "githooks/*"]
