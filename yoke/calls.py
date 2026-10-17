@@ -110,10 +110,16 @@ def run_call(run, adapter, spec, *, stage, ticket=None, attempt=None):
     rel = audit_rel(stage, ticket, attempt, "%04d" % (run.read_json("run.json")["agent_calls"] + 1))
     res, meta = _exec(run, adapter, spec, rel, stage, ticket, attempt)
     errs = _check(run, res, meta, spec, rel)
-    if not errs:
+    denied = (res.error or "").startswith("permission denied")  # agy headless: a shell command was auto-denied
+    if not errs and not denied:
         return res
-    ask = "Your previous output failed schema validation:\n" + "\n".join("- " + e for e in errs) + \
-          "\nReturn only a corrected JSON object matching the schema."
+    if denied:
+        ask = ("Your previous attempt was blocked: %s. There is no shell in this environment and it cannot be "
+               "approved. Do not run any command; use only file reading and editing tools. Complete the task "
+               "and return only the JSON object matching the schema." % res.error)
+    else:
+        ask = "Your previous output failed schema validation:\n" + "\n".join("- " + e for e in errs) + \
+              "\nReturn only a corrected JSON object matching the schema."
     if not res.session_id:  # cannot resume: restate the task
         ask = spec.prompt + "\n\n" + ask
     spec2 = dataclasses.replace(spec, prompt=ask, resume_session=res.session_id or spec.resume_session)

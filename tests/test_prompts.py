@@ -15,6 +15,11 @@ class TestNoShellPrompts(unittest.TestCase):
         for stage in ("code", "qa", "docs"):
             self.assertIn(NO_SHELL, _read(stage), stage)
 
+    def test_plan_review_has_no_shell_beyond_allowlist(self):
+        text = _read("plan_review")
+        self.assertIn("no general shell", text)
+        self.assertNotIn("git write commands", text)
+
     def test_qa_does_not_run_tests(self):
         qa = _read("qa")
         self.assertNotIn(", run them", qa)

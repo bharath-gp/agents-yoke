@@ -15,11 +15,11 @@ class TestParallel(PipeBase):
         self.cfg(3)
         self.setup_tickets(
             [ticket(1), ticket(2), ticket(3)],
-            {"code": [resp(CODE, "c%d" % i, write={"f%d.txt" % i: "x"}, sleep=1) for i in (1, 2, 3)],
+            {"code": [resp(CODE, "c%d" % i, write={"f%d.txt" % i: "x"}, sleep=2) for i in (1, 2, 3)],
              "validate": [resp(val())], "router": [{"exit": 1}]})
         t0 = time.time()
         self.assertEqual(self.go(), "done")
-        self.assertLess(time.time() - t0, 2.7)  # sequential would be >= 3s of coder sleep alone
+        self.assertLess(time.time() - t0, 5.0)  # sequential would be >= 6s of coder sleep alone
         branch = self.run_.read_json("run.json")["branch"]
         self.assertEqual(len(self.log()), 4)
         self.assertEqual(git(self.repo, "rev-list", "--merges", "--count", branch), "0")
