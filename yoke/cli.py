@@ -85,10 +85,28 @@ def setup_cmd(args):
             return 0
         print("yoke is not set up: run /yoke:setup")
         return 1
+    bad = [m for m in args.map if "=" not in m]
+    if bad:
+        print("setup: --map expects ROLE=AGENT, got %s" % ", ".join(bad), file=sys.stderr)
+        return 2
     problems = doctor(live=args.live)
     if problems:
         print("setup incomplete, fix: %s" % ", ".join(problems), file=sys.stderr)
         return 1
+    if args.primary or args.secondary or args.map:
+        try:
+            mapping = dict(m.split("=", 1) for m in args.map)
+            path = (os.path.join(config.yoke_home(), "config.json") if args.scope == "user"
+                    else os.path.join(_git_toplevel(os.getcwd()), ".yoke.json"))
+            config.save_roles(path, args.primary, args.secondary, mapping)
+        except ValueError as e:
+            print("setup: %s" % e, file=sys.stderr)
+            return 2
+        print("agent roles saved to %s" % path)
+    cfg = config.load(repo=_git_toplevel(os.getcwd()))
+    print("primary=%s secondary=%s" % (cfg["roles"]["primary"], cfg["roles"]["secondary"]))
+    for role, who in cfg["roles"]["by_role"].items():
+        print("  %-13s %s" % (role, config.agent_for(cfg, role)))
     rec = {"setup": True, "doctor_live": args.live}
     if args.scope == "project":
         rec["repo"] = _git_toplevel(os.getcwd())
@@ -204,6 +222,10 @@ def main(argv=None):
     su.add_argument("--scope", choices=("user", "project"), default="user",
                     help="user: all repos; project: only the current git repo")
     su.add_argument("--live", action="store_true", help="also run the live agent calls")
+    su.add_argument("--primary", choices=config.AGENTS, help="agent used for 'primary' roles")
+    su.add_argument("--secondary", choices=config.AGENTS, help="agent used for 'secondary' roles")
+    su.add_argument("--map", action="append", default=[], metavar="ROLE=AGENT",
+                    help="map a role (code, qa, docs, ...) to primary, secondary or an agent; repeatable")
     tk = sub.add_parser("tickets", help="import or show tickets")
     tk.add_argument("action", choices=["import", "show"])
     tk.add_argument("file", nargs="?", help="tickets JSON (import)")
