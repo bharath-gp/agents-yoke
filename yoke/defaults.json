@@ -11,7 +11,10 @@
       "code": "secondary",
       "qa": "secondary",
       "validate": "primary",
-      "docs": "secondary"
+      "docs": "secondary",
+      "search": "primary",
+      "research": "secondary",
+      "factcheck": "primary"
     }
   },
   "max_attempts_per_ticket": 3,
@@ -25,6 +28,9 @@
     "qa": 1800,
     "validate": 1200,
     "docs": 900,
+    "search": 600,
+    "research": 1800,
+    "factcheck": 1200,
     "router_fallback": 120
   },
   "kill_grace_s": 15,
@@ -43,6 +49,18 @@
     },
     "agy": {}
   },
+  "search": {
+    "tools": ["WebSearch", "WebFetch", "Skill", "mcp__firecrawl"]
+  },
+  "research": {
+    "default_depth": "normal",
+    "doc_dir": "docs/research",
+    "depths": {
+      "quick": {"max_sources": 5, "search_rounds": 1},
+      "normal": {"max_sources": 12, "search_rounds": 2},
+      "deep": {"max_sources": 25, "search_rounds": 4}
+    }
+  },
   "routing": {
     "feature": {"stages": ["code", "qa", "validate", "docs"]},
     "bugfix": {"stages": ["code", "qa", "validate", "docs"]},
@@ -50,6 +68,7 @@
     "test": {"stages": ["qa", "validate"]},
     "docs": {"stages": ["docs", "validate"]},
     "chore": {"stages": ["code", "validate"]},
-    "spike": {"stages": ["code", "validate"]}
+    "spike": {"stages": ["code", "validate"]},
+    "research": {"stages": ["search", "research", "factcheck"]}
   }
 }

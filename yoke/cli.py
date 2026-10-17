@@ -8,7 +8,7 @@ import subprocess
 import sys
 import urllib.request
 
-from . import config, router, runcmds, state, tracker, tickets as tickets_mod
+from . import config, research, router, runcmds, state, tracker, tickets as tickets_mod
 
 OLLAMA_URL = "http://127.0.0.1:11434"
 DECISION_MODEL = "tev1:4b"  # /v1/systemone; M0 spike: 10/10 ticket types, ~0.75s
@@ -214,10 +214,13 @@ def main(argv=None):
     pr = sub.add_parser("pr", help="push the feature branch and open a PR (needs approve final)")
     pr.add_argument("--run")
     runcmds.add_parsers(sub)
+    research.add_parsers(sub)
     sub.add_parser("mcp", help="stdio MCP server exposing the router")
     args = p.parse_args(argv)
     if args.cmd in runcmds.CMDS:
         return runcmds.dispatch(args)
+    if args.cmd in research.CMDS:
+        return research.dispatch(args)
     if args.cmd == "mcp":
         from . import mcp_server
         mcp_server.serve()

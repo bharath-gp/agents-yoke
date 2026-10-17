@@ -1,0 +1,25 @@
+{
+  "type": "object",
+  "required": ["status", "queries", "sources", "tools_used", "summary"],
+  "additionalProperties": false,
+  "properties": {
+    "status": {"type": "string", "enum": ["found", "none"]},
+    "queries": {"type": "array", "items": {"type": "string"}},
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["url", "title", "excerpt", "relevance"],
+        "additionalProperties": false,
+        "properties": {
+          "url": {"type": "string", "minLength": 1},
+          "title": {"type": "string"},
+          "excerpt": {"type": "string"},
+          "relevance": {"type": "string"}
+        }
+      }
+    },
+    "tools_used": {"type": "array", "items": {"type": "string"}},
+    "summary": {"type": "string"}
+  }
+}

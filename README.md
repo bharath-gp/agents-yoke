@@ -56,6 +56,16 @@ yoke clean                        # remove worktrees (keeps branches and audit)
 
 Subcommands take `--run <id>`; default is the latest run for the current repo. `yoke mcp` is a stdio MCP server exposing the router.
 
+## Research agents
+
+```bash
+yoke search "how does X work"            # ranked sources (claude, web tools)
+yoke research "topic" --depth deep       # search -> research (agy) -> fact-check loop, writes docs/research/<topic>.md
+yoke factcheck docs/some-file.md         # per-claim verdicts for any markdown file in the repo
+```
+
+`research` is also a ticket type (`search`, `research`, `factcheck` stages). Web tools come from `search.tools` in the config; depth presets from `research.depths`.
+
 ## Tests
 
 ```bash

@@ -2,7 +2,7 @@
 
 ## State of the repo
 
-`yoke`: Claude plans and validates, Antigravity (`agy`) codes, runs QA and writes docs. Milestones M0-M9 are done and the tracking issues are closed. [docs/PLAN.md](docs/PLAN.md) is the source of truth for design; each milestone's "Notes" in section 3 records deviations from it. [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) is discovery output. Keep PLAN.md anchors (`#s2-8`, `#m4`, ...) stable. Usage lives in [README.md](README.md).
+`yoke`: Claude plans and validates, Antigravity (`agy`) codes, runs QA and writes docs. Milestones M0-M10 are done and the tracking issues are closed. [docs/PLAN.md](docs/PLAN.md) is the source of truth for design; each milestone's "Notes" in section 3 records deviations from it. [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) is discovery output. Keep PLAN.md anchors (`#s2-8`, `#m4`, ...) stable. Usage lives in [README.md](README.md).
 
 ## Commands
 

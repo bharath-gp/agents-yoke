@@ -3,12 +3,17 @@ close gate, commit and merge (2.9). Sequential unless the caller passes a shared
 import contextlib
 import json
 import os
+import re
 import string
 import subprocess
 
 from . import adapters, calls, config, gitops, planreview, router, schema, state, tracker
 
 PKG = os.path.dirname(os.path.abspath(__file__))
+
+
+READ_STAGES = ("validate", "search", "factcheck")
+WEB_STAGES = ("search", "factcheck")
 
 
 class Escalate(Exception):
@@ -66,6 +71,32 @@ def _read_feedback(run, tid, attempt):
         return ""
 
 
+def doc_path_for(cfg, ticket):
+    """Repo-relative path of a research ticket's document (ticket["doc_path"] overrides)."""
+    if ticket.get("doc_path"):
+        return ticket["doc_path"]
+    slug = re.sub(r"[^a-z0-9]+", "-", ("%s %s" % (ticket["id"], ticket["title"])).lower()).strip("-")[:60]
+    return "%s/%s.md" % (cfg["research"]["doc_dir"], slug)
+
+
+def _vars(cfg, ticket):
+    depth = cfg["research"]["depths"][cfg["research"]["default_depth"]]
+    return dict(topic="\n".join(x for x in (ticket["title"], ticket.get("description")) if x),
+                doc_path=doc_path_for(cfg, ticket), search_tools=", ".join(cfg["search"]["tools"]),
+                max_sources=depth["max_sources"], search_rounds=depth["search_rounds"])
+
+
+def factcheck_failures(out):
+    """Problems the runner itself finds in a factcheck result (it does not trust `verdict` alone)."""
+    bad = ["%s %s: %s -> %s" % (c["id"], c["verdict"], c["claim"], c["correction"] or c["evidence"])
+           for c in out["claims"] if c["verdict"] in ("refuted", "unsupported")]
+    bad += ["source %s %s: %s" % (s["url"], s["status"], s["note"])
+            for s in out["sources"] if s["status"] in ("dead", "mismatch")]
+    if not out["claims"]:
+        bad.append("the fact checker returned no claims, so nothing was checked")
+    return bad
+
+
 def _call(run, adapter_for, env, ticket, stage, attempt, wt, base, mode, results, feedback, resume=None):
     cfg = run.cfg
     if run.read_json("run.json")["agent_calls"] >= cfg["max_agent_calls_total"]:
@@ -74,7 +105,7 @@ def _call(run, adapter_for, env, ticket, stage, attempt, wt, base, mode, results
         prompt = string.Template(f.read()).safe_substitute(
             ticket=json.dumps(ticket, indent=2), plan_excerpt=ticket["plan_excerpt"],
             prior_results=json.dumps(results, indent=2), feedback=feedback or "(none)",
-            base_sha=base, worktree=wt)
+            base_sha=base, worktree=wt, **_vars(cfg, ticket))
     over = next((s for s in router.route_ticket(cfg, ticket)["stages"] if s["stage"] == stage), {})
     hooks = os.path.join(PKG, "githooks")  # push protection for workers (PLAN 2.9)
     wenv = dict(env or {}, GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="core.hooksPath", GIT_CONFIG_VALUE_0=hooks)
@@ -82,7 +113,8 @@ def _call(run, adapter_for, env, ticket, stage, attempt, wt, base, mode, results
         prompt=prompt, schema_path=schema.schema_path(stage), cwd=wt, mode=mode,
         model=over.get("model"), effort=over.get("effort"), resume_session=resume,
         timeout_s=cfg["timeouts_s"][stage], env=wenv,
-        allowed_tools=tuple(cfg["agents"]["claude"]["write_allowed_tools"]))
+        allowed_tools=tuple(cfg["agents"]["claude"]["write_allowed_tools"]),
+        web_tools=tuple(cfg["search"]["tools"]) if stage in WEB_STAGES else ())
     return calls.run_call(run, adapter_for(stage), spec, stage=stage, ticket=ticket["id"], attempt=attempt)
 
 
@@ -103,7 +135,7 @@ def _attempt(run, adapter_for, env, ticket, st, wt, stages):
     since = gitops.head_sha(wt)
     results, test_cmd, rerun_rc = {}, None, None
     for stage in stages:
-        mode = "read" if stage == "validate" else "write"
+        mode = "read" if stage in READ_STAGES else "write"
         if stage == "validate":
             gitops.git(wt, "add", "-A")  # new files become visible to `git diff <base>`
         res = _call(run, adapter_for, env, ticket, stage, attempt, wt, base, mode, results, feedback,
@@ -130,6 +162,19 @@ def _attempt(run, adapter_for, env, ticket, st, wt, stages):
             if rerun_rc != 0:
                 return ("Runner re-ran `%s` and it exited %s (QA had reported pass):\n%s"
                         % (test_cmd, rerun_rc, tail)), results, test_cmd, rerun_rc
+        elif stage == "search":
+            if out["status"] == "none" or not out["sources"]:
+                return "Search found no sources: " + out["summary"], results, test_cmd, rerun_rc
+        elif stage == "research":
+            if out["status"] == "blocked":
+                raise Escalate("researcher blocked: %s" % out.get("blocked_reason", "no reason given"))
+            doc = doc_path_for(run.cfg, ticket)
+            if not os.path.isfile(os.path.join(wt, doc)):
+                return "The research document was not written to %s." % doc, results, test_cmd, rerun_rc
+        elif stage == "factcheck":
+            bad = factcheck_failures(out)
+            if bad:
+                return "Fact check failed:\n" + "\n".join(bad), results, test_cmd, rerun_rc
         elif stage == "validate":
             unmet = [c["criterion"] for c in out["exit_criteria"] if not c["met"]]
             if out["verdict"] != "approve" or unmet:
@@ -141,6 +186,8 @@ def _attempt(run, adapter_for, env, ticket, st, wt, stages):
 
 def _gate(stages, results, rerun_rc):
     g = {}
+    if "search" in stages:
+        g["search"] = results["search"]["status"] == "found" and bool(results["search"]["sources"])
     if "code" in stages:
         g["code"] = results["code"]["status"] == "done"
     if "qa" in stages:
@@ -148,6 +195,10 @@ def _gate(stages, results, rerun_rc):
     if "validate" in stages:
         v = results["validate"]
         g["validate"] = v["verdict"] == "approve" and all(c["met"] for c in v["exit_criteria"])
+    if "research" in stages:
+        g["research"] = results["research"]["status"] == "done"
+    if "factcheck" in stages:
+        g["factcheck"] = not factcheck_failures(results["factcheck"])
     if "docs" in stages:
         g["docs"] = results["docs"]["status"] in ("done", "not_needed")
     return g
