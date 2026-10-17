@@ -135,6 +135,8 @@ def _attempt(run, adapter_for, env, ticket, st, wt, stages):
     since = gitops.head_sha(wt)
     results, test_cmd, rerun_rc = {}, None, None
     for stage in stages:
+        if stage == "review":
+            continue
         mode = "read" if stage in READ_STAGES else "write"
         if stage == "validate":
             gitops.git(wt, "add", "-A")  # new files become visible to `git diff <base>`

@@ -164,9 +164,9 @@ Default role map (config `roles`):
 {"primary": "claude", "secondary": "agy",
  "by_role": {"requirements": "primary", "planner": "primary", "wayfinder": "primary",
              "orchestrator": "primary", "plan_review": "secondary",
-             "code": "secondary", "qa": "secondary", "validate": "primary", "docs": "secondary"}}
+             "code": "secondary", "review": "auto", "qa": "secondary", "validate": "primary", "docs": "secondary"}}
 ```
-`by_role` values may be `primary`, `secondary`, or a concrete agent name. CLI flags `--primary`/`--secondary` override at `yoke init`.
+`by_role` values may be `primary`, `secondary`, a concrete agent name, or `auto` (for `review` only, resolving to the opposite of `code`). CLI flags `--primary`/`--secondary` override at `yoke init`.
 
 <a id="s2-6"></a>
 ### 2.6 Config
@@ -178,10 +178,11 @@ Default budgets/limits:
 |---|---|
 | `max_attempts_per_ticket` | 3 |
 | `max_plan_review_rounds` | 3 |
+| `max_review_rounds` | 2 |
 | `max_tickets` | 40 |
 | `max_agent_calls_total` | 300 |
 | `parallel` | 1 (CLI `--parallel N`) |
-| `timeouts_s` | plan_review 900, code 2400, qa 1800, validate 1200, docs 900, router_fallback 120 |
+| `timeouts_s` | plan_review 900, code 2400, review 1200, qa 1800, validate 1200, docs 900, router_fallback 120 |
 | `kill_grace_s` | 15 |
 | `router.ollama_url` | `http://127.0.0.1:11434` |
 | `router.model` | `tev1:4b` (decision model, `/v1/systemone`; optional override `nimble-v3:9b-mxfp8`, noncommercial) |
@@ -195,13 +196,13 @@ Type → stages routing (config `routing`, overridable per type with model/effor
 
 | type | stages |
 |---|---|
-| feature | code, qa, validate, docs |
-| bugfix | code, qa, validate, docs |
-| refactor | code, qa, validate |
+| feature | code, review, qa, validate, docs |
+| bugfix | code, review, qa, validate, docs |
+| refactor | code, review, qa, validate |
 | test | qa, validate |
 | docs | docs, validate |
-| chore | code, validate |
-| spike | code, validate (no commit unless validate approves) |
+| chore | code, review, validate |
+| spike | code, review, validate (no commit unless validate approves) |
 
 <a id="s2-7"></a>
 ### 2.7 Schemas (`yoke/schemas/*.json`, JSON Schema draft-07 subset)
@@ -223,6 +224,7 @@ pending → (deps closed) → in_progress
   for stage in stages(type):
     code:     run secondary (resume session on retry, feedback appended)
               blocked → escalate
+    review:   run review agent (auto resolves to opposite of code agent)
     qa:       run secondary; then RUNNER re-runs result.test_command in worktree (independent check)
               fail (agent or rerun) → feedback → attempt += 1 → back to code
     validate: run primary read-only; prompt includes ticket, exit criteria, base sha, prior results;

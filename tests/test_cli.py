@@ -29,6 +29,35 @@ class TestSaveRoles(unittest.TestCase):
                 config.save_roles(os.path.join(d, "c.json"), mapping={"nope": "agy"})
             with self.assertRaises(ValueError):
                 config.save_roles(os.path.join(d, "c.json"), primary="gpt")
+            with self.assertRaises(ValueError):
+                config.save_roles(os.path.join(d, "c.json"), mapping={"code": "auto"})
+            res = config.save_roles(os.path.join(d, "c.json"), mapping={"review": "auto"})
+            self.assertEqual(res["by_role"]["review"], "auto")
+
+
+class TestSetup(unittest.TestCase):
+    def test_setup_prints_review_and_warns_on_override(self):
+        import contextlib
+        import io
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.dict(os.environ, {"YOKE_HOME": d}), \
+                 mock.patch("yoke.cli.doctor", return_value=[]):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    rc = cli.main(["setup"])
+                self.assertEqual(rc, 0)
+                text = out.getvalue()
+                self.assertRegex(text, r"review\s+claude")
+                self.assertNotIn("warning", text.lower())
+
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    rc = cli.main(["setup", "--map", "review=agy"])
+                self.assertEqual(rc, 0)
+                text = out.getvalue()
+                self.assertRegex(text, r"review\s+agy")
+                self.assertIn("warning", text.lower())
 
 
 if __name__ == "__main__":

@@ -69,6 +69,71 @@ class TestConfig(Tmp):
         cfg = config.deep_merge(cfg, {"roles": {"by_role": {"docs": "gemini"}}})
         self.assertEqual(config.agent_for(cfg, "docs"), "gemini")
 
+    def test_agent_for_review(self):
+        cfg = config.load(home=self.tmp)
+        self.assertEqual(config.agent_for(cfg, "code"), "agy")
+        self.assertEqual(config.agent_for(cfg, "review"), "claude")
+
+        cfg_claude = config.deep_merge(cfg, {"roles": {"by_role": {"code": "claude"}}})
+        self.assertEqual(config.agent_for(cfg_claude, "code"), "claude")
+        self.assertEqual(config.agent_for(cfg_claude, "review"), "agy")
+
+        cfg_explicit = config.deep_merge(cfg, {"roles": {"by_role": {"review": "secondary"}}})
+        self.assertEqual(config.agent_for(cfg_explicit, "review"), "agy")
+        cfg_explicit2 = config.deep_merge(cfg, {"roles": {"by_role": {"review": "claude"}}})
+        self.assertEqual(config.agent_for(cfg_explicit2, "review"), "claude")
+
+        cfg_custom = config.deep_merge(cfg, {"roles": {"by_role": {"code": "custom"}}})
+        self.assertEqual(config.agent_for(cfg_custom, "review"), "claude")
+        cfg_custom_pri = config.deep_merge(cfg, {"roles": {"primary": "custom", "secondary": "agy",
+                                                           "by_role": {"code": "custom"}}})
+        self.assertEqual(config.agent_for(cfg_custom_pri, "review"), "agy")
+
+    def test_save_roles_review_auto(self):
+        p = os.path.join(self.tmp, "c.json")
+        with self.assertRaises(ValueError):
+            config.save_roles(p, mapping={"code": "auto"})
+        res = config.save_roles(p, mapping={"review": "auto"})
+        self.assertEqual(res["by_role"]["review"], "auto")
+
+    def test_routing_review(self):
+        cfg = config.load(home=self.tmp)
+        routing = cfg["routing"]
+        for typ in ("feature", "bugfix", "refactor", "chore", "spike"):
+            stages = routing[typ]["stages"]
+            self.assertIn("review", stages)
+            self.assertEqual(stages.index("review"), stages.index("code") + 1)
+        for typ in ("test", "docs", "research"):
+            self.assertNotIn("review", routing[typ]["stages"])
+
+    def test_defaults_review(self):
+        cfg = config.load(home=self.tmp)
+        self.assertEqual(cfg["timeouts_s"]["review"], 1200)
+        self.assertEqual(cfg["max_review_rounds"], 2)
+
+    def test_setup_review_output_and_warning(self):
+        import contextlib
+        import io
+        from unittest import mock
+        from yoke import cli
+        with mock.patch.dict(os.environ, {"YOKE_HOME": self.tmp}), \
+             mock.patch("yoke.cli.doctor", return_value=[]):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = cli.main(["setup"])
+            self.assertEqual(rc, 0)
+            text = out.getvalue()
+            self.assertRegex(text, r"review\s+claude")
+            self.assertNotIn("warning", text.lower())
+
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = cli.main(["setup", "--map", "review=agy"])
+            self.assertEqual(rc, 0)
+            text = out.getvalue()
+            self.assertRegex(text, r"review\s+agy")
+            self.assertIn("warning", text.lower())
+
 
 class TestSchema(unittest.TestCase):
     def test_valid_and_invalid(self):
