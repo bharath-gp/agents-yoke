@@ -5,7 +5,7 @@ import sys
 import time
 
 from tests.test_core import FAKE_CLI
-from tests.test_pipeline import CODE, PipeBase, resp, ticket, val
+from tests.test_pipeline import CODE, PipeBase, REV, resp, ticket, val
 from yoke import runcmds, scheduler
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -26,6 +26,7 @@ class TestResume(PipeBase):
         pidfile = os.path.join(self.tmp, "child.pid")
         self.setup_tickets([ticket(1)], {
             "code": [resp(CODE, "s", sleep=999, child_pidfile=pidfile), resp(CODE, "s", write={"f.txt": "x"})],
+            "review": [resp(REV)],
             "validate": [resp(val())], "router": [{"exit": 1}]})
         env = dict(os.environ, **self.env, PYTHONPATH=ROOT)
         runner = subprocess.Popen([sys.executable, "-c", RUNNER, self.run_.run_id], cwd=ROOT, env=env)
@@ -34,7 +35,8 @@ class TestResume(PipeBase):
             if os.path.exists(pidfile) and os.path.getsize(pidfile):
                 break
             time.sleep(0.1)
-        child = int(open(pidfile).read())
+        with open(pidfile) as f:
+            child = int(f.read())
         runner.kill()  # crash: the worker group survives
         runner.wait()
         self.assertTrue(alive(child))
@@ -87,6 +89,7 @@ class TestWait(PipeBase):
 class TestClean(PipeBase):
     def test_clean_removes_worktrees_keeps_branch(self):
         self.setup_tickets([ticket(1)], {"code": [resp(CODE, "s", write={"f": "1"})],
+                                         "review": [resp(REV)],
                                          "validate": [resp(val())], "router": [{"exit": 1}]})
         self.assertEqual(self.go(), "done")
         self.assertTrue(os.path.isdir(self.run_.path("worktrees/_integration")))

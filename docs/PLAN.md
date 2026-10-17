@@ -238,6 +238,8 @@ Close gate (checked explicitly, logged): code `done` ∧ QA `pass` ∧ runner te
 
 Retry feedback is a file `attempt-<n>/feedback.md` built from QA failures / validator issues / router triage hint, inlined into the next code prompt, and the coder session is resumed by ID.
 
+Review stage loop (`_review_loop`): Bounded review-revision loop (up to `max_review_rounds` revisions, defaulting to 2). The runner decides blocking based on severity (blocker and major findings block; minor and nit findings do not block and are passed as optional suggestions). Blocker and major findings trigger coder revisions using the saved coder session (`resume=st['sessions']['code']`) under audit labels `review-r<n>` and `code-r<n>`. If findings remain unresolved when reaching the revision cap, the ticket does not fail: unresolved blocker/major findings are recorded in `st['review']['unresolved']`, emitted as a `review_unresolved` audit event, posted as comments to the ticket issue via `tracker.comment`, and forwarded via `results['review']` to validate and qa prompts. Furthermore, `yoke pr` formats any unresolved review findings from closed tickets into an 'Unresolved review findings' section in the pull request description.
+
 Context handoff: prompts **inline** the ticket JSON, plan excerpt, and prior-stage result JSON (small). Copies are saved in the attempt dir for audit. Inlining avoids sandbox path problems with files outside the worktree.
 
 Prompt templates: `yoke/prompts/<stage>.md` using `string.Template` (`$ticket`, `$plan_excerpt`, `$prior_results`, `$feedback`, `$base_sha`, `$worktree`) — `$` avoids clashing with JSON braces. Every worker prompt states: stay inside the worktree, do not commit, do not push, do not touch git config, return only the schema object.

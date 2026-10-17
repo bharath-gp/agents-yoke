@@ -3,7 +3,7 @@ import os
 import time
 
 from tests.test_gitops import git
-from tests.test_pipeline import CODE, PipeBase, resp, ticket, val
+from tests.test_pipeline import CODE, PipeBase, REV, resp, ticket, val
 from yoke import gitops
 
 
@@ -16,6 +16,7 @@ class TestParallel(PipeBase):
         self.setup_tickets(
             [ticket(1), ticket(2), ticket(3)],
             {"code": [resp(CODE, "c%d" % i, write={"f%d.txt" % i: "x"}, sleep=1) for i in (1, 2, 3)],
+             "review": [resp(REV)] * 3,
              "validate": [resp(val())], "router": [{"exit": 1}]})
         t0 = time.time()
         self.assertEqual(self.go(), "done")
@@ -34,6 +35,7 @@ class TestParallel(PipeBase):
         self.setup_tickets(
             [ticket(1), ticket(2, deps=["T-001"])],
             {"code": [resp(CODE, "c1", write={"f1.txt": "x"}), resp(CODE, "c2", write={"f2.txt": "x"})],
+             "review": [resp(REV)] * 2,
              "validate": [resp(val())], "router": [{"exit": 1}]})
         self.assertEqual(self.go(), "done")
         self.assertEqual(self.log()[:2], ["T-002: ticket 2", "T-001: ticket 1"])
@@ -44,12 +46,14 @@ class TestParallel(PipeBase):
             [ticket(1), ticket(2)],
             {"code": [resp(CODE, "c1", write={"a.txt": "one\n"}), resp(CODE, "c2", write={"a.txt": "two\n"}),
                       resp(CODE, "c2", write={"a.txt": "merged\n"})],
+             "review": [resp(REV)] * 3,
              "validate": [resp(val())], "router": [{"exit": 1}]})
         self.assertEqual(self.go(), "done")
         attempts = sorted(self.tstate(n)["attempt"] for n in (1, 2))
         self.assertEqual(attempts, [1, 2])
         loser = 1 if self.tstate(1)["attempt"] == 2 else 2
-        fb = open(self.run_.path("tickets/T-%03d/attempt-2/feedback.md" % loser)).read()
+        with open(self.run_.path("tickets/T-%03d/attempt-2/feedback.md" % loser)) as f:
+            fb = f.read()
         self.assertIn("Rebase conflict", fb)
         self.assertIn("a.txt", fb)
         self.assertEqual(len(self.log()), 3)
@@ -71,4 +75,5 @@ class TestGitopsConflict(PipeBase):
         files = gitops.reapply_on(wt, tip)
         self.assertEqual(files, ["a.txt"])
         self.assertEqual(gitops.head_sha(wt), tip)
-        self.assertIn("<<<<<<<", open(os.path.join(wt, "a.txt")).read())
+        with open(os.path.join(wt, "a.txt")) as f:
+            self.assertIn("<<<<<<<", f.read())

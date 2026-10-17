@@ -12,7 +12,7 @@ from . import adapters, calls, config, gitops, planreview, router, schema, state
 PKG = os.path.dirname(os.path.abspath(__file__))
 
 
-READ_STAGES = ("validate", "search", "factcheck")
+READ_STAGES = ("validate", "review", "search", "factcheck")
 WEB_STAGES = ("search", "factcheck")
 
 
@@ -97,7 +97,7 @@ def factcheck_failures(out):
     return bad
 
 
-def _call(run, adapter_for, env, ticket, stage, attempt, wt, base, mode, results, feedback, resume=None):
+def _call(run, adapter_for, env, ticket, stage, attempt, wt, base, mode, results, feedback, resume=None, label=None):
     cfg = run.cfg
     if run.read_json("run.json")["agent_calls"] >= cfg["max_agent_calls_total"]:
         raise BudgetExhausted()
@@ -115,7 +115,7 @@ def _call(run, adapter_for, env, ticket, stage, attempt, wt, base, mode, results
         timeout_s=cfg["timeouts_s"][stage], env=wenv,
         allowed_tools=tuple(cfg["agents"]["claude"]["write_allowed_tools"]),
         web_tools=tuple(cfg["search"]["tools"]) if stage in WEB_STAGES else ())
-    return calls.run_call(run, adapter_for(stage), spec, stage=stage, ticket=ticket["id"], attempt=attempt)
+    return calls.run_call(run, adapter_for(stage), spec, stage=stage, ticket=ticket["id"], attempt=attempt, label=label)
 
 
 def _rerun(run, cmd, wt):
@@ -128,32 +128,109 @@ def _rerun(run, cmd, wt):
         return -1, "timed out"
 
 
+def _post_code(run, ticket, st, wt, since, res):
+    """Save coder session id, revert unexpected agent commits, and check blocked status."""
+    tid, attempt = ticket["id"], st["attempt"]
+    if res.session_id:
+        st["sessions"]["code"] = res.session_id
+        save_state(run, tid, st)
+    if gitops.agent_made_commits(wt, since):
+        run.event("agent_commit", ticket=tid, attempt=attempt)
+        gitops.undo_commits(wt, since)
+    out = res.structured_output
+    if out.get("status") == "blocked":
+        raise Escalate("coder blocked: %s" % out.get("blocked_reason", "no reason given"))
+
+
+def _format_findings(findings, header=None):
+    """Format review findings with severities, file locations, and suggestions for feedback."""
+    lines = []
+    if header:
+        lines.append(header)
+    for f in findings:
+        loc = ("%s:%s" % (f.get("file"), f.get("line"))) if f.get("file") else ""
+        hdr = " ".join(x for x in [("[%s]" % f["severity"]) if f.get("severity") else "", loc] if x)
+        detail = f.get("comment", "")
+        if f.get("suggestion"):
+            detail += "\nsuggestion: %s" % f["suggestion"]
+        lines.append("%s: %s" % (hdr, detail) if hdr else detail)
+    return "\n".join(lines)
+
+
+def _review_loop(run, adapter_for, env, ticket, st, wt, base, results, feedback):
+    """Run iterative review loop with resumed coder revisions up to max_review_rounds."""
+    tid, attempt = ticket["id"], st["attempt"]
+    cfg = run.cfg
+    max_rounds = cfg.get("max_review_rounds", 2)
+    n = 0
+    while True:
+        label = "review" if n == 0 else ("review-r%d" % n)
+        rev_res = _call(run, adapter_for, env, ticket, "review", attempt, wt, base, "read",
+                        results, feedback, label=label)
+        if not rev_res.ok:
+            return "review call failed: %s" % rev_res.error
+        out = results["review"] = rev_res.structured_output
+        findings = out.get("findings", [])
+        blocking = [f for f in findings if f.get("severity") in ("blocker", "major")]
+        if not blocking:
+            suggestions = [f for f in findings if f.get("severity") in ("minor", "nit")]
+            if suggestions:
+                write_feedback(run, tid, attempt, _format_findings(suggestions, "Optional suggestions:"), append=True)
+            st["review"]["rounds"] = n
+            st["review"]["unresolved"] = []
+            save_state(run, tid, st)
+            return None
+        if n >= max_rounds:
+            st["review"]["rounds"] = n
+            st["review"]["unresolved"] = blocking
+            save_state(run, tid, st)
+            run.event("review_unresolved", ticket=tid, attempt=attempt, findings=blocking, rounds=n)
+            tracker.comment(run, tid, "Unresolved review findings:\n" + _format_findings(blocking))
+            return None
+        n += 1
+        st["review"]["rounds"] = n
+        save_state(run, tid, st)
+        fb_parts = [_format_findings(blocking, "Required review fixes:")]
+        suggestions = [f for f in findings if f.get("severity") in ("minor", "nit")]
+        if suggestions:
+            fb_parts.append(_format_findings(suggestions, "Optional suggestions:"))
+        write_feedback(run, tid, attempt, "\n\n".join(fb_parts), append=True)
+        coder_fb = _read_feedback(run, tid, attempt)
+        since = gitops.head_sha(wt)
+        coder_res = _call(run, adapter_for, env, ticket, "code", attempt, wt, base, "write",
+                          results, coder_fb, resume=st["sessions"].get("code"), label="code-r%d" % n)
+        if not coder_res.ok:
+            return "code call failed: %s" % coder_res.error
+        results["code"] = coder_res.structured_output
+        _post_code(run, ticket, st, wt, since, coder_res)
+        gitops.git(wt, "add", "-A")
+
+
 def _attempt(run, adapter_for, env, ticket, st, wt, stages):
     """Run the stages once. Returns (feedback or None, results, test_cmd, qa_rc)."""
     tid, attempt, base = ticket["id"], st["attempt"], st["base_sha"]
+    if "review" in stages:
+        st["review"] = {"rounds": 0, "unresolved": []}
+        save_state(run, tid, st)
     feedback = _read_feedback(run, tid, attempt)
     since = gitops.head_sha(wt)
     results, test_cmd, rerun_rc = {}, None, None
     for stage in stages:
+        if stage in ("review", "validate"):
+            gitops.git(wt, "add", "-A")  # new files become visible to `git diff <base>`
         if stage == "review":
+            fb = _review_loop(run, adapter_for, env, ticket, st, wt, base, results, feedback)
+            if fb:
+                return fb, results, test_cmd, rerun_rc
             continue
         mode = "read" if stage in READ_STAGES else "write"
-        if stage == "validate":
-            gitops.git(wt, "add", "-A")  # new files become visible to `git diff <base>`
         res = _call(run, adapter_for, env, ticket, stage, attempt, wt, base, mode, results, feedback,
                     resume=st["sessions"].get("code") if stage == "code" and attempt > 1 else None)
         if not res.ok:
             return "%s call failed: %s" % (stage, res.error), results, test_cmd, rerun_rc
         out = results[stage] = res.structured_output
         if stage == "code":
-            if res.session_id:
-                st["sessions"]["code"] = res.session_id
-                save_state(run, tid, st)
-            if gitops.agent_made_commits(wt, since):
-                run.event("agent_commit", ticket=tid, attempt=attempt)
-                gitops.undo_commits(wt, since)
-            if out["status"] == "blocked":
-                raise Escalate("coder blocked: %s" % out.get("blocked_reason", "no reason given"))
+            _post_code(run, ticket, st, wt, since, res)
         elif stage == "qa":
             if out["status"] == "blocked":
                 raise Escalate("QA blocked: %s" % out["summary"])

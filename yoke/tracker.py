@@ -1,6 +1,8 @@
 """Tracker: local (tickets.json only) or GitHub issues + the single push/PR path (PLAN 2.14, M8).
 Issue numbers live in issues.json, not tickets.json, so creating them never invalidates the
 tickets approval hash. The runner never pushes; only pr() does, after `approve final`."""
+import glob
+import os
 import re
 import subprocess
 
@@ -77,6 +79,37 @@ def comment(run, tid, text):
         run.event("tracker_error", ticket=tid, error=str(e))
 
 
+def pr_body(run):
+    """Build PR description with issue closes lines and unresolved review findings."""
+    closes = ["Closes #%d" % i["number"] for _, i in sorted(run.read_json("issues.json", {}).items())]
+    body = "yoke run `%s`\n\n%s" % (run.run_id, "\n".join(closes))
+    findings_by_ticket = {}
+    tickets = run.read_json("tickets.json", {}).get("tickets", [])
+    tids = [t["id"] for t in tickets] if tickets else []
+    for td in glob.glob(run.path("tickets/*/state.json")):
+        tid = os.path.basename(os.path.dirname(td))
+        if tid not in tids:
+            tids.append(tid)
+    for tid in tids:
+        st = run.read_json("tickets/%s/state.json" % tid, {})
+        unres = st.get("review", {}).get("unresolved", [])
+        if unres:
+            findings_by_ticket[tid] = unres
+    if findings_by_ticket:
+        lines = ["## Unresolved review findings"]
+        for tid, findings in sorted(findings_by_ticket.items()):
+            lines.append("### %s" % tid)
+            for f in findings:
+                loc = ("%s:%s" % (f.get("file"), f.get("line"))) if f.get("file") else ""
+                prefix = ("[%s] %s" % (f.get("severity", ""), loc)).strip()
+                text = f.get("comment", "")
+                if f.get("suggestion"):
+                    text += " (suggestion: %s)" % f["suggestion"]
+                lines.append("- %s: %s" % (prefix, text) if prefix else "- %s" % text)
+        body = body.rstrip() + "\n\n" + "\n".join(lines)
+    return body
+
+
 def pr(run):
     """Push the feature branch and open the PR. Needs github tracker and valid final approval."""
     info = run.read_json("run.json")
@@ -89,11 +122,11 @@ def pr(run):
         raise TrackerError(str(e))
     base = _gh(repo, "repo", "view", "--json", "defaultBranchRef", "-q", ".defaultBranchRef.name")
     try:
-        gitops.git(repo, "push", "-u", "origin", branch)
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_CONFIG_")}
+        gitops.git(repo, "push", "-u", "origin", branch, env=env)
     except gitops.GitError as e:
         raise TrackerError(str(e))
-    closes = ["Closes #%d" % i["number"] for _, i in sorted(run.read_json("issues.json", {}).items())]
-    body = "yoke run `%s`\n\n%s" % (run.run_id, "\n".join(closes))
+    body = pr_body(run)
     url = _gh(repo, "pr", "create", "--base", base, "--head", branch,
               "--title", "yoke: %s" % run.run_id, "--body", body).splitlines()[-1]
     run.update(pr_url=url)

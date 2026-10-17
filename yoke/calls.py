@@ -11,12 +11,13 @@ from . import schema, state
 from .adapters import CallResult
 
 
-def audit_rel(stage, ticket, attempt, call_id):
+def audit_rel(stage, ticket, attempt, call_id, label=None):
+    tag = label or stage
     if ticket:
-        return "tickets/%s/attempt-%s/%s" % (ticket, attempt or 1, stage)
+        return "tickets/%s/attempt-%s/%s" % (ticket, attempt or 1, tag)
     if stage == "plan_review":
         return "plan-review/round-%s" % (attempt or 1)
-    return "calls/%s-%s" % (stage, call_id)
+    return "calls/%s-%s" % (tag, call_id)
 
 
 def _kill_group(proc, grace):
@@ -33,7 +34,7 @@ def _kill_group(proc, grace):
     proc.wait()
 
 
-def _exec(run, adapter, spec, rel, stage, ticket, attempt):
+def _exec(run, adapter, spec, rel, stage, ticket, attempt, label=None):
     """One CLI invocation into audit dir `rel`; returns CallResult (not yet schema-checked)."""
     cfg = run.cfg
     call_id = "c%04d" % run.incr_calls()
@@ -46,7 +47,7 @@ def _exec(run, adapter, spec, rel, stage, ticket, attempt):
     run.write_json(rel + "/command.json", shown)
     env = dict(os.environ, **spec.env)
     env["YOKE_STAGE"] = stage
-    meta = {"call_id": call_id, "stage": stage, "ticket": ticket, "attempt": attempt,
+    meta = {"call_id": call_id, "stage": stage, "label": label or stage, "ticket": ticket, "attempt": attempt,
             "agent": adapter.name, "adapter": type(adapter).__name__, "cmd": shown, "cwd": spec.cwd,
             "requested": {"model": spec.model, "effort": spec.effort, "mode": spec.mode},
             "started_at": state.now(), "timed_out": False, "pid": None}
@@ -105,10 +106,10 @@ def _check(run, res, meta, spec, rel):
     return errs
 
 
-def run_call(run, adapter, spec, *, stage, ticket=None, attempt=None):
+def run_call(run, adapter, spec, *, stage, ticket=None, attempt=None, label=None):
     """Run one agent call. On schema failure re-ask once in the same session (audit subdir reask/)."""
-    rel = audit_rel(stage, ticket, attempt, "%04d" % (run.read_json("run.json")["agent_calls"] + 1))
-    res, meta = _exec(run, adapter, spec, rel, stage, ticket, attempt)
+    rel = audit_rel(stage, ticket, attempt, "%04d" % (run.read_json("run.json")["agent_calls"] + 1), label=label)
+    res, meta = _exec(run, adapter, spec, rel, stage, ticket, attempt, label=label)
     errs = _check(run, res, meta, spec, rel)
     if not errs:
         return res
@@ -117,6 +118,6 @@ def run_call(run, adapter, spec, *, stage, ticket=None, attempt=None):
     if not res.session_id:  # cannot resume: restate the task
         ask = spec.prompt + "\n\n" + ask
     spec2 = dataclasses.replace(spec, prompt=ask, resume_session=res.session_id or spec.resume_session)
-    res2, meta2 = _exec(run, adapter, spec2, rel + "/reask", stage, ticket, attempt)
+    res2, meta2 = _exec(run, adapter, spec2, rel + "/reask", stage, ticket, attempt, label=label)
     _check(run, res2, meta2, spec2, rel + "/reask")
     return res2
