@@ -275,6 +275,25 @@ class TestRunCall(Tmp):
         self.assertIn("schema:", res.error)
         self.assertEqual(self.run_.read_json("run.json")["agent_calls"], 2)
 
+    def test_permission_denial_retried_once_without_shell(self):
+        res = self.call({"code": [{"denied": "ls -la", "session_id": "s1"},
+                                  {"structured_output": {"status": "done"}, "session_id": "s1"}]},
+                        ticket="T-001", attempt=1)
+        self.assertTrue(res.ok)
+        self.assertTrue(res.audit_dir.endswith("code/reask"))
+        ask = slurp(os.path.join(res.audit_dir, "prompt.md"))
+        self.assertIn("permission denied: ls -la", ask)
+        self.assertIn("Do not run any command", ask)
+        cmd = self.run_.read_json("tickets/T-001/attempt-1/code/reask/command.json")
+        self.assertEqual(cmd[cmd.index("--resume") + 1], "s1")
+
+    def test_permission_denial_twice_fails(self):
+        d = {"denied": "ls", "session_id": "s1"}
+        res = self.call({"code": [d, d, {"structured_output": {"status": "done"}}]})
+        self.assertFalse(res.ok)
+        self.assertIn("permission denied", res.error)
+        self.assertEqual(self.run_.read_json("run.json")["agent_calls"], 2)
+
     def test_nonzero_exit_no_reask(self):
         res = self.call({"code": [{"exit": 3}]})
         self.assertFalse(res.ok)

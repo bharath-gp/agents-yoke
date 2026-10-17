@@ -165,6 +165,8 @@ class FakeAdapter(Adapter):
                          observed_model="fake")
         if exit_code != 0:
             res.error = "exit %s" % exit_code
+        elif obj.get("denied"):  # mimics agy's headless auto-denial
+            res.error = "permission denied: " + obj["denied"]
         elif res.structured_output is None:
             res.error = "no structured_output"
         return res
