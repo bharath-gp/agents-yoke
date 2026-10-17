@@ -68,3 +68,7 @@ tests/e2e.sh [normal|fallback]    # manual: real claude + agy + ollama on a disp
 - [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md): what the system must do.
 - [docs/PLAN.md](docs/PLAN.md): design decisions, plus per-milestone notes on what was built.
 - [CLAUDE.md](CLAUDE.md): guidance for Claude Code sessions in this repo.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
