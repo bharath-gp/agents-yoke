@@ -41,6 +41,7 @@ Status legend per milestone: `[ ]` todo, `[~]` in progress, `[x]` done. Update t
    | [M8](#m8) | GitHub tracker | [2.14](#s2-14) |
    | [M9](#m9) | Resume, handoff, end-to-end | [2.11](#s2-11), [4](#s4) |
    | [M10](#m10) | Search, research, fact-check agents | [m10](#m10) |
+   | [M11](#m11) | Code review stage & iterative revisions | [2.5](#s2-5), [2.6](#s2-6), [2.8](#s2-8) |
 4. [Verification matrix](#s4)
 5. [Out of scope](#s5)
 - [Appendix A: Topic index](#appA)
@@ -465,6 +466,14 @@ Files: `research.py`, `pipeline.py`, `adapters.py`, `defaults.json`, `schemas/{s
 - Researcher writes `docs/research/<slug>.md` and returns a claims list; the runner checks the file exists. Fact checker gives each claim supported|unsupported|refuted|unverifiable and each source ok|dead|mismatch|irrelevant. Runner (not the agent's `verdict`) fails the attempt on any refuted/unsupported claim, dead/mismatch source, or an empty claims list; unverifiable passes. Failure feedback goes to the next attempt, which reruns all three stages, up to `max_attempts_per_ticket`, then escalates.
 - Depth presets in `research.depths` (sources, search rounds); `research.default_depth` picks one. Ticket flow uses the default; the doc is committed by the runner. Standalone runs in the repo checkout, leave the doc uncommitted, and create a run with `kind: "research"` (hidden from `yoke status` and the SessionStart hook).
 - Notes: (a) the search tool "auto-detect" is the agent choosing among `search.tools`, not the runner probing for MCP servers; (b) fact checking is automatic only in the `research` pipeline; `yoke factcheck` is the manual entry for any other output; (c) a retry re-searches, so every attempt costs three calls; (d) no plugin skills (`/yoke:research`) yet; (e) not run against real claude/agy, only the fake CLI.
+
+<a id="m11"></a>
+### M11: Code review stage & iterative revisions `[x]`
+Files: `yoke/prompts/review.md`, `yoke/schemas/review.json`, `yoke/config.py`, `yoke/pipeline.py`, `yoke/tracker.py`, `tests/test_pipeline.py`.
+- Automated code review stage inserted between `code` and `qa` for feature, bugfix, refactor, chore, and spike tickets.
+- Role `review` defaults to `auto`, resolving dynamically to the opposite of `code` (`claude` <-> `agy`). Overridable via `yoke setup --map review=<who>`.
+- Iterative review loop (`_review_loop`) runs up to `max_review_rounds` revisions (default 2). Blocker and major findings trigger coder revisions using resumed session. Minor and nit findings are treated as advisory and do not block.
+- Notes: Built `yoke/prompts/review.md`, `yoke/schemas/review.json`, config resolution for `auto` role mapping, iterative review loop with resumed coder sessions, unresolved findings reporting in tracking issues and PR description. Deviations: (a) `auto` role setting resolves dynamically to the opposite agent rather than requiring explicit configuration; (b) advisory-after-cap: when the revision cap (`max_review_rounds`) is reached with remaining blocker/major findings, the ticket does not fail or block; unresolved findings are recorded in ticket state, emitted as `review_unresolved` audit event, commented on the tracking issue, and surfaced in the PR description under "Unresolved review findings".
 
 ---
 
