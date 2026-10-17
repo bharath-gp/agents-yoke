@@ -72,7 +72,7 @@ class Run:
                 info = cls(rid, home).read_json("run.json")
             except (OSError, ValueError):
                 continue
-            if info.get("repo") == path and (best is None or info["created_at"] >= best[0]):
+            if info.get("repo") == path and info.get("kind") != "research" and (best is None or info["created_at"] >= best[0]):
                 best = (info["created_at"], rid)
         return cls(best[1], home) if best else None
 

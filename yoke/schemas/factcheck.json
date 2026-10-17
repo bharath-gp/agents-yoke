@@ -1,0 +1,39 @@
+{
+  "type": "object",
+  "required": ["verdict", "claims", "sources", "feedback", "summary"],
+  "additionalProperties": false,
+  "properties": {
+    "verdict": {"type": "string", "enum": ["pass", "fail"]},
+    "claims": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "claim", "verdict", "evidence", "source_urls", "correction"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string"},
+          "claim": {"type": "string"},
+          "verdict": {"type": "string", "enum": ["supported", "unsupported", "refuted", "unverifiable"]},
+          "evidence": {"type": "string"},
+          "source_urls": {"type": "array", "items": {"type": "string"}},
+          "correction": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["url", "status", "note"],
+        "additionalProperties": false,
+        "properties": {
+          "url": {"type": "string"},
+          "status": {"type": "string", "enum": ["ok", "dead", "mismatch", "irrelevant"]},
+          "note": {"type": "string"}
+        }
+      }
+    },
+    "feedback": {"type": "string"},
+    "summary": {"type": "string"}
+  }
+}

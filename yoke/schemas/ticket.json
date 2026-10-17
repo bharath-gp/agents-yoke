@@ -29,7 +29,8 @@
         "test",
         "docs",
         "chore",
-        "spike"
+        "spike",
+        "research"
       ]
     },
     "description": {
@@ -59,6 +60,9 @@
       "type": "string"
     },
     "notes": {
+      "type": "string"
+    },
+    "doc_path": {
       "type": "string"
     }
   }

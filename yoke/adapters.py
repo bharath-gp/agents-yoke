@@ -21,6 +21,7 @@ class CallSpec:
     extra_dirs: tuple = ()
     env: dict = field(default_factory=dict)
     allowed_tools: tuple = ()  # claude write mode allowlist (config agents.claude.write_allowed_tools)
+    web_tools: tuple = ()  # claude read mode extras for web stages (config search.tools)
 
 
 @dataclass
@@ -80,7 +81,7 @@ class ClaudeAdapter(Adapter):
                     "--allowedTools", " ".join(call.allowed_tools),
                     "--disallowedTools"] + CLAUDE_NO_GIT_WRITE
         else:
-            cmd += ["--permission-mode", "plan", "--allowedTools", CLAUDE_READ_TOOLS]
+            cmd += ["--permission-mode", "plan", "--allowedTools", " ".join((CLAUDE_READ_TOOLS,) + tuple(call.web_tools))]
         if call.resume_session:
             cmd += ["--resume", call.resume_session]
         if call.model:

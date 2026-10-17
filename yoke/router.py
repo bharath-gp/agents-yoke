@@ -5,7 +5,7 @@ import urllib.request
 
 from . import adapters, calls, config, schema
 
-TICKET_TYPES = ["feature", "bugfix", "refactor", "test", "docs", "chore", "spike"]
+TICKET_TYPES = ["feature", "bugfix", "refactor", "test", "docs", "chore", "spike", "research"]
 STATE_CHARS = 6000  # ~1500 tokens; tev1:4b runs with num_ctx 2048
 # noul is uncalibrated (failures read 0.28-0.44 in the M0 spike); ponytail: tune on real data
 RETRYABLE_MIN = 0.2
@@ -83,7 +83,8 @@ def classify_ticket(run, ticket, adapter=None):
     crit = dict.fromkeys(TICKET_TYPES + ["other"])
     crit.update(feature="new capability", bugfix="fix a defect", refactor="restructure, same behaviour",
                 test="add or fix tests only", docs="documentation only", chore="build, deps, tooling",
-                spike="exploration, throwaway")
+                spike="exploration, throwaway",
+                research="web research written up as a document")
     q = {"type": {"type": "choice", "instructions": "What kind of work is this ticket?", "criteria": crit}}
 
     def parse(ans):
