@@ -6,6 +6,6 @@
   "files": ["bin"],
   "engines": {"node": ">=16"},
   "repository": {"type": "git", "url": "git+https://github.com/bharath-gp/agents-yoke.git"},
-  "license": "UNLICENSED",
+  "license": "MIT",
   "private": true
 }
