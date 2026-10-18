@@ -64,6 +64,23 @@ yoke clean                        # remove worktrees (keeps branches and audit)
 
 Subcommands take `--run <id>`; default is the latest run for the current repo. `yoke mcp` is a stdio MCP server exposing the router.
 
+## Pull requests (`yoke pr`)
+
+`yoke pr` pushes the feature branch and creates the pull request on GitHub once final approval is granted (`yoke approve final`).
+
+- **Title from plan**: Derived from the first `# ` heading in `plan.md` with any leading `Plan:` prefix stripped (falls back to `yoke: <run_id>`).
+- **PR template lookup**: Searches for a PR template in the target repository in the following order:
+  1. `.github/PULL_REQUEST_TEMPLATE/` directory (selects the file matching the highest priority ticket type: `feature` > `bugfix` > `refactor` > `test` > `docs` > `chore` > `spike` > `research`, or the first sorted `.md` file).
+  2. `.github/pull_request_template.md`
+  3. `.github/PULL_REQUEST_TEMPLATE.md`
+  4. `pull_request_template.md` in the repository root.
+  5. `docs/pull_request_template.md`
+- **Agent fill with deterministic fallback**: An agent with role `pr_body` (read mode) fills the template sections from run facts. If the agent call fails, times out, or produces invalid output, yoke falls back to deterministic markdown filling (preserving template headings and mapping facts) and logs a `pr_fill_fallback` event.
+- **Checklists ticked only when verified**: Checklist items (`- [ ]`) are only ticked if the item text matches verified facts (such as test suite verification passing close gates). Unverified items are left unchecked or unticked during post-validation.
+- **Built-in structure when no template exists**: When no template is found, yoke generates a standard PR body with headings: `Summary`, `Why`, `What changed`, `Verification`, and `Review focus`.
+- **Closes issues and unresolved findings**: Appends `Closes #N` lines for tracked issues, along with an `## Unresolved review findings` section listing up to 20 findings from plan review rounds not marked as accepted in arbitration.
+
+
 ## Research agents
 
 ```bash

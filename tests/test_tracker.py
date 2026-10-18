@@ -58,6 +58,11 @@ class TrackerBase(Base):
         with open(gh, "w") as f:
             f.write(SHIM % sys.executable)
         os.chmod(gh, os.stat(gh).st_mode | stat.S_IXUSR)
+        for agent in ("claude", "agy"):  # PR body fill must fall back offline, never spend real agent quota
+            p = os.path.join(self.bin, agent)
+            with open(p, "w") as f:
+                f.write("#!%s\nimport sys\nsys.exit(1)\n" % sys.executable)
+            os.chmod(p, os.stat(p).st_mode | stat.S_IXUSR)
         self.log = os.path.join(self.tmp, "gh.log")
         for k, v in (("YOKE_HOME", self.tmp), ("PATH", self.bin + os.pathsep + os.environ["PATH"]), ("FAKE_GH_LOG", self.log)):
             old = os.environ.get(k)
@@ -209,6 +214,21 @@ class TestPr(TrackerBase):
         rc, err = self.pr()
         self.assertEqual(rc, 1)
         self.assertIn("github", err)
+
+    def test_pr_body_without_template_uses_builtin_structure(self):
+        body = tracker.pr_body(self.run_)
+        for h in ("## Summary", "## Why", "## What changed", "## Verification", "## Review focus"):
+            self.assertIn(h, body)
+        self.assertIn("Closes #40", body)
+
+    def test_pr_body_uses_repo_template(self):
+        os.makedirs(os.path.join(self.repo, ".github"))
+        with open(os.path.join(self.repo, ".github", "pull_request_template.md"), "w") as f:
+            f.write("## What / why\n\n## Checklist\n- [ ] Tests/checks pass locally\n")
+        body = tracker.pr_body(self.run_)
+        self.assertIn("## What / why", body)
+        self.assertIn("- [ ] Tests/checks pass locally", body)
+        self.assertIn("Closes #40", body)
 
     def test_pr_body_unresolved_findings(self):
         planreview.approve(self.run_, "final")

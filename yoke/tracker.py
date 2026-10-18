@@ -6,7 +6,7 @@ import os
 import re
 import subprocess
 
-from . import gitops, planreview, state
+from . import gitops, planreview, prbody, state
 
 LABEL = "yoke"
 
@@ -83,9 +83,40 @@ PR_FINDINGS_MAX = 50000
 
 
 def pr_body(run):
-    """Build PR description with issue closes lines and unresolved review findings."""
-    closes = ["Closes #%d" % i["number"] for _, i in sorted(run.read_json("issues.json", {}).items())]
-    body = "yoke run `%s`\n\n%s" % (run.run_id, "\n".join(closes))
+    """Assemble PR body: prbody fill + blank line + Closes #N lines + Unresolved review findings section.
+
+    Extracts run facts and fills PR template via prbody.fill, falling back to deterministic
+    fill if errors occur (logging event 'pr_fill_fallback'). Appends 'Closes #N' lines from
+    issues.json and an '## Unresolved review findings' section from the closed tickets' code review.
+    """
+    template = None
+    facts = {}
+    try:
+        info = run.read_json("run.json", {})
+        repo = info.get("repo")
+        branch = info.get("branch")
+        tickets = run.read_json("tickets.json", {}).get("tickets", [])
+        ticket_types = [t.get("type") for t in tickets if t.get("type")]
+        template = prbody.find_template(repo, branch=branch, ticket_types=ticket_types)
+        facts = prbody.collect(run)
+        filled = prbody.fill(run, template, facts)
+    except Exception:
+        try:
+            run.event("pr_fill_fallback")
+        except Exception:
+            pass
+        try:
+            filled = prbody.fill_template(template, facts)
+        except Exception:
+            filled = prbody.fill_template(None, {})
+
+    closes = []
+    try:
+        for _, i in sorted(run.read_json("issues.json", {}).items()):
+            closes.append("Closes #%d" % i["number"])
+    except Exception:
+        pass
+    body = "\n\n".join(p for p in [(filled or "").strip(), "\n".join(closes)] if p)
     findings_by_ticket = {}
     for td in sorted(glob.glob(run.path("tickets/*/state.json"))):
         tid = os.path.basename(os.path.dirname(td))
@@ -108,7 +139,7 @@ def pr_body(run):
         if len(text) > PR_FINDINGS_MAX:  # GitHub rejects PR bodies over 65536 chars, after the push
             text = text[:PR_FINDINGS_MAX] + "\n... (truncated; see ticket issue comments)"
         body = body.rstrip() + "\n\n" + text
-    return body
+    return body + "\n"
 
 
 def pr(run):
@@ -123,12 +154,16 @@ def pr(run):
         raise TrackerError(str(e))
     base = _gh(repo, "repo", "view", "--json", "defaultBranchRef", "-q", ".defaultBranchRef.name")
     try:
-        gitops.git(repo, "push", "-u", "origin", branch)
+        gitops.git(repo, "-c", "core.hooksPath=", "push", "-u", "origin", branch)
     except gitops.GitError as e:
         raise TrackerError(str(e))
     body = pr_body(run)
+    try:
+        title = prbody.title(run)
+    except Exception:
+        title = "yoke: %s" % run.run_id
     url = _gh(repo, "pr", "create", "--base", base, "--head", branch,
-              "--title", "yoke: %s" % run.run_id, "--body", body).splitlines()[-1]
+              "--title", title, "--body", body).splitlines()[-1]
     run.update(pr_url=url)
     run.event("pr_opened", url=url, at=state.now())
     return url

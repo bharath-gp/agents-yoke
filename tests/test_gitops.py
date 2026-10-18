@@ -5,7 +5,16 @@ import unittest
 from tests.test_core import Tmp
 from yoke import gitops
 
-ENV = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+ENV = {
+    "GIT_AUTHOR_NAME": "t",
+    "GIT_AUTHOR_EMAIL": "t@t",
+    "GIT_COMMITTER_NAME": "t",
+    "GIT_COMMITTER_EMAIL": "t@t",
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_CONFIG_SYSTEM": "/dev/null",
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_CONFIG_COUNT": "0",
+}
 
 
 def git(repo, *args):
@@ -17,6 +26,7 @@ class GitBase(Tmp):
         super().setUp()
         old_env = {k: os.environ.get(k) for k in ENV}
         for k, v in ENV.items():
+            old = os.environ.get(k)
             os.environ[k] = v
         self.addCleanup(self._restore_env, old_env)
         self.repo = os.path.join(self.tmp, "repo")
