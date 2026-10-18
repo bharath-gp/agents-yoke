@@ -6,6 +6,7 @@ description: Split an approved yoke plan into tickets, import and show them, and
 # tickets
 
 Gate: run `yoke setup --check` first. If it fails or `yoke` is not found, stop and tell the user to run `/yoke:setup`.
+If the user gives a run id, pass `--run <id>` to every `yoke` command.
 
 1. Write `tickets.json` (a list of ticket objects) in the run dir, matching the ticket-list schema in `yoke/schemas/ticket-list.json`. Each ticket: `id` (T-001), `title`, `type` (omit if unsure; the router classifies), `description`, `exit_criteria`, `depends_on`, `files_hint`, `plan_excerpt`.
    - Exit criteria must be checkable by a command or a specific observation, not "works well".

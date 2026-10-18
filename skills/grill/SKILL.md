@@ -14,4 +14,4 @@ Goal: a requirements file the plan can be built from, then a run.
 3. Stop when every open point has an answer or an explicit "unknown, decide in plan". Do not ask for approval of design yet; that is the plan stage.
 1b. Model selection: run `yoke models --list` and `yoke models --show` to inspect current and available models. Ask ONE question to confirm or pick plan-tier and cheap-tier models for primary and secondary agents (defaults = current); accept defaults to skip. If the user requests changes, apply with `yoke models --set AGENT.TIER=MODEL`.
 4. Write the answers to a file outside the target repo (for example `/tmp/requirements.md`): sections for Goal, Non-goals, Constraints, Success criteria, Open items.
-5. Run `yoke init --requirements /tmp/requirements.md` from the target repo. It prints the run id. Tell the user the run id and that the next step is the `plan` skill.
+5. Run `yoke init --requirements /tmp/requirements.md` from the target repo. It prints the run id. Tell the user the run id, that the next step is the `plan` skill, and mention `/yoke:go` as the one-command route.

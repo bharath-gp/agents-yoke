@@ -6,6 +6,7 @@ description: Final review gate for a finished yoke run: summarize commits and op
 # finish
 
 Gate: run `yoke setup --check` first. If it fails or `yoke` is not found, stop and tell the user to run `/yoke:setup`.
+If the user gives a run id, pass `--run <id>` to every `yoke` command.
 
 1. Confirm `yoke status` says the run is done.
 2. Summarize for the user: the commits on the feature branch (`git log --oneline <base_sha>..<branch>`), `git diff --stat <base_sha>..<branch>`, and any ticket that was skipped or left open. Branch and base sha come from `yoke status --json` and the run's `run.json`.

@@ -12,7 +12,7 @@ from unittest import mock
 from yoke import cli, config, state
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SKILLS = ("setup", "grill", "plan", "tickets", "run", "resume", "status", "finish", "models", "go")
+SKILLS = ("setup", "grill", "plan", "tickets", "run", "resume", "status", "finish", "go", "models")
 
 
 def load(rel):
@@ -51,7 +51,7 @@ class TestPackaging(unittest.TestCase):
             with open(os.path.join(ROOT, "skills", name, "SKILL.md")) as f:
                 subs.update(re.findall(r"`yoke ([a-z-]+)", f.read()))
         known = {"setup", "init", "review-plan", "approve", "tickets", "run", "wait", "status", "escalations",
-                 "unblock", "stop", "pr", "route", "doctor", "models"}
+                 "unblock", "stop", "pr", "route", "doctor", "models", "runs"}
         self.assertFalse(subs - known, subs - known)
 
 
@@ -61,6 +61,31 @@ class TestPackaging(unittest.TestCase):
                 continue
             with open(os.path.join(ROOT, "skills", name, "SKILL.md")) as f:
                 self.assertIn("`yoke setup --check`", f.read(), name)
+
+    def test_go_skill(self):
+        with open(os.path.join(ROOT, "skills", "go", "SKILL.md")) as f:
+            text = f.read()
+        self.assertIn("`yoke setup --check`", text)
+        self.assertIn("auto-approved tickets", text)
+        self.assertIn("GitHub issues", text)
+        run_count = sum(1 for line in text.splitlines() if "--run" in line)
+        self.assertGreaterEqual(run_count, 8)
+
+    def test_resume_skill(self):
+        with open(os.path.join(ROOT, "skills", "resume", "SKILL.md")) as f:
+            text = f.read()
+        self.assertIn("yoke runs --active", text)
+        for target in ("plan", "tickets", "resume", "finish"):
+            self.assertTrue(re.search(rf"- `{target}`:.*--run R", text), f"Missing branch for {target}")
+
+    def test_skills_run_flag(self):
+        for name in ("plan", "tickets", "run", "finish", "status"):
+            with open(os.path.join(ROOT, "skills", name, "SKILL.md")) as f:
+                self.assertIn("--run", f.read(), name)
+
+    def test_grill_mentions_go(self):
+        with open(os.path.join(ROOT, "skills", "grill", "SKILL.md")) as f:
+            self.assertIn("/yoke:go", f.read())
 
     def test_models_skill(self):
         path = os.path.join(ROOT, "skills", "models", "SKILL.md")
