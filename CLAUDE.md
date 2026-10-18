@@ -22,6 +22,7 @@ tests/e2e.sh [normal|fallback]                        # manual, real agents, spe
 - Prompt templates use `string.Template` (`$ticket`), not `{}`, to avoid JSON brace clashes.
 - State and audit records live under `$YOKE_HOME` (default `~/.yoke/runs/<run_id>/`), outside the target repo, written atomically.
 - Approvals are bound to sha256 of `plan.md` and canonical `tickets.json`; a changed hash invalidates them. GitHub issue numbers go in `issues.json`, not in `tickets.json`.
+- Bump the version in `.claude-plugin/plugin.json` and `pyproject.toml` (keep them equal) in any change to the plugin's core logic or behaviour (code, prompts, schemas, defaults, skills, hooks); installed copies only pull new versions when it changes. Docs-only changes need no bump.
 
 ## Architecture
 
