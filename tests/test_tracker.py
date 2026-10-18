@@ -27,6 +27,8 @@ if key == "issue create":
     print("https://github.com/o/r/issues/%%d" %% n)
 elif key == "repo view":
     print("main")
+elif key == "pr list":
+    print(os.environ.get("FAKE_GH_PR", ""))
 elif key == "pr create":
     print("https://github.com/o/r/pull/7")
 """
@@ -207,6 +209,16 @@ class TestPr(TrackerBase):
         self.assertIn("Closes #41", body)
         self.assertNotIn("Unresolved review findings", body)
         self.assertEqual(self.run_.read_json("run.json")["pr_url"], "https://github.com/o/r/pull/7")
+
+    def test_existing_pr_is_pushed_not_recreated(self):
+        planreview.approve(self.run_, "final")
+        os.environ["FAKE_GH_PR"] = "https://github.com/o/r/pull/9"
+        self.addCleanup(os.environ.pop, "FAKE_GH_PR", None)
+        rc, _ = self.pr()
+        self.assertEqual(rc, 0)
+        self.assertEqual(self.run_.read_json("run.json")["pr_url"], "https://github.com/o/r/pull/9")
+        self.assertEqual([c for c in self.calls() if c[:2] in (["pr", "create"], ["pr", "edit"])], [])
+        self.assertIn(self.branch, git(self.remote, "branch", "--list"))
 
     def test_local_tracker_refuses(self):
         planreview.approve(self.run_, "final")
