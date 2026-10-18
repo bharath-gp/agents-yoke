@@ -143,7 +143,7 @@ def pr_body(run):
 
 
 def pr(run):
-    """Push the feature branch and open the PR. Needs github tracker and valid final approval."""
+    """Push the feature branch and open the PR, or just push when one is already open. Needs github tracker and valid final approval."""
     info = run.read_json("run.json")
     repo, branch = info["repo"], info["branch"]
     if detect(repo, info["config"]) != "github":
@@ -157,6 +157,11 @@ def pr(run):
         gitops.git(repo, "-c", "core.hooksPath=", "push", "-u", "origin", branch)
     except gitops.GitError as e:
         raise TrackerError(str(e))
+    existing = _gh(repo, "pr", "list", "--head", branch, "--state", "open", "--json", "url", "-q", ".[0].url")
+    if existing:  # the push above updated it; keep its hand-edited title and body
+        run.update(pr_url=existing)
+        run.event("pr_updated", url=existing, at=state.now())
+        return existing
     body = pr_body(run)
     try:
         title = prbody.title(run)
