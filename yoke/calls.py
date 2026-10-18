@@ -7,7 +7,7 @@ import signal
 import subprocess
 import time
 
-from . import schema, state
+from . import config, schema, state
 from .adapters import CallResult
 
 
@@ -107,10 +107,45 @@ def _check(run, res, meta, spec, rel):
 
 
 def run_call(run, adapter, spec, *, stage, ticket=None, attempt=None, label=None):
-    """Run one agent call. On schema failure re-ask once in the same session (audit subdir reask/)."""
+    """Run one agent call.
+
+    Resolves unset spec.model and spec.effort via config.model_for(cfg, adapter, stage).
+    If a call with spec.model fails with a model error, retries once without model or effort
+    in audit subdir fallback/ and emits a model_fallback event.
+    On schema failure re-asks once in the same session (audit subdir reask/).
+    """
+    cfg = getattr(run, "cfg", None) or {}
+    model, effort = config.model_for(cfg, getattr(adapter, "name", adapter), stage)
+    if spec.model is None or spec.effort is None:
+        spec = dataclasses.replace(
+            spec,
+            model=model if spec.model is None else spec.model,
+            effort=effort if spec.effort is None else spec.effort,
+        )
+
     rel = audit_rel(stage, ticket, attempt, "%04d" % (run.read_json("run.json")["agent_calls"] + 1), label=label)
     res, meta = _exec(run, adapter, spec, rel, stage, ticket, attempt, label=label)
+    cli_failed = not res.ok and not res.timed_out
     errs = _check(run, res, meta, spec, rel)
+
+    if spec.model and cli_failed:
+        stderr = ""
+        stderr_path = os.path.join(run.path(rel), "stderr.log")
+        try:
+            with open(stderr_path) as f:
+                stderr = f.read()
+        except OSError:
+            pass
+        if "model" in (res.error or "").lower() or "model" in stderr.lower():
+            run.event("model_fallback", stage=stage, ticket=ticket, attempt=attempt, model=spec.model)
+            # Drop model and effort on fallback
+            fallback_spec = dataclasses.replace(spec, model=None, effort=None)
+            fallback_rel = rel + "/fallback"
+            res, meta = _exec(run, adapter, fallback_spec, fallback_rel, stage, ticket, attempt, label=label)
+            errs = _check(run, res, meta, fallback_spec, fallback_rel)
+            rel = fallback_rel
+            spec = fallback_spec
+
     denied = (res.error or "").startswith("permission denied")  # agy headless: a shell command was auto-denied
     if not errs and not denied:
         return res

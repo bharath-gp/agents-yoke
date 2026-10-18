@@ -67,6 +67,23 @@ def agent_for(cfg, role):
     return roles[who] if who in ("primary", "secondary") else who
 
 
+def _write_atomic(path, text):
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    tmp = "%s.tmp.%d" % (path, os.getpid())
+    try:
+        with open(tmp, "w") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+
 def save_roles(path, primary=None, secondary=None, mapping=None):
     """Merge a roles override into the JSON config at path; validates agent and role names.
 
@@ -92,8 +109,72 @@ def save_roles(path, primary=None, secondary=None, mapping=None):
         over["by_role"] = mapping
     cur = _read(path)
     out = deep_merge(cur, {"roles": over})
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
-        json.dump(out, f, indent=2)
-        f.write("\n")
+    _write_atomic(path, json.dumps(out, indent=2) + "\n")
     return out["roles"]
+
+
+PLAN_ROLES = ("requirements", "planner", "plan_review")
+
+
+def model_for(cfg, agent, role):
+    """Concrete (model, effort) tuple for (agent, role); either may be None.
+
+    PLAN_ROLES use the 'plan' tier; all other roles (present in cfg roles.by_role
+    or defaults) use the 'cheap' tier. Returns (None, None) for stages that are
+    not roles (e.g. 'router') or when models config is empty/unset.
+    """
+    if isinstance(cfg, dict) and "roles" in cfg:
+        by_roles = cfg.get("roles", {}).get("by_role", {})
+    else:
+        try:
+            defaults = _read(DEFAULTS_PATH, required=False) or {}
+            by_roles = defaults.get("roles", {}).get("by_role", {})
+        except Exception:
+            by_roles = {}
+    if role not in PLAN_ROLES and role not in by_roles:
+        return None, None
+    tier = "plan" if role in PLAN_ROLES else "cheap"
+    agent_name = getattr(agent, "name", agent)
+    models = cfg.get("models") if isinstance(cfg, dict) else None
+    if not isinstance(models, dict):
+        return None, None
+    agent_cfg = models.get(agent_name)
+    if not isinstance(agent_cfg, dict):
+        return None, None
+    tier_cfg = agent_cfg.get(tier)
+    if not isinstance(tier_cfg, dict):
+        return None, None
+    return tier_cfg.get("model"), tier_cfg.get("effort")
+
+
+def save_models(path, sets=None, reset=None):
+    """Merge model overrides into the JSON config at path atomically; returns out['models'].
+
+    sets: dict of {<agent>: {<tier>: {"model": str, "effort": str}}} merged into models.
+    reset: list of (agent, tier) tuples or agent strings to remove.
+    """
+    cur = _read(path)
+    out = copy.deepcopy(cur)
+    models = out.setdefault("models", {})
+
+    if reset:
+        for entry in reset:
+            if isinstance(entry, (tuple, list)) and len(entry) >= 2:
+                ag, ti = entry[0], entry[1]
+                if ag in models:
+                    models[ag].pop(ti, None)
+                    if not models[ag]:
+                        models.pop(ag, None)
+            elif isinstance(entry, str):
+                models.pop(entry, None)
+
+    if sets:
+        for agent, tiers in sets.items():
+            ag_dict = models.setdefault(agent, {})
+            if isinstance(tiers, dict):
+                for tier, val in tiers.items():
+                    if isinstance(val, dict):
+                        ag_dict.setdefault(tier, {}).update(val)
+
+    _write_atomic(path, json.dumps(out, indent=2) + "\n")
+    return out["models"]

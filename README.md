@@ -45,6 +45,21 @@ The `review` role defaults to `auto`, resolving dynamically to the opposite of t
 
 During ticket execution, the `review` stage runs an iterative review loop (up to `max_review_rounds` revisions). Blocker and major findings trigger coder revisions using the resumed session. If findings remain unresolved when reaching the revision cap, the ticket proceeds without failing: unresolved findings are recorded in ticket state, posted as issue comments, and surfaced in the `yoke pr` description under "Unresolved review findings".
 
+### Model configuration and tiers
+
+Models can be configured per agent across two tiers: `plan` (used for `requirements`, `planner`, `plan_review`) and `cheap` (used for all other execution stages such as `code`, `qa`, `docs`, `review`, and `validate`):
+
+```json
+"models": {
+  "claude": {
+    "plan": {"model": "claude-sonnet-5-5", "effort": "high"},
+    "cheap": {"model": "claude-haiku-5-5", "effort": "low"}
+  }
+}
+```
+
+When an agent call fails due to a model error, yoke automatically retries once without a model (clearing both model and effort) under a `/fallback` audit directory and logs a `model_fallback` event.
+
 ## Typical flow
 
 The skills run these for you; the raw commands are for scripting and debugging.

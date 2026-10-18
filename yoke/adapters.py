@@ -155,6 +155,10 @@ class FakeAdapter(Adapter):
         cmd = [sys.executable, self.cli, call.prompt]
         if call.resume_session:
             cmd += ["--resume", call.resume_session]
+        if call.model:
+            cmd += ["--model", call.model]
+        if call.effort:
+            cmd += ["--effort", call.effort]
         return _guard(cmd)
 
     def parse(self, stdout, exit_code):

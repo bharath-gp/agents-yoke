@@ -192,6 +192,7 @@ Default budgets/limits:
 | `router.fallback` | `{"agent": "claude", "model": "claude-haiku-5-5", "effort": "low"}` |
 | `test_command` | `null` (QA result supplies it; repo config may pin it) |
 | `tracker` | `"auto"` (`github` if `gh repo view` succeeds and remote is GitHub, else `local`) |
+| `models` | `{}` (`{<agent>: {"plan": {"model": str, "effort": str}, "cheap": {...}}}`) |
 
 Type → stages routing (config `routing`, overridable per type with model/effort per stage):
 
