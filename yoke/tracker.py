@@ -91,7 +91,7 @@ def pr_body(run):
         tid = os.path.basename(os.path.dirname(td))
         st = run.read_json("tickets/%s/state.json" % tid, {})
         unres = st.get("review", {}).get("unresolved", [])
-        if unres:
+        if unres and st.get("status") == "closed":  # failed or escalated attempts never merged
             findings_by_ticket[tid] = unres
     if findings_by_ticket:
         lines = ["## Unresolved review findings"]

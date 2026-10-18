@@ -230,6 +230,13 @@ class TestPr(TrackerBase):
         self.assertIn("critical bug in parsing", body_text)
         self.assertIn("handle empty input", body_text)
 
+    def test_pr_body_skips_unmerged_ticket_findings(self):
+        self.run_.write_json("tickets/T-001/state.json", {
+            "status": "in_progress",
+            "review": {"rounds": 2, "unresolved": [
+                {"file": "a.py", "line": 1, "severity": "major", "comment": "stale finding", "suggestion": ""}]}})
+        self.assertNotIn("stale finding", tracker.pr_body(self.run_))
+
 
 if __name__ == "__main__":
     unittest.main()
