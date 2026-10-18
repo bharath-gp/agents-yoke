@@ -6,7 +6,10 @@ import unittest
 from contextlib import redirect_stdout
 
 from yoke import adapters, cli, config, state, tickets
-from test_router import FAKE_CLI
+try:
+    from tests.test_core import FAKE_CLI
+except ImportError:
+    from test_router import FAKE_CLI
 
 
 def tk(i, deps=(), **kw):

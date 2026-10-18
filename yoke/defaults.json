@@ -9,6 +9,7 @@
       "orchestrator": "primary",
       "plan_review": "secondary",
       "code": "secondary",
+      "review": "auto",
       "qa": "secondary",
       "validate": "primary",
       "docs": "secondary",
@@ -20,12 +21,14 @@
   },
   "max_attempts_per_ticket": 3,
   "max_plan_review_rounds": 3,
+  "max_review_rounds": 2,
   "max_tickets": 40,
   "max_agent_calls_total": 300,
   "parallel": 1,
   "timeouts_s": {
     "plan_review": 900,
     "code": 2400,
+    "review": 1200,
     "qa": 1800,
     "validate": 1200,
     "docs": 900,
@@ -64,13 +67,13 @@
     }
   },
   "routing": {
-    "feature": {"stages": ["code", "qa", "validate", "docs"]},
-    "bugfix": {"stages": ["code", "qa", "validate", "docs"]},
-    "refactor": {"stages": ["code", "qa", "validate"]},
+    "feature": {"stages": ["code", "review", "qa", "validate", "docs"]},
+    "bugfix": {"stages": ["code", "review", "qa", "validate", "docs"]},
+    "refactor": {"stages": ["code", "review", "qa", "validate"]},
     "test": {"stages": ["qa", "validate"]},
     "docs": {"stages": ["docs", "validate"]},
-    "chore": {"stages": ["code", "validate"]},
-    "spike": {"stages": ["code", "validate"]},
+    "chore": {"stages": ["code", "review", "validate"]},
+    "spike": {"stages": ["code", "review", "validate"]},
     "research": {"stages": ["search", "research", "factcheck"]}
   }
 }

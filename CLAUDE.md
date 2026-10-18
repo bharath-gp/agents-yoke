@@ -2,7 +2,7 @@
 
 ## State of the repo
 
-`yoke`: Claude plans and validates, Antigravity (`agy`) codes, runs QA and writes docs. Milestones M0-M10 are done and the tracking issues are closed. [docs/PLAN.md](docs/PLAN.md) is the source of truth for design; each milestone's "Notes" in section 3 records deviations from it. [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) is discovery output. Keep PLAN.md anchors (`#s2-8`, `#m4`, ...) stable. Usage lives in [README.md](README.md).
+`yoke`: Claude plans and validates, Antigravity (`agy`) codes, runs QA and writes docs. Milestones M0-M10 are done and the tracking issues are closed; M11 (review stage) is done without a tracking issue. [docs/PLAN.md](docs/PLAN.md) is the source of truth for design; each milestone's "Notes" in section 3 records deviations from it. [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) is discovery output. Keep PLAN.md anchors (`#s2-8`, `#m4`, ...) stable. Usage lives in [README.md](README.md).
 
 ## Commands
 
@@ -28,7 +28,7 @@ tests/e2e.sh [normal|fallback]                        # manual, real agents, spe
 
 - `yoke run` is a detached runner walking a per-ticket state machine (`scheduler.py`, `pipeline.py`), resumable from disk (`scheduler.recover`). The chat session only calls `yoke wait` and reads short summaries; the plugin's SessionStart hook injects `yoke status --brief --active`.
 - Agent CLIs sit behind `adapters.py`. Every call goes through `calls.run_call`: audit dir, process-group timeout kill, schema validation, one re-ask. `FakeAdapter` plus `tests/fake_cli.py` replay scripted responses so the loop is testable offline.
-- Ticket type picks stages from the `routing` config (code, qa, validate, docs). Close gate: coder `done`, QA `pass`, runner re-run of QA's `test_command` exits 0, validator `approve` with all exit criteria met, docs done. Failures retry with feedback (coder session resumed by ID) up to `max_attempts_per_ticket`, then escalate.
+- Ticket type picks stages from the `routing` config (code, review, qa, validate, docs). Close gate: coder `done`, QA `pass`, runner re-run of QA's `test_command` exits 0, validator `approve` with all exit criteria met, docs done. Failures retry with feedback (coder session resumed by ID) up to `max_attempts_per_ticket`, then escalate.
 - Git (`gitops.py`): feature branch `yoke/<run_id>`, one worktree and branch `yoke/<run_id>-T-001` per ticket, runner commits, rebase then `--ff-only` merge under a merge lock; a rebase conflict is re-applied with `cherry-pick -n` for the coder to resolve.
 - `router.py` (Ollama, then small Claude call, then deterministic default; never blocks) is imported by the runner and exposed over stdio MCP by `mcp_server.py` (`.mcp.json`).
 - `tracker.py`: GitHub issues on `approve tickets`, `yoke pr`; plugin files are `.claude-plugin/`, `hooks/`, `skills/`.

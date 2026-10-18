@@ -44,18 +44,34 @@ def load(repo=None, home=None, overrides=None):
     return deep_merge(cfg, overrides or {})
 
 
-def agent_for(cfg, role):
-    """Concrete agent name for a role; by_role values may be primary, secondary or a name."""
-    roles = cfg["roles"]
-    who = roles["by_role"][role]
-    return roles[who] if who in ("primary", "secondary") else who
-
-
 AGENTS = ("claude", "agy")
 
 
+def agent_for(cfg, role):
+    """Concrete agent name for a role; by_role values may be primary, secondary, auto (review only), or a name.
+
+    When role is 'review' and mapped to 'auto', resolves to the opposite of the
+    'code' agent within AGENTS (claude <-> agy). For custom code agent names outside
+    AGENTS, falls back to 'primary' when different from the code agent, else 'secondary'.
+    """
+    roles = cfg["roles"]
+    who = roles["by_role"][role]
+    if who == "auto" and role != "review":
+        raise ValueError("role %s cannot be auto (review only)" % role)
+    if role == "review" and who == "auto":
+        code_agent = agent_for(cfg, "code")
+        if code_agent in AGENTS:
+            return "claude" if code_agent == "agy" else "agy"
+        pri = roles["primary"]
+        return pri if pri != code_agent else roles["secondary"]
+    return roles[who] if who in ("primary", "secondary") else who
+
+
 def save_roles(path, primary=None, secondary=None, mapping=None):
-    """Merge a roles override into the JSON config at path; validates agent and role names."""
+    """Merge a roles override into the JSON config at path; validates agent and role names.
+
+    'auto' is accepted as an agent target only for the 'review' role.
+    """
     roles = _read(DEFAULTS_PATH, required=True)["roles"]
     mapping = mapping or {}
     for name in (primary, secondary):
@@ -64,7 +80,8 @@ def save_roles(path, primary=None, secondary=None, mapping=None):
     for role, who in mapping.items():
         if role not in roles["by_role"]:
             raise ValueError("unknown role %r (choose from %s)" % (role, ", ".join(roles["by_role"])))
-        if who not in AGENTS + ("primary", "secondary"):
+        allowed = AGENTS + ("primary", "secondary") + (("auto",) if role == "review" else ())
+        if who not in allowed:
             raise ValueError("unknown agent %r for role %s" % (who, role))
     over = {}
     if primary:

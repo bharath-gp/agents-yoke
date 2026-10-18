@@ -41,6 +41,7 @@ Status legend per milestone: `[ ]` todo, `[~]` in progress, `[x]` done. Update t
    | [M8](#m8) | GitHub tracker | [2.14](#s2-14) |
    | [M9](#m9) | Resume, handoff, end-to-end | [2.11](#s2-11), [4](#s4) |
    | [M10](#m10) | Search, research, fact-check agents | [m10](#m10) |
+   | [M11](#m11) | Code review stage & iterative revisions | [2.5](#s2-5), [2.6](#s2-6), [2.8](#s2-8) |
 4. [Verification matrix](#s4)
 5. [Out of scope](#s5)
 - [Appendix A: Topic index](#appA)
@@ -164,9 +165,9 @@ Default role map (config `roles`):
 {"primary": "claude", "secondary": "agy",
  "by_role": {"requirements": "primary", "planner": "primary", "wayfinder": "primary",
              "orchestrator": "primary", "plan_review": "secondary",
-             "code": "secondary", "qa": "secondary", "validate": "primary", "docs": "secondary"}}
+             "code": "secondary", "review": "auto", "qa": "secondary", "validate": "primary", "docs": "secondary"}}
 ```
-`by_role` values may be `primary`, `secondary`, or a concrete agent name. CLI flags `--primary`/`--secondary` override at `yoke init`.
+`by_role` values may be `primary`, `secondary`, a concrete agent name, or `auto` (for `review` only, resolving to the opposite of `code`). CLI flags `--primary`/`--secondary` override at `yoke init`.
 
 <a id="s2-6"></a>
 ### 2.6 Config
@@ -178,10 +179,11 @@ Default budgets/limits:
 |---|---|
 | `max_attempts_per_ticket` | 3 |
 | `max_plan_review_rounds` | 3 |
+| `max_review_rounds` | 2 |
 | `max_tickets` | 40 |
 | `max_agent_calls_total` | 300 |
 | `parallel` | 1 (CLI `--parallel N`) |
-| `timeouts_s` | plan_review 900, code 2400, qa 1800, validate 1200, docs 900, router_fallback 120 |
+| `timeouts_s` | plan_review 900, code 2400, review 1200, qa 1800, validate 1200, docs 900, router_fallback 120 |
 | `kill_grace_s` | 15 |
 | `router.ollama_url` | `http://127.0.0.1:11434` |
 | `router.model` | `tev1:4b` (decision model, `/v1/systemone`; optional override `nimble-v3:9b-mxfp8`, noncommercial) |
@@ -195,13 +197,13 @@ Type → stages routing (config `routing`, overridable per type with model/effor
 
 | type | stages |
 |---|---|
-| feature | code, qa, validate, docs |
-| bugfix | code, qa, validate, docs |
-| refactor | code, qa, validate |
+| feature | code, review, qa, validate, docs |
+| bugfix | code, review, qa, validate, docs |
+| refactor | code, review, qa, validate |
 | test | qa, validate |
 | docs | docs, validate |
-| chore | code, validate |
-| spike | code, validate (no commit unless validate approves) |
+| chore | code, review, validate |
+| spike | code, review, validate (no commit unless validate approves) |
 
 <a id="s2-7"></a>
 ### 2.7 Schemas (`yoke/schemas/*.json`, JSON Schema draft-07 subset)
@@ -223,6 +225,7 @@ pending → (deps closed) → in_progress
   for stage in stages(type):
     code:     run secondary (resume session on retry, feedback appended)
               blocked → escalate
+    review:   run review agent (auto resolves to opposite of code agent)
     qa:       run secondary; then RUNNER re-runs result.test_command in worktree (independent check)
               fail (agent or rerun) → feedback → attempt += 1 → back to code
     validate: run primary read-only; prompt includes ticket, exit criteria, base sha, prior results;
@@ -235,6 +238,8 @@ attempt > max_attempts → blocked + escalation; dependents stay pending (shown 
 Close gate (checked explicitly, logged): code `done` ∧ QA `pass` ∧ runner test rerun exit 0 ∧ validate `approve` with every `exit_criteria.met` true ∧ docs `done|not_needed` (only for stages in this ticket's route).
 
 Retry feedback is a file `attempt-<n>/feedback.md` built from QA failures / validator issues / router triage hint, inlined into the next code prompt, and the coder session is resumed by ID.
+
+Review stage loop (`_review_loop`): Bounded review-revision loop (up to `max_review_rounds` revisions, defaulting to 2). The runner decides blocking based on severity (blocker and major findings block; minor and nit findings do not block and are passed as optional suggestions). Blocker and major findings trigger coder revisions using the saved coder session (`resume=st['sessions']['code']`) under audit labels `review-r<n>` and `code-r<n>`. If findings remain unresolved when reaching the revision cap, the ticket does not fail: unresolved blocker/major findings are recorded in `st['review']['unresolved']`, emitted as a `review_unresolved` audit event, posted as comments to the ticket issue via `tracker.comment`, and forwarded via `results['review']` to validate and qa prompts. Furthermore, `yoke pr` formats any unresolved review findings from closed tickets (capped at 50000 characters) into an 'Unresolved review findings' section in the pull request description.
 
 Context handoff: prompts **inline** the ticket JSON, plan excerpt, and prior-stage result JSON (small). Copies are saved in the attempt dir for audit. Inlining avoids sandbox path problems with files outside the worktree.
 
@@ -463,6 +468,14 @@ Files: `research.py`, `pipeline.py`, `adapters.py`, `defaults.json`, `schemas/{s
 - Researcher writes `docs/research/<slug>.md` and returns a claims list; the runner checks the file exists. Fact checker gives each claim supported|unsupported|refuted|unverifiable and each source ok|dead|mismatch|irrelevant. Runner (not the agent's `verdict`) fails the attempt on any refuted/unsupported claim, dead/mismatch source, or an empty claims list; unverifiable passes. Failure feedback goes to the next attempt, which reruns all three stages, up to `max_attempts_per_ticket`, then escalates.
 - Depth presets in `research.depths` (sources, search rounds); `research.default_depth` picks one. Ticket flow uses the default; the doc is committed by the runner. Standalone runs in the repo checkout, leave the doc uncommitted, and create a run with `kind: "research"` (hidden from `yoke status` and the SessionStart hook).
 - Notes: (a) the search tool "auto-detect" is the agent choosing among `search.tools`, not the runner probing for MCP servers; (b) fact checking is automatic only in the `research` pipeline; `yoke factcheck` is the manual entry for any other output; (c) a retry re-searches, so every attempt costs three calls; (d) no plugin skills (`/yoke:research`) yet; (e) not run against real claude/agy, only the fake CLI.
+
+<a id="m11"></a>
+### M11: Code review stage & iterative revisions `[x]`
+Files: `yoke/prompts/review.md`, `yoke/schemas/review.json`, `yoke/config.py`, `yoke/pipeline.py`, `yoke/tracker.py`, `yoke/calls.py` (audit `label`), `yoke/cli.py` (setup output), `tests/test_review.py`, `tests/test_prompts.py`, `tests/test_pipeline.py`, `tests/test_cli.py`, `tests/test_core.py`, `tests/test_tracker.py`.
+- Automated code review stage inserted directly after `code` for feature, bugfix, refactor, chore, and spike tickets.
+- Role `review` defaults to `auto`, resolving dynamically to the opposite of `code` (`claude` <-> `agy`). Overridable via `yoke setup --map review=<who>`.
+- Iterative review loop (`_review_loop`) runs up to `max_review_rounds` revisions (default 2). Blocker and major findings trigger coder revisions using resumed session. Minor and nit findings are treated as advisory and do not block.
+- Notes: Built `yoke/prompts/review.md`, `yoke/schemas/review.json`, config resolution for `auto` role mapping, iterative review loop with resumed coder sessions, unresolved findings reporting in tracking issues and PR description. Deviations: (a) `auto` role setting resolves dynamically to the opposite agent rather than requiring explicit configuration; (b) advisory-after-cap (unresolved blocker/major findings can still land; they reach qa/validate via `prior_results`): when the revision cap (`max_review_rounds`) is reached with remaining blocker/major findings, the ticket does not fail or block; unresolved findings are recorded in ticket state, emitted as `review_unresolved` audit event, commented on the tracking issue, and surfaced in the PR description under "Unresolved review findings".
 
 ---
 

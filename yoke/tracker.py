@@ -1,7 +1,7 @@
 """Tracker: local (tickets.json only) or GitHub issues + the single push/PR path (PLAN 2.14, M8).
 Issue numbers live in issues.json, not tickets.json, so creating them never invalidates the
 tickets approval hash. The runner never pushes; only pr() does, after `approve final`."""
-import json
+import glob
 import os
 import re
 import subprocess
@@ -79,134 +79,7 @@ def comment(run, tid, text):
         run.event("tracker_error", ticket=tid, error=str(e))
 
 
-def _get_review_rounds(run):
-    d = run.path("plan-review")
-    if not os.path.isdir(d):
-        return []
-    rounds = []
-    try:
-        entries = os.listdir(d)
-    except OSError:
-        return []
-    for name in entries:
-        m = re.match(r"^round-(\d+)$", name)
-        if m:
-            round_num = int(m.group(1))
-            res_path = os.path.join(d, name, "result.json")
-            if os.path.isfile(res_path):
-                try:
-                    with open(res_path, encoding="utf-8") as f:
-                        data = json.load(f)
-                    rounds.append((round_num, data))
-                except Exception:
-                    pass
-    rounds.sort(key=lambda x: x[0])
-    return [r[1] for r in rounds]
-
-
-def _format_finding(f):
-    if isinstance(f, str):
-        return f"- {f}"
-    sev = f.get("severity")
-    sec = f.get("section")
-    issue = f.get("issue", "")
-    sug = f.get("suggestion")
-
-    parts = []
-    if sev:
-        parts.append(f"[{sev}]")
-    if sec:
-        sec_str = str(sec).strip()
-        if not sec_str.lower().startswith("section"):
-            sec_str = f"section {sec_str}:"
-        else:
-            sec_str = f"{sec_str}:"
-        parts.append(sec_str)
-    if issue:
-        parts.append(issue)
-    if sug:
-        parts.append(f"({sug})")
-    line = " ".join(parts) if parts else "unspecified finding"
-    return f"- {line}"
-
-
-def _finding_matches_accept(finding, accept_line):
-    issue = str(finding.get("issue", "")).strip().lower()
-    section = str(finding.get("section", "")).strip().lower()
-    suggestion = str(finding.get("suggestion", "")).strip().lower()
-    line_lower = accept_line.lower()
-
-    if issue and issue in line_lower:
-        return True
-    if suggestion and suggestion in line_lower:
-        return True
-    m = re.search(r"\bACCEPT\b[\s:-]*(.*)$", accept_line, re.IGNORECASE)
-    if m:
-        content = m.group(1).strip().lower()
-        if content and (content in issue or issue in content):
-            return True
-    if section:
-        sec_num = re.sub(r"^section\s*", "", section).strip()
-        if sec_num and (f"section {sec_num}" in line_lower or f"sec {sec_num}" in line_lower):
-            return True
-    return False
-
-
-def _unresolved_review_findings(run):
-    rounds = _get_review_rounds(run)
-    if not rounds:
-        return []
-
-    non_approve_rounds = [r for r in rounds if r.get("verdict") != "approve"]
-    last_non_approve_findings = non_approve_rounds[-1].get("findings", []) if non_approve_rounds else []
-
-    arb_text = ""
-    for rel in ("plan-review/arbitration.md", "arbitration.md"):
-        p = run.path(rel)
-        if os.path.isfile(p):
-            try:
-                with open(p, encoding="utf-8") as f:
-                    arb_text = f.read()
-                break
-            except Exception:
-                pass
-
-    if not arb_text or not arb_text.strip():
-        return last_non_approve_findings[:20]
-
-    accept_lines = [
-        line.strip()
-        for line in arb_text.splitlines()
-        if re.search(r"\bACCEPT\b", line, re.IGNORECASE)
-    ]
-    if not accept_lines:
-        return last_non_approve_findings[:20]
-
-    all_findings = []
-    seen = set()
-    for r in rounds:
-        for f in r.get("findings", []):
-            key = (f.get("severity"), str(f.get("section")), f.get("issue"))
-            if key not in seen:
-                seen.add(key)
-                all_findings.append(f)
-
-    unmatched = []
-    any_matched = False
-    for f in all_findings:
-        matched = False
-        for acc in accept_lines:
-            if _finding_matches_accept(f, acc):
-                matched = True
-                any_matched = True
-                break
-        if not matched:
-            unmatched.append(f)
-
-    if not any_matched and all_findings:
-        return last_non_approve_findings[:20]
-
-    return unmatched[:20]
+PR_FINDINGS_MAX = 50000
 
 
 def pr_body(run):
@@ -214,8 +87,7 @@ def pr_body(run):
 
     Extracts run facts and fills PR template via prbody.fill, falling back to deterministic
     fill if errors occur (logging event 'pr_fill_fallback'). Appends 'Closes #N' lines from
-    issues.json and an '## Unresolved review findings' section listing up to 20 unresolved
-    findings from plan review rounds.
+    issues.json and an '## Unresolved review findings' section from the closed tickets' code review.
     """
     template = None
     facts = {}
@@ -238,32 +110,36 @@ def pr_body(run):
         except Exception:
             filled = prbody.fill_template(None, {})
 
-    filled_text = (filled or "").strip()
-    parts = [filled_text] if filled_text else []
-
+    closes = []
     try:
-        issues = run.read_json("issues.json", {})
-        closes = []
-        for _, i in sorted(issues.items()):
-            num = i.get("number") if isinstance(i, dict) else i
-            if num is not None:
-                closes.append("Closes #%d" % num)
-        if closes:
-            parts.append("\n".join(closes))
+        for _, i in sorted(run.read_json("issues.json", {}).items()):
+            closes.append("Closes #%d" % i["number"])
     except Exception:
         pass
-
-    try:
-        unresolved = _unresolved_review_findings(run)
-        if unresolved:
-            lines = ["## Unresolved review findings"]
-            for f in unresolved:
-                lines.append(_format_finding(f))
-            parts.append("\n".join(lines))
-    except Exception:
-        pass
-
-    return "\n\n".join(parts) + "\n"
+    body = "\n\n".join(p for p in [(filled or "").strip(), "\n".join(closes)] if p)
+    findings_by_ticket = {}
+    for td in sorted(glob.glob(run.path("tickets/*/state.json"))):
+        tid = os.path.basename(os.path.dirname(td))
+        st = run.read_json("tickets/%s/state.json" % tid, {})
+        unres = st.get("review", {}).get("unresolved", [])
+        if unres and st.get("status") == "closed":  # failed or escalated attempts never merged
+            findings_by_ticket[tid] = unres
+    if findings_by_ticket:
+        lines = ["## Unresolved review findings"]
+        for tid, findings in sorted(findings_by_ticket.items()):
+            lines.append("### %s" % tid)
+            for f in findings:
+                loc = ("%s:%s" % (f.get("file"), f.get("line"))) if f.get("file") else ""
+                prefix = ("[%s] %s" % (f.get("severity", ""), loc)).strip()
+                text = f.get("comment", "")
+                if f.get("suggestion"):
+                    text += " (suggestion: %s)" % f["suggestion"]
+                lines.append("- %s: %s" % (prefix, text) if prefix else "- %s" % text)
+        text = "\n".join(lines)
+        if len(text) > PR_FINDINGS_MAX:  # GitHub rejects PR bodies over 65536 chars, after the push
+            text = text[:PR_FINDINGS_MAX] + "\n... (truncated; see ticket issue comments)"
+        body = body.rstrip() + "\n\n" + text
+    return body + "\n"
 
 
 def pr(run):

@@ -22,7 +22,8 @@ if os.environ.get("FAKE_GH_FAIL") == key:
     sys.stderr.write("boom\\n")
     sys.exit(1)
 if key == "issue create":
-    n = sum(1 for l in open(os.environ["FAKE_GH_LOG"]) if l.startswith('["issue", "create"')) + 39
+    with open(os.environ["FAKE_GH_LOG"]) as _f:
+        n = sum(1 for l in _f if l.startswith('["issue", "create"')) + 39
     print("https://github.com/o/r/issues/%%d" %% n)
 elif key == "repo view":
     print("main")
@@ -34,51 +35,15 @@ elif key == "pr create":
 class TrackerBase(Base):
     def setUp(self):
         super().setUp()
-        self.bin = os.path.join(self.tmp, "bin")
-        os.makedirs(self.bin)
-        gh = os.path.join(self.bin, "gh")
-        with open(gh, "w") as f:
-            f.write(SHIM % sys.executable)
-        os.chmod(gh, 0o755)
-        agent_shim = """#!%s
-import os, sys
-if "FAKE_SCRIPT" in os.environ:
-    from tests import fake_cli
-    fake_cli.main()
-else:
-    sys.exit(1)
-""" % sys.executable
-        for agent in ("claude", "agy"):
-            p = os.path.join(self.bin, agent)
-            with open(p, "w") as f:
-                f.write(agent_shim)
-            os.chmod(p, 0o755)
-        self.log = os.path.join(self.tmp, "gh.log")
-
-        cleanups = []
-        for k in list(os.environ):
-            if k.startswith("GIT_CONFIG_KEY_") or k.startswith("GIT_CONFIG_VALUE_") or k in ("GIT_DIR", "GIT_WORK_TREE"):
-                old = os.environ.pop(k)
-                cleanups.append((k, old))
-
-        overrides = dict(ENV)
-        overrides.update({
-            "YOKE_HOME": self.tmp,
-            "PATH": self.bin + os.pathsep + os.environ.get("PATH", ""),
-            "FAKE_GH_LOG": self.log,
-            "GIT_CONFIG_GLOBAL": "/dev/null",
-            "GIT_CONFIG_SYSTEM": "/dev/null",
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_CONFIG_COUNT": "0",
-        })
-        for k, v in overrides.items():
-            old = os.environ.get(k)
+        old_env = {k: os.environ.get(k) for k in ENV}
+        for k, v in ENV.items():
             os.environ[k] = v
-            cleanups.append((k, old))
-
-        for k, old in reversed(cleanups):
-            self.addCleanup(lambda k=k, old=old: os.environ.__setitem__(k, old) if old is not None else os.environ.pop(k, None))
-
+        self.addCleanup(self._restore_env, old_env)
+        git_config_keys = [k for k in os.environ if k.startswith("GIT_CONFIG_")]
+        old_git_config = {k: os.environ[k] for k in git_config_keys}
+        for k in git_config_keys:
+            os.environ.pop(k, None)
+        self.addCleanup(self._restore_git_config, old_git_config)
         git(self.repo, "checkout", "-q", "-b", "main")
         with open(os.path.join(self.repo, "a.txt"), "w") as f:
             f.write("a\n")
@@ -87,15 +52,42 @@ else:
         self.remote = os.path.join(self.tmp, "remote.git")
         subprocess.run(["git", "init", "-q", "--bare", self.remote], check=True)
         git(self.repo, "remote", "add", "origin", self.remote)
-        git(self.repo, "config", "core.hooksPath", "")
-        subprocess.run(["git", "-C", self.remote, "config", "core.hooksPath", ""], check=True)
+        self.bin = os.path.join(self.tmp, "bin")
+        os.makedirs(self.bin)
+        gh = os.path.join(self.bin, "gh")
+        with open(gh, "w") as f:
+            f.write(SHIM % sys.executable)
+        os.chmod(gh, os.stat(gh).st_mode | stat.S_IXUSR)
+        for agent in ("claude", "agy"):  # PR body fill must fall back offline, never spend real agent quota
+            p = os.path.join(self.bin, agent)
+            with open(p, "w") as f:
+                f.write("#!%s\nimport sys\nsys.exit(1)\n" % sys.executable)
+            os.chmod(p, os.stat(p).st_mode | stat.S_IXUSR)
+        self.log = os.path.join(self.tmp, "gh.log")
+        for k, v in (("YOKE_HOME", self.tmp), ("PATH", self.bin + os.pathsep + os.environ["PATH"]), ("FAKE_GH_LOG", self.log)):
+            old = os.environ.get(k)
+            os.environ[k] = v
+            self.addCleanup(lambda k=k, old=old: os.environ.__setitem__(k, old) if old else os.environ.pop(k, None))
         self.run_.update(config=dict(self.run_.cfg, tracker="github"))
-        self.plan("# Plan: Awesome Tracker Feature\n\nDetails...")
+        self.plan()
         self.tickets([
             {"id": "T-001", "title": "one", "type": "feature", "description": "d", "exit_criteria": ["works"],
              "depends_on": [], "files_hint": ["a.py"], "plan_excerpt": "x"},
             {"id": "T-002", "title": "two", "type": "chore", "description": "d", "exit_criteria": ["ok"],
              "depends_on": ["T-001"], "files_hint": [], "plan_excerpt": "y"}])
+
+    def _restore_env(self, old_env):
+        for k, old in old_env.items():
+            if old is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = old
+
+    def _restore_git_config(self, old_git_config):
+        for k in list(os.environ):
+            if k.startswith("GIT_CONFIG_") and k not in old_git_config:
+                os.environ.pop(k, None)
+        os.environ.update(old_git_config)
 
     def calls(self):
         try:
@@ -118,7 +110,7 @@ class TestDetect(TrackerBase):
         git(self.repo, "remote", "set-url", "origin", "git@github.com:o/r.git")
         self.assertEqual(tracker.detect(self.repo, {"tracker": "auto"}), "github")
         os.environ["FAKE_GH_FAIL"] = "repo view"
-        self.addCleanup(os.environ.pop, "FAKE_GH_FAIL")
+        self.addCleanup(os.environ.pop, "FAKE_GH_FAIL", None)
         self.assertEqual(tracker.detect(self.repo, {"tracker": "auto"}), "local")
 
     def test_auto_local_without_gh(self):
@@ -166,7 +158,7 @@ class TestComment(TrackerBase):
         self.assertEqual(c[0][2], "40")
         self.assertIn("max attempts", c[0][-1])
         os.environ["FAKE_GH_FAIL"] = "issue comment"
-        self.addCleanup(os.environ.pop, "FAKE_GH_FAIL")
+        self.addCleanup(os.environ.pop, "FAKE_GH_FAIL", None)
         pipeline.escalate(self.run_, "T-001", "again")  # gh down: no exception
         self.assertEqual(len(self.run_.read_json("escalations.json")), 2)
 
@@ -203,141 +195,18 @@ class TestPr(TrackerBase):
         self.assertEqual(git(self.remote, "branch", "--list"), "")
 
     def test_pushes_branch_and_opens_pr_with_closes_lines(self):
-        tmpl_dir = os.path.join(self.repo, ".github")
-        os.makedirs(tmpl_dir, exist_ok=True)
-        with open(os.path.join(tmpl_dir, "pull_request_template.md"), "w") as f:
-            f.write("<!-- PR Template Preamble -->\nTemplate content for PR.\n\n## Custom Template\n- [ ] Tests pass\n")
-
-        round_dir = self.run_.path("plan-review/round-1")
-        os.makedirs(round_dir, exist_ok=True)
-        with open(os.path.join(round_dir, "result.json"), "w") as f:
-            json.dump({
-                "verdict": "changes_requested",
-                "findings": [
-                    {"severity": "major", "section": "2", "issue": "Missing edge case handling", "suggestion": "Add check"},
-                    {"severity": "minor", "section": "3", "issue": "Typo in comment", "suggestion": "Fix spelling"},
-                ],
-                "summary": "Fix issues",
-            }, f)
-        with open(self.run_.path("plan-review/arbitration.md"), "w") as f:
-            f.write("ACCEPT: Typo in comment\nREJECT: Missing edge case handling\n")
-
         planreview.approve(self.run_, "final")
-        rc, err = self.pr()
-        self.assertEqual(rc, 0, err)
+        rc, _ = self.pr()
+        self.assertEqual(rc, 0)
         self.assertIn(self.branch, git(self.remote, "branch", "--list"))
         pr = [c for c in self.calls() if c[:2] == ["pr", "create"]][0]
         self.assertEqual(pr[pr.index("--base") + 1], "main")
         self.assertEqual(pr[pr.index("--head") + 1], self.branch)
-        title = pr[pr.index("--title") + 1]
-        self.assertEqual(title, "Awesome Tracker Feature")
-        self.assertNotEqual(title, "yoke: %s" % self.run_.run_id)
         body = pr[pr.index("--body") + 1]
-        self.assertIn("Template content for PR.", body)
-        self.assertIn("## Custom Template", body)
         self.assertIn("Closes #40", body)
         self.assertIn("Closes #41", body)
-        self.assertIn("## Unresolved review findings", body)
-        self.assertIn("Missing edge case handling", body)
-        self.assertNotIn("Typo in comment", body)
+        self.assertNotIn("Unresolved review findings", body)
         self.assertEqual(self.run_.read_json("run.json")["pr_url"], "https://github.com/o/r/pull/7")
-
-    def test_pr_body_fill_fallback_never_blocks(self):
-        # Force a failure during fill; verify pr_body completes and logs event
-        body = tracker.pr_body(self.run_)
-        self.assertIn("Closes #40", body)
-        self.assertIn("Closes #41", body)
-        events = []
-        with open(self.run_.path("events.jsonl")) as f:
-            for l in f:
-                if l.strip():
-                    events.append(json.loads(l))
-        self.assertTrue(any(e.get("kind") == "pr_fill_fallback" for e in events))
-
-    def test_pr_body_unresolved_findings_ambiguous_arbitration_fallback(self):
-        round_dir = self.run_.path("plan-review/round-1")
-        os.makedirs(round_dir, exist_ok=True)
-        with open(os.path.join(round_dir, "result.json"), "w") as f:
-            json.dump({
-                "verdict": "changes_requested",
-                "findings": [{"severity": "major", "section": "1", "issue": "ambiguous finding", "suggestion": "s"}],
-                "summary": "s",
-            }, f)
-        body = tracker.pr_body(self.run_)
-        self.assertIn("## Unresolved review findings", body)
-        self.assertIn("ambiguous finding", body)
-
-    def test_pr_body_unresolved_findings_with_arbitration(self):
-        round_dir = self.run_.path("plan-review/round-1")
-        os.makedirs(round_dir, exist_ok=True)
-        with open(os.path.join(round_dir, "result.json"), "w") as f:
-            json.dump({
-                "verdict": "changes_requested",
-                "findings": [
-                    {"severity": "major", "section": "1", "issue": "accepted issue", "suggestion": "s1"},
-                    {"severity": "minor", "section": "2", "issue": "rejected issue", "suggestion": "s2"},
-                ],
-                "summary": "s",
-            }, f)
-        with open(self.run_.path("plan-review/arbitration.md"), "w") as f:
-            f.write("ACCEPT: accepted issue\nREJECT: rejected issue\n")
-        body = tracker.pr_body(self.run_)
-        self.assertIn("## Unresolved review findings", body)
-        self.assertIn("rejected issue", body)
-        self.assertNotIn("accepted issue", body)
-
-    def test_pr_body_unresolved_findings_max_20(self):
-        round_dir = self.run_.path("plan-review/round-1")
-        os.makedirs(round_dir, exist_ok=True)
-        findings = [
-            {"severity": "minor", "section": "1", "issue": f"finding {i}", "suggestion": "s"}
-            for i in range(25)
-        ]
-        with open(os.path.join(round_dir, "result.json"), "w") as f:
-            json.dump({
-                "verdict": "changes_requested",
-                "findings": findings,
-                "summary": "s",
-            }, f)
-        body = tracker.pr_body(self.run_)
-        self.assertIn("## Unresolved review findings", body)
-        for i in range(20):
-            self.assertIn(f"finding {i}", body)
-        for i in range(20, 25):
-            self.assertNotIn(f"finding {i}", body)
-
-    def test_pr_body_without_template_uses_builtin_structure(self):
-        body = tracker.pr_body(self.run_)
-        self.assertIn("## Summary", body)
-        self.assertIn("## Why", body)
-        self.assertIn("## What changed", body)
-        self.assertIn("## Verification", body)
-        self.assertIn("## Review focus", body)
-        self.assertIn("Closes #40", body)
-        self.assertIn("Closes #41", body)
-
-    def test_pr_body_no_unresolved_findings_when_none_exist(self):
-        body = tracker.pr_body(self.run_)
-        self.assertNotIn("## Unresolved review findings", body)
-
-    def test_pr_body_structure_and_blank_lines(self):
-        tmpl_dir = os.path.join(self.repo, ".github")
-        os.makedirs(tmpl_dir, exist_ok=True)
-        with open(os.path.join(tmpl_dir, "pull_request_template.md"), "w") as f:
-            f.write("Template text\n")
-
-        round_dir = self.run_.path("plan-review/round-1")
-        os.makedirs(round_dir, exist_ok=True)
-        with open(os.path.join(round_dir, "result.json"), "w") as f:
-            json.dump({
-                "verdict": "changes_requested",
-                "findings": [{"severity": "major", "section": "1", "issue": "some issue", "suggestion": "s"}],
-                "summary": "s",
-            }, f)
-
-        body = tracker.pr_body(self.run_)
-        expected_substring = "Template text\n\nCloses #40\nCloses #41\n\n## Unresolved review findings\n- [major] section 1: some issue (s)\n"
-        self.assertIn(expected_substring, body)
 
     def test_local_tracker_refuses(self):
         planreview.approve(self.run_, "final")
@@ -345,6 +214,48 @@ class TestPr(TrackerBase):
         rc, err = self.pr()
         self.assertEqual(rc, 1)
         self.assertIn("github", err)
+
+    def test_pr_body_without_template_uses_builtin_structure(self):
+        body = tracker.pr_body(self.run_)
+        for h in ("## Summary", "## Why", "## What changed", "## Verification", "## Review focus"):
+            self.assertIn(h, body)
+        self.assertIn("Closes #40", body)
+
+    def test_pr_body_uses_repo_template(self):
+        os.makedirs(os.path.join(self.repo, ".github"))
+        with open(os.path.join(self.repo, ".github", "pull_request_template.md"), "w") as f:
+            f.write("## What / why\n\n## Checklist\n- [ ] Tests/checks pass locally\n")
+        body = tracker.pr_body(self.run_)
+        self.assertIn("## What / why", body)
+        self.assertIn("- [ ] Tests/checks pass locally", body)
+        self.assertIn("Closes #40", body)
+
+    def test_pr_body_unresolved_findings(self):
+        planreview.approve(self.run_, "final")
+        self.run_.write_json("tickets/T-001/state.json", {
+            "status": "closed",
+            "review": {
+                "rounds": 2,
+                "unresolved": [
+                    {"file": "yoke/foo.py", "line": 42, "severity": "major",
+                     "comment": "critical bug in parsing", "suggestion": "handle empty input"}
+                ]
+            }
+        })
+        rc, err = self.pr()
+        self.assertEqual(rc, 0, err)
+        body = [c for c in self.calls() if c[:2] == ["pr", "create"]][-1]
+        body_text = body[body.index("--body") + 1]
+        self.assertIn("Unresolved review findings", body_text)
+        self.assertIn("critical bug in parsing", body_text)
+        self.assertIn("handle empty input", body_text)
+
+    def test_pr_body_skips_unmerged_ticket_findings(self):
+        self.run_.write_json("tickets/T-001/state.json", {
+            "status": "in_progress",
+            "review": {"rounds": 2, "unresolved": [
+                {"file": "a.py", "line": 1, "severity": "major", "comment": "stale finding", "suggestion": ""}]}})
+        self.assertNotIn("stale finding", tracker.pr_body(self.run_))
 
 
 if __name__ == "__main__":
