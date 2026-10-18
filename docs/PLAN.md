@@ -282,7 +282,7 @@ Prompt templates: `yoke/prompts/<stage>.md` using `string.Template` (`$ticket`, 
 <a id="s2-14"></a>
 ### 2.14 Tracker: local vs GitHub
 - `local` (default when no GitHub remote): tickets in `tickets.json` only.
-- `github`: on `approve tickets`, create one issue per ticket (`gh issue create --title "T-001: ..." --body <rendered> --label yoke`) — the approval prompt states this will happen; issue numbers saved on tickets. Comments on block/escalation; issues are closed by the PR (`Closes #n` lines). Pushing the feature branch and `gh pr create` happen **only** via `yoke pr` after `approve final`, which the user runs explicitly. Never auto-push, never merge.
+- `github`: on `approve tickets`, create one issue per ticket (`gh issue create --title "T-001: ..." --body <rendered> --label yoke`) — the approval prompt states this will happen; issue numbers saved on tickets. Comments on block/escalation; issues are closed by the PR (`Closes #n` lines). Pushing the feature branch and `gh pr create` happen **only** via `yoke pr` after `approve final`, which the user runs explicitly. Never auto-push, never merge. The PR title is derived from the plan (`prbody.title`), falling back to `yoke: <run_id>`. The PR body (`tracker.pr_body`) assembles the filled template (or built-in headings), `Closes #N` lines for tracked issues, and an unresolved review findings section (up to 20 findings not matched by `ACCEPT` lines in arbitration). PR creation never blocks on template fill errors.
 
 <a id="s2-15"></a>
 ### 2.15 Packaging
@@ -537,5 +537,6 @@ Files: `research.py`, `pipeline.py`, `adapters.py`, `defaults.json`, `schemas/{s
 | `yoke/scheduler.py` | deps, pool, budgets, resume | [2.8](#s2-8), [2.11](#s2-11), [2.12](#s2-12) | [M4](#m4), [M5](#m5), [M9](#m9) |
 | `yoke/mcp_server.py`, `.mcp.json` | stdio MCP server | [2.10](#s2-10) | [M6](#m6) |
 | `.claude-plugin/*`, `skills/*/SKILL.md`, `hooks/hooks.json` | plugin, skills, SessionStart hook | [2.11](#s2-11), [2.15](#s2-15) | [M7](#m7) |
-| `yoke/tracker.py` | local / GitHub tracker, `pr` | [2.14](#s2-14) | [M8](#m8) |
+| `yoke/prbody.py` | PR template matching and body fill | [2.14](#s2-14) | [M8](#m8) |
+| `yoke/tracker.py` | local / GitHub tracker, `pr_body`, `pr` | [2.14](#s2-14) | [M8](#m8) |
 | `tests/fake_cli.py`, `tests/test_*.py`, `tests/e2e.sh` | fake CLI, unit + e2e tests | [4](#s4) | [M1](#m1)–[M9](#m9) |

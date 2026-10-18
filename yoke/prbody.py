@@ -411,6 +411,11 @@ def collect(run):
     }
 
 
+def title(run):
+    """Derive PR title from plan.md first '# ' heading with ^(?:\w+\s+)*Plan:\s* stripped; fallback 'yoke: <run_id>'."""
+    return collect(run)["title"]
+
+
 def _should_tick(text, verified):
     if not verified:
         return False

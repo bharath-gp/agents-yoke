@@ -39,7 +39,20 @@ class TrackerBase(Base):
         gh = os.path.join(self.bin, "gh")
         with open(gh, "w") as f:
             f.write(SHIM % sys.executable)
-        os.chmod(gh, os.stat(gh).st_mode | stat.S_IXUSR)
+        os.chmod(gh, 0o755)
+        agent_shim = """#!%s
+import os, sys
+if "FAKE_SCRIPT" in os.environ:
+    from tests import fake_cli
+    fake_cli.main()
+else:
+    sys.exit(1)
+""" % sys.executable
+        for agent in ("claude", "agy"):
+            p = os.path.join(self.bin, agent)
+            with open(p, "w") as f:
+                f.write(agent_shim)
+            os.chmod(p, 0o755)
         self.log = os.path.join(self.tmp, "gh.log")
 
         cleanups = []
@@ -77,7 +90,7 @@ class TrackerBase(Base):
         git(self.repo, "config", "core.hooksPath", "")
         subprocess.run(["git", "-C", self.remote, "config", "core.hooksPath", ""], check=True)
         self.run_.update(config=dict(self.run_.cfg, tracker="github"))
-        self.plan()
+        self.plan("# Plan: Awesome Tracker Feature\n\nDetails...")
         self.tickets([
             {"id": "T-001", "title": "one", "type": "feature", "description": "d", "exit_criteria": ["works"],
              "depends_on": [], "files_hint": ["a.py"], "plan_excerpt": "x"},
@@ -190,6 +203,25 @@ class TestPr(TrackerBase):
         self.assertEqual(git(self.remote, "branch", "--list"), "")
 
     def test_pushes_branch_and_opens_pr_with_closes_lines(self):
+        tmpl_dir = os.path.join(self.repo, ".github")
+        os.makedirs(tmpl_dir, exist_ok=True)
+        with open(os.path.join(tmpl_dir, "pull_request_template.md"), "w") as f:
+            f.write("<!-- PR Template Preamble -->\nTemplate content for PR.\n\n## Custom Template\n- [ ] Tests pass\n")
+
+        round_dir = self.run_.path("plan-review/round-1")
+        os.makedirs(round_dir, exist_ok=True)
+        with open(os.path.join(round_dir, "result.json"), "w") as f:
+            json.dump({
+                "verdict": "changes_requested",
+                "findings": [
+                    {"severity": "major", "section": "2", "issue": "Missing edge case handling", "suggestion": "Add check"},
+                    {"severity": "minor", "section": "3", "issue": "Typo in comment", "suggestion": "Fix spelling"},
+                ],
+                "summary": "Fix issues",
+            }, f)
+        with open(self.run_.path("plan-review/arbitration.md"), "w") as f:
+            f.write("ACCEPT: Typo in comment\nREJECT: Missing edge case handling\n")
+
         planreview.approve(self.run_, "final")
         rc, err = self.pr()
         self.assertEqual(rc, 0, err)
@@ -197,10 +229,115 @@ class TestPr(TrackerBase):
         pr = [c for c in self.calls() if c[:2] == ["pr", "create"]][0]
         self.assertEqual(pr[pr.index("--base") + 1], "main")
         self.assertEqual(pr[pr.index("--head") + 1], self.branch)
+        title = pr[pr.index("--title") + 1]
+        self.assertEqual(title, "Awesome Tracker Feature")
+        self.assertNotEqual(title, "yoke: %s" % self.run_.run_id)
         body = pr[pr.index("--body") + 1]
+        self.assertIn("Template content for PR.", body)
+        self.assertIn("## Custom Template", body)
         self.assertIn("Closes #40", body)
         self.assertIn("Closes #41", body)
+        self.assertIn("## Unresolved review findings", body)
+        self.assertIn("Missing edge case handling", body)
+        self.assertNotIn("Typo in comment", body)
         self.assertEqual(self.run_.read_json("run.json")["pr_url"], "https://github.com/o/r/pull/7")
+
+    def test_pr_body_fill_fallback_never_blocks(self):
+        # Force a failure during fill; verify pr_body completes and logs event
+        body = tracker.pr_body(self.run_)
+        self.assertIn("Closes #40", body)
+        self.assertIn("Closes #41", body)
+        events = []
+        with open(self.run_.path("events.jsonl")) as f:
+            for l in f:
+                if l.strip():
+                    events.append(json.loads(l))
+        self.assertTrue(any(e.get("kind") == "pr_fill_fallback" for e in events))
+
+    def test_pr_body_unresolved_findings_ambiguous_arbitration_fallback(self):
+        round_dir = self.run_.path("plan-review/round-1")
+        os.makedirs(round_dir, exist_ok=True)
+        with open(os.path.join(round_dir, "result.json"), "w") as f:
+            json.dump({
+                "verdict": "changes_requested",
+                "findings": [{"severity": "major", "section": "1", "issue": "ambiguous finding", "suggestion": "s"}],
+                "summary": "s",
+            }, f)
+        body = tracker.pr_body(self.run_)
+        self.assertIn("## Unresolved review findings", body)
+        self.assertIn("ambiguous finding", body)
+
+    def test_pr_body_unresolved_findings_with_arbitration(self):
+        round_dir = self.run_.path("plan-review/round-1")
+        os.makedirs(round_dir, exist_ok=True)
+        with open(os.path.join(round_dir, "result.json"), "w") as f:
+            json.dump({
+                "verdict": "changes_requested",
+                "findings": [
+                    {"severity": "major", "section": "1", "issue": "accepted issue", "suggestion": "s1"},
+                    {"severity": "minor", "section": "2", "issue": "rejected issue", "suggestion": "s2"},
+                ],
+                "summary": "s",
+            }, f)
+        with open(self.run_.path("plan-review/arbitration.md"), "w") as f:
+            f.write("ACCEPT: accepted issue\nREJECT: rejected issue\n")
+        body = tracker.pr_body(self.run_)
+        self.assertIn("## Unresolved review findings", body)
+        self.assertIn("rejected issue", body)
+        self.assertNotIn("accepted issue", body)
+
+    def test_pr_body_unresolved_findings_max_20(self):
+        round_dir = self.run_.path("plan-review/round-1")
+        os.makedirs(round_dir, exist_ok=True)
+        findings = [
+            {"severity": "minor", "section": "1", "issue": f"finding {i}", "suggestion": "s"}
+            for i in range(25)
+        ]
+        with open(os.path.join(round_dir, "result.json"), "w") as f:
+            json.dump({
+                "verdict": "changes_requested",
+                "findings": findings,
+                "summary": "s",
+            }, f)
+        body = tracker.pr_body(self.run_)
+        self.assertIn("## Unresolved review findings", body)
+        for i in range(20):
+            self.assertIn(f"finding {i}", body)
+        for i in range(20, 25):
+            self.assertNotIn(f"finding {i}", body)
+
+    def test_pr_body_without_template_uses_builtin_structure(self):
+        body = tracker.pr_body(self.run_)
+        self.assertIn("## Summary", body)
+        self.assertIn("## Why", body)
+        self.assertIn("## What changed", body)
+        self.assertIn("## Verification", body)
+        self.assertIn("## Review focus", body)
+        self.assertIn("Closes #40", body)
+        self.assertIn("Closes #41", body)
+
+    def test_pr_body_no_unresolved_findings_when_none_exist(self):
+        body = tracker.pr_body(self.run_)
+        self.assertNotIn("## Unresolved review findings", body)
+
+    def test_pr_body_structure_and_blank_lines(self):
+        tmpl_dir = os.path.join(self.repo, ".github")
+        os.makedirs(tmpl_dir, exist_ok=True)
+        with open(os.path.join(tmpl_dir, "pull_request_template.md"), "w") as f:
+            f.write("Template text\n")
+
+        round_dir = self.run_.path("plan-review/round-1")
+        os.makedirs(round_dir, exist_ok=True)
+        with open(os.path.join(round_dir, "result.json"), "w") as f:
+            json.dump({
+                "verdict": "changes_requested",
+                "findings": [{"severity": "major", "section": "1", "issue": "some issue", "suggestion": "s"}],
+                "summary": "s",
+            }, f)
+
+        body = tracker.pr_body(self.run_)
+        expected_substring = "Template text\n\nCloses #40\nCloses #41\n\n## Unresolved review findings\n- [major] section 1: some issue (s)\n"
+        self.assertIn(expected_substring, body)
 
     def test_local_tracker_refuses(self):
         planreview.approve(self.run_, "final")
