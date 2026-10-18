@@ -116,6 +116,17 @@ class TestRetries(PipeBase):
         self.assertIn("--resume", cmd)
         self.assertIn("cs", cmd)
 
+    def test_failed_stage_call_retried_in_place_without_new_attempt(self):
+        self.setup_tickets(
+            [ticket(1, "bugfix")],
+            {"code": [resp(CODE, "cs", write={"f.txt": "1"})],
+             "review": [resp(REV)],
+             "qa": [{"exit": 3}, resp(qa("test -f f.txt"))],
+             "validate": [resp(val())], "docs": [resp(DOCS)], "router": [{"exit": 1}]})
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["attempt"], 1)
+        self.assertTrue(os.path.isdir(self.run_.path("tickets/T-001/attempt-1/qa-retry")))
+
     def test_validate_reject_then_approve(self):
         self.setup_tickets(
             [ticket(1)],
