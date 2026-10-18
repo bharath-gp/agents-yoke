@@ -350,6 +350,7 @@ yoke stop [--run R]                   # SIGTERM runner; workers killed; resumabl
 yoke pr [--run R]                     # requires approve final; push branch + gh pr create
 yoke clean [--run R]
 yoke route T-xxx [--run R]            # debug: show stages/agents/models for a ticket
+yoke models [--list] [--show] [--set AGENT.TIER=MODEL] [--effort E] [--scope user|project|repo] [--reset [AGENT[.TIER]]]
 yoke mcp                              # stdio MCP server
 yoke doctor [--live]
 ```
@@ -522,6 +523,7 @@ Files: `yoke/prompts/review.md`, `yoke/schemas/review.json`, `yoke/config.py`, `
 | Human gates (plan, tickets, escalation, final) | [2.3](#s2-3), [M7](#m7) |
 | Install (Claude plugin, agy, CLI) | [2.15](#s2-15) |
 | MCP tool names | [2.10](#s2-10) |
+| Model discovery and config (`yoke models`) | [2.6](#s2-6) |
 | Merge strategy, rebase conflicts | [2.9](#s2-9), [M5](#m5) |
 | Orchestrator session, `wait`, SessionStart hook | [2.1](#s2-1), [2.11](#s2-11) |
 | Parallel execution | [2.9](#s2-9), [M5](#m5) |
@@ -542,6 +544,7 @@ Files: `yoke/prompts/review.md`, `yoke/schemas/review.json`, `yoke/config.py`, `
 | `pyproject.toml` | package, `yoke` script | [2.15](#s2-15) | [M0](#m0) |
 | `yoke/cli.py` | argparse subcommands | [2.16](#s2-16) | [M0](#m0)–[M9](#m9) |
 | `yoke/config.py`, `defaults.json` | config merge, role lookup | [2.5](#s2-5), [2.6](#s2-6) | [M1](#m1) |
+| `yoke/models.py` | model discovery (`agy models`, claude static) | [2.6](#s2-6) | T-002 |
 | `yoke/state.py` | run dir, atomic JSON, events, status | [2.2](#s2-2) | [M1](#m1) |
 | `yoke/schema.py`, `schemas/*.json` | stdlib validator, schemas | [2.7](#s2-7) | [M1](#m1)–[M4](#m4) |
 | `yoke/adapters.py` | Claude / agy / Fake adapters | [2.4](#s2-4) | [M1](#m1) |

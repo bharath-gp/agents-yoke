@@ -60,6 +60,21 @@ Models can be configured per agent across two tiers: `plan` (used for `requireme
 
 When an agent call fails due to a model error, yoke automatically retries once without a model (clearing both model and effort) under a `/fallback` audit directory and logs a `model_fallback` event.
 
+Configure and inspect models via `yoke models`:
+
+```bash
+yoke models --list [--json]                                      # list available choices per agent
+yoke models --show [--json]                                      # print effective plan/cheap models per agent
+yoke models --set AGENT.TIER=MODEL [--effort E] [--scope user|project|repo]  # configure model (repeatable)
+yoke models --reset [AGENT[.TIER]] [--scope user|project|repo]   # remove model configurations
+```
+
+- `--list`: queries available models for each agent (`agy models` dynamically, static list for `claude`).
+- `--show`: displays effective `plan` and `cheap` models and effort settings.
+- `--set`: sets model choices in user config (`~/.yoke/config.json`) or repo config (`<repo>/.yoke.json`).
+- `--reset`: clears model settings for an agent, tier, or all entries.
+
+
 ## Typical flow
 
 The skills run these for you; the raw commands are for scripting and debugging.
