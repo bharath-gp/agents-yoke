@@ -49,7 +49,23 @@ During ticket execution, the `review` stage runs an iterative review loop (up to
 
 - **/yoke:go**: run the complete workflow (grill, plan, tickets, run, finish) in one session with a single human gate at plan approval (auto-approves tickets and parallel runner).
 - Or run individual skills step-by-step: `/yoke:grill` -> `/yoke:plan` -> `/yoke:tickets` -> `/yoke:run` -> `/yoke:finish`.
-- Use `/yoke:resume [run_id]` to inspect active runs (`yoke runs --active`) or pick up an interrupted run, and `/yoke:status [run_id]` to check progress.
+- Use `/yoke:resume [run_id]` to inspect active runs (`yoke runs --active`) or pick up an interrupted run with run id, and `/yoke:status [run_id]` to check progress.
+
+### Skills
+
+yoke provides the following skills for host agents (Claude Code and Antigravity):
+
+| Skill | Description |
+|---|---|
+| `/yoke:go` | Complete workflow from requirements through finish in a single session with a single human gate at plan approval. |
+| `/yoke:setup` | Check prerequisites and configure agent roles. |
+| `/yoke:grill` | Requirements gathering interview writing `requirements.md`. |
+| `/yoke:plan [run_id]` | Implementation plan drafting, bounded secondary review rounds, arbitration, and plan approval. |
+| `/yoke:tickets [run_id]` | Split approved plan into tickets, validate dependencies, import, and ticket approval. |
+| `/yoke:run [run_id]` | Start the detached background runner and orchestrator wait loop. |
+| `/yoke:resume [run_id]` | Inspect active runs (`yoke runs --active`) or pick up an interrupted run with run id. |
+| `/yoke:status [run_id]` | Check run progress, escalations, and active run states. |
+| `/yoke:finish [run_id]` | Final review gate: review commits, diffs, open issues, final approval, and open pull request. |
 
 The skills run these for you; the raw commands below are for scripting and debugging:
 

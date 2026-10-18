@@ -1,6 +1,6 @@
 [project]
 name = "yoke"
-version = "0.2.2"
+version = "0.3.0"
 description = "Primary/secondary agent loop: Claude plans and validates, agy codes."
 requires-python = ">=3.9"
 dependencies = []
