@@ -42,6 +42,7 @@ Status legend per milestone: `[ ]` todo, `[~]` in progress, `[x]` done. Update t
    | [M9](#m9) | Resume, handoff, end-to-end | [2.11](#s2-11), [4](#s4) |
    | [M10](#m10) | Search, research, fact-check agents | [m10](#m10) |
    | [M11](#m11) | Code review stage & iterative revisions | [2.5](#s2-5), [2.6](#s2-6), [2.8](#s2-8) |
+   | [M12](#m12) | Model selection & configuration | [2.6](#s2-6) |
 4. [Verification matrix](#s4)
 5. [Out of scope](#s5)
 - [Appendix A: Topic index](#appA)
@@ -480,6 +481,15 @@ Files: `yoke/prompts/review.md`, `yoke/schemas/review.json`, `yoke/config.py`, `
 - Role `review` defaults to `auto`, resolving dynamically to the opposite of `code` (`claude` <-> `agy`). Overridable via `yoke setup --map review=<who>`.
 - Iterative review loop (`_review_loop`) runs up to `max_review_rounds` revisions (default 2). Blocker and major findings trigger coder revisions using resumed session. Minor and nit findings are treated as advisory and do not block.
 - Notes: Built `yoke/prompts/review.md`, `yoke/schemas/review.json`, config resolution for `auto` role mapping, iterative review loop with resumed coder sessions, unresolved findings reporting in tracking issues and PR description. Deviations: (a) `auto` role setting resolves dynamically to the opposite agent rather than requiring explicit configuration; (b) advisory-after-cap (unresolved blocker/major findings can still land; they reach qa/validate via `prior_results`): when the revision cap (`max_review_rounds`) is reached with remaining blocker/major findings, the ticket does not fail or block; unresolved findings are recorded in ticket state, emitted as `review_unresolved` audit event, commented on the tracking issue, and surfaced in the PR description under "Unresolved review findings".
+
+<a id="m12"></a>
+### M12: Model selection & configuration `[x]`
+Files: `yoke/models.py`, `yoke/config.py`, `yoke/calls.py`, `yoke/cli.py` (`models`), `skills/models/SKILL.md`, `skills/grill/SKILL.md`, `skills/go/SKILL.md`, `README.md`, `docs/PLAN.md`, `tests/test_models.py`.
+- Model tiers (`plan`, `cheap`): config schema and resolution in `config.py` mapping `plan` tier to `requirements`, `planner`, and `plan_review`, and `cheap` tier to all execution stages (`code`, `review`, `qa`, `validate`, `docs`).
+- Model discovery and CLI: `models.py` queries `agy models` dynamically with static fallback, static catalog for `claude`; `yoke models` CLI supports `--list`, `--show`, `--set AGENT.TIER=MODEL`, `--effort E`, `--scope user|project|repo`, and `--reset`.
+- Model fallback on error: `calls.py` automatically retries once without explicit model or effort in audit directory `fallback/` when an agent call fails with a model error, logging a `model_fallback` event.
+- Interactive model skills: `/yoke:models` allows inspecting, configuring, or resetting models; `/yoke:grill` and `/yoke:go` prompt to confirm or update agent models before planning.
+- Notes: Built `yoke/models.py` (model listing with `agy models` CLI call and static fallback catalog), updated `config.py` for model configuration merging across scopes, implemented automatic single-retry fallback on model errors in `calls.py`, added `yoke models` subcommand in `cli.py`, created `skills/models/SKILL.md`, and integrated model selection steps into grill and go skills.
 
 ---
 
