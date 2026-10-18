@@ -23,6 +23,37 @@ def _version(exe):
         return "version unknown"
 
 
+AGY_SETTINGS = os.path.expanduser("~/.gemini/antigravity-cli/settings.json")
+
+
+def _agy_reads_allowed():
+    try:
+        with open(AGY_SETTINGS) as f:
+            allow = json.load(f).get("permissions", {}).get("allow", [])
+    except (OSError, ValueError, AttributeError):
+        return True  # unknown layout: do not nag
+    return any(str(a).startswith("read_file") for a in allow)
+
+
+def grant_agy_read(path=None):
+    """Add `read_file` to agy's permissions.allow (idempotent). Returns True if the file changed."""
+    path = path or AGY_SETTINGS
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        data = {}
+    if not isinstance(data, dict) or not isinstance(data.get("permissions", {}), dict):
+        raise ValueError("%s has an unexpected layout; add \"read_file\" to permissions.allow by hand" % path)
+    allow = data.setdefault("permissions", {}).setdefault("allow", [])
+    if any(str(a).startswith("read_file") for a in allow):
+        return False
+    allow.append("read_file")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    state._write_atomic(path, json.dumps(data, indent=2) + "\n")
+    return True
+
+
 def _ollama_models():
     try:
         with urllib.request.urlopen(OLLAMA_URL + "/api/tags", timeout=3) as r:
@@ -54,6 +85,9 @@ def doctor(live=False, out=print):
             out("%-7s %s" % (name, "MISSING (required)" if required else "missing (optional)"))
             if required:
                 problems.append(name)
+    if shutil.which("agy") and not _agy_reads_allowed():
+        out("agy read_file not in permissions.allow (headless reads get auto-denied, wasting calls): "
+            "add \"read_file\" to permissions.allow in %s" % AGY_SETTINGS)
     models = _ollama_models()
     if models is None:
         out("ollama server not reachable at %s (router falls back to claude)" % OLLAMA_URL)
@@ -97,6 +131,13 @@ def setup_cmd(args):
     if problems:
         print("setup incomplete, fix: %s" % ", ".join(problems), file=sys.stderr)
         return 1
+    if args.grant_agy_read:  # the /yoke:setup skill passes this only after the user said yes
+        try:
+            changed = grant_agy_read()
+        except (OSError, ValueError) as e:
+            print("setup: %s" % e, file=sys.stderr)
+            return 2
+        print("agy read_file %s in %s" % ("granted" if changed else "already allowed", AGY_SETTINGS))
     if args.primary or args.secondary or args.map:
         try:
             mapping = dict(m.split("=", 1) for m in args.map)
@@ -360,6 +401,8 @@ def main(argv=None):
     d = sub.add_parser("doctor", help="check environment")
     d.add_argument("--live", action="store_true", help="one tiny -p call per agent CLI")
     su = sub.add_parser("setup", help="first-time setup check (skills require it)")
+    su.add_argument("--grant-agy-read", action="store_true",
+                    help="add read_file to agy's permissions.allow (ask the user first)")
     su.add_argument("--check", action="store_true", help="only report whether setup was completed")
     su.add_argument("--scope", choices=("user", "project"), default="user",
                     help="user: all repos; project: only the current git repo")

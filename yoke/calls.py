@@ -150,9 +150,10 @@ def run_call(run, adapter, spec, *, stage, ticket=None, attempt=None, label=None
     if not errs and not denied:
         return res
     if denied:
-        ask = ("Your previous attempt was blocked: %s. There is no shell in this environment and it cannot be "
-               "approved. Do not run any command; use only file reading and editing tools. Complete the task "
-               "and return only the JSON object matching the schema." % res.error)
+        ask = ("Your previous attempt was blocked: %s. It cannot be approved and there is no shell. Do not "
+               "run any command or retry that action. Keep all work already done (files edited, files already read); do not "
+               "redo or re-read it. Finish only what remains using other file tools, then return only the "
+               "JSON object matching the schema." % res.error)
     else:
         ask = "Your previous output failed schema validation:\n" + "\n".join("- " + e for e in errs) + \
               "\nReturn only a corrected JSON object matching the schema."

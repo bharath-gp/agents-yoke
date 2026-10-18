@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import unittest
@@ -12,6 +13,29 @@ class TestDoctor(unittest.TestCase):
         self.assertTrue(lines[0].startswith("python "))
         self.assertIsInstance(problems, list)
         self.assertEqual(cli.main(["doctor"]), 1 if problems else 0)
+
+
+class TestGrantAgyRead(unittest.TestCase):
+    def test_adds_once_and_keeps_other_keys(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "s.json")
+            with open(p, "w") as f:
+                json.dump({"model": "m", "permissions": {"allow": ["command(ls)"]}}, f)
+            self.assertTrue(cli.grant_agy_read(p))
+            self.assertFalse(cli.grant_agy_read(p))
+            with open(p) as f:
+                data = json.load(f)
+            self.assertEqual(data["permissions"]["allow"], ["command(ls)", "read_file"])
+            self.assertEqual(data["model"], "m")
+
+    def test_creates_missing_and_rejects_bad_layout(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertTrue(cli.grant_agy_read(os.path.join(d, "sub", "s.json")))
+            bad = os.path.join(d, "bad.json")
+            with open(bad, "w") as f:
+                f.write("[]")
+            with self.assertRaises(ValueError):
+                cli.grant_agy_read(bad)
 
 
 class TestSaveRoles(unittest.TestCase):
