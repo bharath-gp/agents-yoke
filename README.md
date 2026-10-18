@@ -33,7 +33,7 @@ Claude Code without npx:
 /yoke:setup
 ```
 
-`/yoke:setup` installs the `yoke` CLI if missing (`uv tool install` from GitHub, `pipx` fallback), runs the environment check and records success, either user-wide (`~/.yoke/setup.json`) or for the current repo only (`~/.yoke/projects/`). Every other skill (`/yoke:grill plan tickets run resume status finish`) first runs `yoke setup --check` and tells you to run `/yoke:setup` if it fails. A SessionStart hook shows the same hint. Rerun setup or the installer to update. The repo must be readable with your git credentials (it is private until made public).
+`/yoke:setup` installs the `yoke` CLI if missing (`uv tool install` from GitHub, `pipx` fallback), runs the environment check and records success, either user-wide (`~/.yoke/setup.json`) or for the current repo only (`~/.yoke/projects/`). Every other skill (`/yoke:go grill plan tickets run resume status finish`) first runs `yoke setup --check` and tells you to run `/yoke:setup` if it fails. A SessionStart hook shows the same hint. Rerun setup or the installer to update. The repo must be readable with your git credentials (it is private until made public).
 
 Development: `uv tool install --editable .`, then `claude plugin marketplace add . && claude plugin install yoke@yoke`.
 
@@ -47,7 +47,27 @@ During ticket execution, the `review` stage runs an iterative review loop (up to
 
 ## Typical flow
 
-The skills run these for you; the raw commands are for scripting and debugging.
+- **/yoke:go**: run the complete workflow (grill, plan, tickets, run, finish) in one session with a single human gate at plan approval (auto-approves tickets and parallel runner).
+- Or run individual skills step-by-step: `/yoke:grill` -> `/yoke:plan` -> `/yoke:tickets` -> `/yoke:run` -> `/yoke:finish`.
+- Use `/yoke:resume [run_id]` to inspect active runs (`yoke runs --active`) or pick up an interrupted run with run id, and `/yoke:status [run_id]` to check progress.
+
+### Skills
+
+yoke provides the following skills for host agents (Claude Code and Antigravity):
+
+| Skill | Description |
+|---|---|
+| `/yoke:go` | Complete workflow from requirements through finish in a single session with a single human gate at plan approval. |
+| `/yoke:setup` | Check prerequisites and configure agent roles. |
+| `/yoke:grill` | Requirements gathering interview writing `requirements.md`. |
+| `/yoke:plan [run_id]` | Implementation plan drafting, bounded secondary review rounds, arbitration, and plan approval. |
+| `/yoke:tickets [run_id]` | Split approved plan into tickets, validate dependencies, import, and ticket approval. |
+| `/yoke:run [run_id]` | Start the detached background runner and orchestrator wait loop. |
+| `/yoke:resume [run_id]` | Inspect active runs (`yoke runs --active`) or pick up an interrupted run with run id. |
+| `/yoke:status [run_id]` | Check run progress, escalations, and active run states. |
+| `/yoke:finish [run_id]` | Final review gate: review commits, diffs, open issues, final approval, and open pull request. |
+
+The skills run these for you; the raw commands below are for scripting and debugging:
 
 ```bash
 yoke init --requirements req.md   # prints run_id; write plan.md into ~/.yoke/runs/<run_id>/
@@ -57,7 +77,8 @@ yoke tickets import tickets.json  # validate, classify untyped tickets; `yoke ti
 yoke route T-001                  # stages and agents for a ticket
 yoke run --detach --parallel 2    # background runner; always resumes from disk
 yoke wait                         # blocks until escalation, done, needs_user, stopped, died or timeout
-yoke status [--json|--brief]      # also: escalations, unblock T-001 [--reset-attempts], stop
+yoke runs [--active] [--json]     # list runs for this repo with goal and next step
+yoke status [--json|--brief]      # also: escalations, unblock T-001 [--reset-attempts], stop; --active lists active runs
 yoke approve final && yoke pr     # push branch, open PR
 yoke clean                        # remove worktrees (keeps branches and audit)
 ```

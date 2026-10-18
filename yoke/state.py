@@ -62,19 +62,29 @@ class Run:
         return run
 
     @classmethod
-    def latest_for_repo(cls, path, home=None):
-        """Most recent run whose repo == path, or None."""
+    def list_for_repo(cls, path, home=None):
+        """All runs whose run.json repo == realpath(path) and kind != 'research', sorted by created_at ascending."""
         path = os.path.realpath(path)
         runs_dir = os.path.join(home or config.yoke_home(), "runs")
-        best = None
+        matching = []
         for rid in sorted(os.listdir(runs_dir)) if os.path.isdir(runs_dir) else []:
             try:
-                info = cls(rid, home).read_json("run.json")
+                run = cls(rid, home)
+                info = run.read_json("run.json")
             except (OSError, ValueError):
                 continue
-            if info.get("repo") == path and info.get("kind") != "research" and (best is None or info["created_at"] >= best[0]):
-                best = (info["created_at"], rid)
-        return cls(best[1], home) if best else None
+            if isinstance(info, dict) and info.get("kind") != "research":
+                repo = info.get("repo")
+                if repo and (repo == path or os.path.realpath(repo) == path):
+                    matching.append((info.get("created_at") or "", run))
+        matching.sort(key=lambda item: item[0])
+        return [item[1] for item in matching]
+
+    @classmethod
+    def latest_for_repo(cls, path, home=None):
+        """Most recent run whose repo == path, or None."""
+        runs = cls.list_for_repo(path, home=home)
+        return runs[-1] if runs else None
 
     def path(self, rel):
         return os.path.join(self.dir, rel)

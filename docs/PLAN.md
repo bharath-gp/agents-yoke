@@ -477,6 +477,14 @@ Files: `yoke/prompts/review.md`, `yoke/schemas/review.json`, `yoke/config.py`, `
 - Iterative review loop (`_review_loop`) runs up to `max_review_rounds` revisions (default 2). Blocker and major findings trigger coder revisions using resumed session. Minor and nit findings are treated as advisory and do not block.
 - Notes: Built `yoke/prompts/review.md`, `yoke/schemas/review.json`, config resolution for `auto` role mapping, iterative review loop with resumed coder sessions, unresolved findings reporting in tracking issues and PR description. Deviations: (a) `auto` role setting resolves dynamically to the opposite agent rather than requiring explicit configuration; (b) advisory-after-cap (unresolved blocker/major findings can still land; they reach qa/validate via `prior_results`): when the revision cap (`max_review_rounds`) is reached with remaining blocker/major findings, the ticket does not fail or block; unresolved findings are recorded in ticket state, emitted as `review_unresolved` audit event, commented on the tracking issue, and surfaced in the PR description under "Unresolved review findings".
 
+<a id="m12"></a>
+### M12: Run listing, `go` skill, and multi-run resume (0.3.0) `[x]`
+Files: `yoke/state.py`, `yoke/runcmds.py`, `skills/go/SKILL.md`, `skills/resume/SKILL.md`, `skills/*/SKILL.md`, `tests/test_runs.py`, `tests/test_plugin.py`, `README.md`, `docs/PLAN.md`, `.claude-plugin/plugin.json`, `pyproject.toml`.
+- Added run listing and inspection helpers (`Run.list_for_repo`, `Run.summary_dict`, `yoke runs [--active] [--json]`).
+- Added `/yoke:go` all-in-one skill running grill -> plan -> tickets -> run -> finish with a single human gate at plan approval.
+- Rewrote `/yoke:resume` to support run selection and targeting via `[run_id]`, integrated with `yoke runs --active`.
+- Updated all skills with `--run` routing and bumped package version to 0.3.0.
+
 ---
 
 <a id="s4"></a>
