@@ -2,6 +2,9 @@
 import subprocess
 from typing import Dict, List, Optional, Tuple
 
+# Static on purpose: the claude CLI has no model-listing command (2.1.301; `claude models` is run as a
+# prompt). GET /v1/models needs ANTHROPIC_API_KEY (absent with claude.ai auth) and ignores plan
+# entitlement. Upgrade path: probe each candidate with a tiny `claude -p --model X` call.
 CLAUDE_MODELS = ("opus", "sonnet", "haiku")
 STATIC_AGY_MODELS = (
     "gemini-3.8-flash-high",
