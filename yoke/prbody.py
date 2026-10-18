@@ -2,7 +2,10 @@
 import json
 import os
 import re
+import string
 import subprocess
+
+from . import adapters, calls, config, schema, state
 
 TICKET_TYPE_PRIORITY = (
     "feature",
@@ -547,3 +550,129 @@ def fill_template(template, facts):
         out_sections.append(section_text)
 
     return "\n\n".join(out_sections).strip() + "\n"
+
+
+def untick_unverified(body, verified):
+    """Post-validate checklist items by un-ticking any checkbox not in verified set."""
+    if isinstance(verified, (list, tuple)):
+        verified = set(verified)
+    elif not isinstance(verified, set):
+        verified = set(verified) if verified else set()
+
+    checklist_pattern = re.compile(r"^(\s*(?:[-*+]|\d+\.)\s*\[)([ xX])(\]\s*)(.*)$")
+    out_lines = []
+    for line in body.splitlines():
+        chk = checklist_pattern.match(line)
+        if chk:
+            prefix = chk.group(1)
+            tick = chk.group(2)
+            suffix = chk.group(3)
+            item_text = chk.group(4)
+            if tick in ("x", "X") and not _should_tick(item_text, verified):
+                out_lines.append(f"{prefix} {suffix}{item_text}")
+            else:
+                out_lines.append(line)
+        else:
+            out_lines.append(line)
+    res = "\n".join(out_lines)
+    if body.endswith("\n"):
+        res += "\n"
+    return res
+
+
+def fill(run, template, facts, adapter=None, env=None):
+    """Fill PR template using agent via calls.run_call with fallback to deterministic fill (PLAN 2.14).
+
+    Calls agent with mode='read' using role 'pr_body'.
+    Reads body from structured_output['body'].
+    On any failure or invalid output: returns deterministic fill and logs event 'pr_fill_fallback'.
+    Post-validates by un-ticking any checkbox not in verified set.
+    """
+    role = "pr_body"
+
+    def _fallback():
+        if hasattr(run, "event"):
+            try:
+                run.event("pr_fill_fallback")
+            except Exception:
+                pass
+        elif isinstance(run, str):
+            try:
+                events_p = os.path.join(run, "events.jsonl")
+                with open(events_p, "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"kind": "pr_fill_fallback", "time": state.now()}) + "\n")
+            except Exception:
+                pass
+        return fill_template(template, facts)
+
+    try:
+        cfg = getattr(run, "cfg", None)
+        if cfg is None:
+            if hasattr(run, "read_json"):
+                cfg = run.read_json("run.json", {}).get("config")
+        if cfg is None:
+            cfg = config.load()
+
+        timeout_s = cfg.get("timeouts_s", {}).get(role, 300)
+        repo = None
+        if hasattr(run, "read_json"):
+            try:
+                repo = run.read_json("run.json", {}).get("repo")
+            except Exception:
+                pass
+        if not repo:
+            repo = getattr(run, "dir", os.getcwd())
+
+        verified = facts.get("verified", set())
+        if isinstance(verified, (list, tuple)):
+            verified_str = ", ".join(sorted(verified))
+        elif isinstance(verified, set):
+            verified_str = ", ".join(sorted(verified))
+        else:
+            verified_str = str(verified)
+
+        prompts_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prompts")
+        with open(os.path.join(prompts_dir, "pr_body.md"), encoding="utf-8") as f:
+            prompt_tmpl = string.Template(f.read())
+
+        prompt = prompt_tmpl.safe_substitute(
+            template=template or "(none provided)",
+            title=facts.get("title", ""),
+            summary=facts.get("summary", ""),
+            why=facts.get("why", ""),
+            changes=facts.get("changes", ""),
+            verification=facts.get("verification", ""),
+            verified=verified_str,
+        )
+
+        spec = adapters.CallSpec(
+            prompt=prompt,
+            schema_path=schema.schema_path("pr_body"),
+            cwd=repo,
+            mode="read",
+            timeout_s=timeout_s,
+            env=env or {},
+        )
+
+        if adapter is None:
+            agent_name = config.agent_for(cfg, role)
+            adapter = adapters.get(agent_name)
+
+        res = calls.run_call(run, adapter, spec, stage=role)
+
+        if (
+            res is None
+            or not res.ok
+            or res.schema_valid is False
+            or not isinstance(res.structured_output, dict)
+            or not isinstance(res.structured_output.get("body"), str)
+            or not res.structured_output.get("body", "").strip()
+        ):
+            return _fallback()
+
+        body = res.structured_output["body"]
+        return untick_unverified(body, verified)
+
+    except Exception:
+        return _fallback()
+

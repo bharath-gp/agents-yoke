@@ -5,7 +5,8 @@ import subprocess
 import tempfile
 import unittest
 
-from yoke import prbody
+from tests.test_core import FAKE_CLI
+from yoke import adapters, config, prbody, schema, state
 
 
 class TestFindTemplate(unittest.TestCase):
@@ -397,5 +398,200 @@ Any additional info.
         self.assertIn("N/A - not recorded by yoke", res)
 
 
+class TestAgentFill(unittest.TestCase):
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.addCleanup(self._td.cleanup)
+        self.tmp = os.path.realpath(self._td.name)
+        self.repo = os.path.join(self.tmp, "repo")
+        os.makedirs(self.repo, exist_ok=True)
+        subprocess.run(["git", "-C", self.repo, "init", "-q"], check=True)
+        self.cfg = config.load(home=self.tmp)
+        self.run_ = state.Run.create(self.repo, self.cfg, home=self.tmp)
+        self.script = os.path.join(self.tmp, "script.json")
+        self.adapter = adapters.FakeAdapter(FAKE_CLI)
+
+    def _set_script(self, responses):
+        with open(self.script, "w", encoding="utf-8") as f:
+            json.dump({"pr_body": responses}, f)
+
+    def test_agent_success(self):
+        agent_body = "## Summary\nAgent filled summary\n\n## Verification\n- [x] Tests pass\n"
+        self._set_script([{"structured_output": {"body": agent_body}, "session_id": "s1"}])
+        facts = {
+            "title": "Title 1",
+            "summary": "Summary 1",
+            "why": "Why 1",
+            "changes": "Changes 1",
+            "verification": "Verif 1",
+            "verified": {"tests_pass"},
+        }
+        res = prbody.fill(
+            self.run_,
+            None,
+            facts,
+            adapter=self.adapter,
+            env={"FAKE_SCRIPT": self.script},
+        )
+        self.assertEqual(res, agent_body)
+
+        events = []
+        events_path = self.run_.path("events.jsonl")
+        if os.path.exists(events_path):
+            with open(events_path, encoding="utf-8") as f:
+                for line in f:
+                    if line.strip():
+                        events.append(json.loads(line))
+        fallback_events = [e for e in events if e.get("kind") == "pr_fill_fallback"]
+        self.assertEqual(len(fallback_events), 0)
+
+        run_info = self.run_.read_json("run.json")
+        self.assertEqual(run_info["agent_calls"], 1)
+
+    def test_agent_failure_fallback(self):
+        self._set_script([{"exit": 1}])
+        facts = {
+            "title": "Title 1",
+            "summary": "Summary 1",
+            "why": "Why 1",
+            "changes": "Changes 1",
+            "verification": "Verif 1",
+            "verified": {"tests_pass"},
+        }
+        expected = prbody.fill_template(None, facts)
+        res = prbody.fill(
+            self.run_,
+            None,
+            facts,
+            adapter=self.adapter,
+            env={"FAKE_SCRIPT": self.script},
+        )
+        self.assertEqual(res, expected)
+
+        events = []
+        events_path = self.run_.path("events.jsonl")
+        with open(events_path, encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    events.append(json.loads(line))
+        fallback_events = [e for e in events if e.get("kind") == "pr_fill_fallback"]
+        self.assertGreaterEqual(len(fallback_events), 1)
+
+    def test_agent_schema_failure_fallback(self):
+        self._set_script([
+            {"structured_output": {"wrong_field": "foo"}, "session_id": "s1"},
+            {"structured_output": {"wrong_field": "bar"}, "session_id": "s1"},
+        ])
+        facts = {
+            "title": "Title 1",
+            "summary": "Summary 1",
+            "why": "Why 1",
+            "changes": "Changes 1",
+            "verification": "Verif 1",
+            "verified": set(),
+        }
+        expected = prbody.fill_template(None, facts)
+        res = prbody.fill(
+            self.run_,
+            None,
+            facts,
+            adapter=self.adapter,
+            env={"FAKE_SCRIPT": self.script},
+        )
+        self.assertEqual(res, expected)
+
+        events = []
+        with open(self.run_.path("events.jsonl"), encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    events.append(json.loads(line))
+        fallback_events = [e for e in events if e.get("kind") == "pr_fill_fallback"]
+        self.assertGreaterEqual(len(fallback_events), 1)
+
+    def test_agent_ticking_unverified_box_gets_unticked(self):
+        agent_body = """## Checklist
+- [x] Tests pass
+- [x] Documentation updated
+- [X] Security audit complete
+* [x] Performance benchmark run
+"""
+        self._set_script([{"structured_output": {"body": agent_body}, "session_id": "s1"}])
+        facts = {
+            "title": "Title 1",
+            "verified": {"tests_pass"},
+        }
+        res = prbody.fill(
+            self.run_,
+            None,
+            facts,
+            adapter=self.adapter,
+            env={"FAKE_SCRIPT": self.script},
+        )
+        self.assertIn("- [x] Tests pass", res)
+        self.assertIn("- [ ] Documentation updated", res)
+        self.assertIn("- [ ] Security audit complete", res)
+        self.assertIn("* [ ] Performance benchmark run", res)
+
+    def test_agent_all_unticked_when_verified_empty(self):
+        agent_body = """## Checklist
+- [x] Tests pass
+- [x] Documentation updated
+"""
+        self._set_script([{"structured_output": {"body": agent_body}, "session_id": "s1"}])
+        facts = {
+            "title": "Title 1",
+            "verified": set(),
+        }
+        res = prbody.fill(
+            self.run_,
+            None,
+            facts,
+            adapter=self.adapter,
+            env={"FAKE_SCRIPT": self.script},
+        )
+        self.assertIn("- [ ] Tests pass", res)
+        self.assertIn("- [ ] Documentation updated", res)
+        self.assertNotIn("- [x]", res)
+
+    def test_agent_with_custom_template(self):
+        template = "## Custom Section\nCustom details here\n"
+        agent_body = "## Custom Section\nAgent filled custom content\n"
+        self._set_script([{"structured_output": {"body": agent_body}, "session_id": "s1"}])
+        facts = {
+            "title": "Custom Title",
+            "verified": set(),
+        }
+        res = prbody.fill(
+            self.run_,
+            template,
+            facts,
+            adapter=self.adapter,
+            env={"FAKE_SCRIPT": self.script},
+        )
+        self.assertEqual(res, agent_body)
+
+    def test_agent_whitespace_body_fallback(self):
+        self._set_script([{"structured_output": {"body": "   \n\t  "}, "session_id": "s1"}])
+        facts = {
+            "title": "Title 1",
+            "summary": "Summary 1",
+            "why": "Why 1",
+            "changes": "Changes 1",
+            "verification": "Verif 1",
+            "verified": set(),
+        }
+        expected = prbody.fill_template(None, facts)
+        res = prbody.fill(
+            self.run_,
+            None,
+            facts,
+            adapter=self.adapter,
+            env={"FAKE_SCRIPT": self.script},
+        )
+        self.assertEqual(res, expected)
+
+
 if __name__ == "__main__":
     unittest.main()
+
+

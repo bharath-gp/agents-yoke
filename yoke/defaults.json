@@ -14,7 +14,8 @@
       "docs": "secondary",
       "search": "primary",
       "research": "secondary",
-      "factcheck": "primary"
+      "factcheck": "primary",
+      "pr_body": "primary"
     }
   },
   "max_attempts_per_ticket": 3,
@@ -31,7 +32,8 @@
     "search": 600,
     "research": 1800,
     "factcheck": 1200,
-    "router_fallback": 120
+    "router_fallback": 120,
+    "pr_body": 300
   },
   "kill_grace_s": 15,
   "router": {
