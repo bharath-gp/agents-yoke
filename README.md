@@ -57,7 +57,8 @@ yoke tickets import tickets.json  # validate, classify untyped tickets; `yoke ti
 yoke route T-001                  # stages and agents for a ticket
 yoke run --detach --parallel 2    # background runner; always resumes from disk
 yoke wait                         # blocks until escalation, done, needs_user, stopped, died or timeout
-yoke status [--json|--brief]      # also: escalations, unblock T-001 [--reset-attempts], stop
+yoke runs [--active] [--json]     # list runs for this repo with goal and next step
+yoke status [--json|--brief]      # also: escalations, unblock T-001 [--reset-attempts], stop; --active lists active runs
 yoke approve final && yoke pr     # push branch, open PR
 yoke clean                        # remove worktrees (keeps branches and audit)
 ```
