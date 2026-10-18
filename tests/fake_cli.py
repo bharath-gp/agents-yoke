@@ -5,6 +5,7 @@ FAKE_SCRIPT: JSON file {stage: [response, ...]}, responses consumed in order per
   {"structured_output": {...}, "session_id": "s1"}   printed as JSON
   {"sleep": 999, "child_pidfile": "path"}            optionally spawn a child, then sleep
   {"exit": 1}                                        exit with that code
+  {"stderr": "text", "exit": 1}                      write text to stderr
   {"raw": "text"}                                    print text verbatim
 Any response may add "write": {path: text} (files created in cwd) and "commit": true (git add -A
 and commit in cwd, simulating a misbehaving agent) before printing.
@@ -47,6 +48,9 @@ def main():
         subprocess.run(["git", "commit", "-qm", "agent commit"], check=True)
     if "sleep" in resp:
         time.sleep(resp["sleep"])
+    if "stderr" in resp:
+        sys.stderr.write(resp["stderr"] + "\n")
+        sys.stderr.flush()
     if "exit" in resp:
         sys.exit(resp["exit"])
     if "raw" in resp:

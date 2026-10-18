@@ -42,6 +42,8 @@ Status legend per milestone: `[ ]` todo, `[~]` in progress, `[x]` done. Update t
    | [M9](#m9) | Resume, handoff, end-to-end | [2.11](#s2-11), [4](#s4) |
    | [M10](#m10) | Search, research, fact-check agents | [m10](#m10) |
    | [M11](#m11) | Code review stage & iterative revisions | [2.5](#s2-5), [2.6](#s2-6), [2.8](#s2-8) |
+   | [M12](#m12) | Run listing, `go` skill, multi-run resume | [2.11](#s2-11) |
+   | [M13](#m13) | Model selection & configuration | [2.6](#s2-6) |
 4. [Verification matrix](#s4)
 5. [Out of scope](#s5)
 - [Appendix A: Topic index](#appA)
@@ -192,6 +194,7 @@ Default budgets/limits:
 | `router.fallback` | `{"agent": "claude", "model": "claude-haiku-5-5", "effort": "low"}` |
 | `test_command` | `null` (QA result supplies it; repo config may pin it) |
 | `tracker` | `"auto"` (`github` if `gh repo view` succeeds and remote is GitHub, else `local`) |
+| `models` | `{}` (`{<agent>: {"plan": {"model": str, "effort": str}, "cheap": {...}}}`) |
 
 Type → stages routing (config `routing`, overridable per type with model/effort per stage):
 
@@ -304,6 +307,8 @@ skills/tickets/SKILL.md           # wayfinder → tickets.json → ticket approv
 skills/run/SKILL.md               # start runner, orchestrator wait loop, escalations
 skills/resume/SKILL.md            # handoff entry point
 skills/status/SKILL.md
+skills/models/SKILL.md            # model discovery, inspect, configure, and reset
+skills/go/SKILL.md                # end-to-end wrapper running grill, plan, tickets, and run
 skills/finish/SKILL.md            # final review gate, optional PR
 pyproject.toml                    # name yoke, requires-python >=3.9, no deps, script yoke=yoke.cli:main
 yoke/__init__.py
@@ -349,6 +354,7 @@ yoke stop [--run R]                   # SIGTERM runner; workers killed; resumabl
 yoke pr [--run R]                     # requires approve final; push branch + gh pr create
 yoke clean [--run R]
 yoke route T-xxx [--run R]            # debug: show stages/agents/models for a ticket
+yoke models [--list] [--show] [--set AGENT.TIER=MODEL] [--effort E] [--scope user|project|repo] [--reset [AGENT[.TIER]]]
 yoke mcp                              # stdio MCP server
 yoke doctor [--live]
 ```
@@ -485,6 +491,15 @@ Files: `yoke/state.py`, `yoke/runcmds.py`, `skills/go/SKILL.md`, `skills/resume/
 - Rewrote `/yoke:resume` to support run selection and targeting via `[run_id]`, integrated with `yoke runs --active`.
 - Updated all skills with `--run` routing and bumped package version to 0.3.0.
 
+<a id="m13"></a>
+### M13: Model selection & configuration `[x]`
+Files: `yoke/models.py`, `yoke/config.py`, `yoke/calls.py`, `yoke/cli.py` (`models`), `skills/models/SKILL.md`, `skills/grill/SKILL.md`, `skills/go/SKILL.md`, `README.md`, `docs/PLAN.md`, `tests/test_models.py`.
+- Model tiers (`plan`, `cheap`): config schema and resolution in `config.py` mapping `plan` tier to `requirements`, `planner`, and `plan_review`, and `cheap` tier to all execution stages (`code`, `review`, `qa`, `validate`, `docs`).
+- Model discovery and CLI: `models.py` queries `agy models` dynamically with static fallback, static catalog for `claude`; `yoke models` CLI supports `--list`, `--show`, `--set AGENT.TIER=MODEL`, `--effort E`, `--scope user|project|repo`, and `--reset`.
+- Model fallback on error: `calls.py` automatically retries once without explicit model or effort in audit directory `fallback/` when an agent call fails with a model error, logging a `model_fallback` event.
+- Interactive model skills: `/yoke:models` allows inspecting, configuring, or resetting models; `/yoke:grill` and `/yoke:go` prompt to confirm or update agent models before planning.
+- Notes: Built `yoke/models.py` (model listing with `agy models` CLI call and static fallback catalog), updated `config.py` for model configuration merging across scopes, implemented automatic single-retry fallback on model errors in `calls.py`, added `yoke models` subcommand in `cli.py`, created `skills/models/SKILL.md`, and integrated model selection steps into grill and go skills.
+
 ---
 
 <a id="s4"></a>
@@ -529,6 +544,7 @@ Files: `yoke/state.py`, `yoke/runcmds.py`, `skills/go/SKILL.md`, `skills/resume/
 | Human gates (plan, tickets, escalation, final) | [2.3](#s2-3), [M7](#m7) |
 | Install (Claude plugin, agy, CLI) | [2.15](#s2-15) |
 | MCP tool names | [2.10](#s2-10) |
+| Model discovery and config (`yoke models`) | [2.6](#s2-6) |
 | Merge strategy, rebase conflicts | [2.9](#s2-9), [M5](#m5) |
 | Orchestrator session, `wait`, SessionStart hook | [2.1](#s2-1), [2.11](#s2-11) |
 | Parallel execution | [2.9](#s2-9), [M5](#m5) |
@@ -549,6 +565,7 @@ Files: `yoke/state.py`, `yoke/runcmds.py`, `skills/go/SKILL.md`, `skills/resume/
 | `pyproject.toml` | package, `yoke` script | [2.15](#s2-15) | [M0](#m0) |
 | `yoke/cli.py` | argparse subcommands | [2.16](#s2-16) | [M0](#m0)–[M9](#m9) |
 | `yoke/config.py`, `defaults.json` | config merge, role lookup | [2.5](#s2-5), [2.6](#s2-6) | [M1](#m1) |
+| `yoke/models.py` | model discovery (`agy models`, claude static) | [2.6](#s2-6) | T-002 |
 | `yoke/state.py` | run dir, atomic JSON, events, status | [2.2](#s2-2) | [M1](#m1) |
 | `yoke/schema.py`, `schemas/*.json` | stdlib validator, schemas | [2.7](#s2-7) | [M1](#m1)–[M4](#m4) |
 | `yoke/adapters.py` | Claude / agy / Fake adapters | [2.4](#s2-4) | [M1](#m1) |

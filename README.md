@@ -33,7 +33,7 @@ Claude Code without npx:
 /yoke:setup
 ```
 
-`/yoke:setup` installs the `yoke` CLI if missing (`uv tool install` from GitHub, `pipx` fallback), runs the environment check and records success, either user-wide (`~/.yoke/setup.json`) or for the current repo only (`~/.yoke/projects/`). Every other skill (`/yoke:go grill plan tickets run resume status finish`) first runs `yoke setup --check` and tells you to run `/yoke:setup` if it fails. A SessionStart hook shows the same hint. Rerun setup or the installer to update. The repo must be readable with your git credentials (it is private until made public).
+`/yoke:setup` installs the `yoke` CLI if missing (`uv tool install` from GitHub, `pipx` fallback), runs the environment check and records success, either user-wide (`~/.yoke/setup.json`) or for the current repo only (`~/.yoke/projects/`). Every other skill (`/yoke:go grill plan tickets run resume status finish models`) first runs `yoke setup --check` and tells you to run `/yoke:setup` if it fails. A SessionStart hook shows the same hint. Rerun setup or the installer to update. The repo must be readable with your git credentials (it is private until made public).
 
 Development: `uv tool install --editable .`, then `claude plugin marketplace add . && claude plugin install yoke@yoke`.
 
@@ -44,6 +44,38 @@ Agent roles are configured via `yoke setup --primary <agent> --secondary <agent>
 The `review` role defaults to `auto`, resolving dynamically to the opposite of the `code` agent (`claude` <-> `agy`), ensuring code review is performed by a different agent than the implementer. For custom code agent names outside `AGENTS`, it falls back to `primary` (or `secondary` if `primary` matches `code`). `yoke setup` warns if an explicit override assigns the same agent to both code and review. Use `--map review=auto` to restore automatic resolution.
 
 During ticket execution, the `review` stage runs an iterative review loop (up to `max_review_rounds` revisions). Blocker and major findings trigger coder revisions using the resumed session. If findings remain unresolved when reaching the revision cap, the ticket proceeds without failing: unresolved findings are recorded in ticket state, posted as issue comments, and surfaced in the `yoke pr` description under "Unresolved review findings".
+
+### Model selection and tiers
+
+Models can be configured per agent across two tiers: `plan` (used for `requirements`, `planner`, `plan_review`) and `cheap` (used for all other execution stages such as `code`, `qa`, `docs`, `review`, and `validate`):
+
+```json
+"models": {
+  "claude": {
+    "plan": {"model": "claude-sonnet-5-5", "effort": "high"},
+    "cheap": {"model": "claude-haiku-5-5", "effort": "low"}
+  }
+}
+```
+
+When an agent call fails due to a model error, yoke automatically retries once without a model (clearing both model and effort) under a `/fallback` audit directory and logs a `model_fallback` event.
+
+Configure and inspect models via `yoke models`:
+
+```bash
+yoke models --list [--json]                                      # list available choices per agent
+yoke models --show [--json]                                      # print effective plan/cheap models per agent
+yoke models --set AGENT.TIER=MODEL [--effort E] [--scope user|project|repo]  # configure model (repeatable)
+yoke models --reset [AGENT[.TIER]] [--scope user|project|repo]   # remove model configurations
+```
+
+- `--list`: queries available models for each agent (`agy models` dynamically, static list for `claude`).
+- `--show`: displays effective `plan` and `cheap` models and effort settings.
+- `--set`: sets model choices in user config (`~/.yoke/config.json`) or repo config (`<repo>/.yoke.json`).
+- `--reset`: clears model settings for an agent, tier, or all entries.
+
+In agent sessions, run `/yoke:models` (agy: the `models` skill) to interactively inspect, configure, or reset model choices. When kicking off runs with `/yoke:grill` or the end-to-end wrapper `/yoke:go`, a model selection prompt precedes `yoke init` to confirm or update agent models before planning.
+
 
 ## Typical flow
 
@@ -64,6 +96,7 @@ yoke provides the following skills for host agents (Claude Code and Antigravity)
 | `/yoke:tickets [run_id]` | Split approved plan into tickets, validate dependencies, import, and ticket approval. |
 | `/yoke:run [run_id]` | Start the detached background runner and orchestrator wait loop. |
 | `/yoke:resume [run_id]` | Inspect active runs (`yoke runs --active`) or pick up an interrupted run with run id. |
+| `/yoke:models` | Inspect, set or reset the plan-tier and cheap-tier models per agent. |
 | `/yoke:status [run_id]` | Check run progress, escalations, and active run states. |
 | `/yoke:finish [run_id]` | Final review gate: review commits, diffs, open issues, final approval, and open pull request. |
 

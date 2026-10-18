@@ -1,6 +1,6 @@
 {
   "name": "yoke",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Primary/secondary agent loop: Claude plans and validates, Antigravity (agy) codes, tests and writes docs. Skills drive the `yoke` CLI.",
   "author": {"name": "Bharath G P"}
 }

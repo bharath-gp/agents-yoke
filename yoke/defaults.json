@@ -19,6 +19,7 @@
       "pr_body": "primary"
     }
   },
+  "models": {},
   "max_attempts_per_ticket": 3,
   "max_plan_review_rounds": 3,
   "max_review_rounds": 2,

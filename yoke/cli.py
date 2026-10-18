@@ -8,7 +8,7 @@ import subprocess
 import sys
 import urllib.request
 
-from . import config, research, router, runcmds, state, tracker, tickets as tickets_mod
+from . import config, models as models_mod, research, router, runcmds, state, tracker, tickets as tickets_mod
 
 OLLAMA_URL = "http://127.0.0.1:11434"
 DECISION_MODEL = "tev1:4b"  # /v1/systemone; M0 spike: 10/10 ticket types, ~0.75s
@@ -208,6 +208,142 @@ def route_cmd(args):
     return 0
 
 
+def _model_id(m):
+    return m["id"] if isinstance(m, dict) else str(m)
+
+
+def _model_label(m):
+    return m.get("label", "") if isinstance(m, dict) else ""
+
+
+
+def models_cmd(args):
+    """Handle 'yoke models' subcommand: list, show, set, or reset model configurations."""
+    if args.list:
+        choices = {}
+        for ag in config.AGENTS:
+            models, warn = models_mod.list_models(ag)
+            if warn:
+                print(warn, file=sys.stderr)
+            choices[ag] = models
+        if args.json:
+            out = {ag: [_model_id(m) for m in mlist] for ag, mlist in choices.items()}
+            print(json.dumps(out, indent=2))
+            return 0
+        for ag in config.AGENTS:
+            print("%s:" % ag)
+            for m in choices[ag]:
+                mid = _model_id(m)
+                label = _model_label(m)
+                if label:
+                    print("  %s\t%s" % (mid, label))
+                else:
+                    print("  %s" % mid)
+        return 0
+
+    if not args.set and args.reset is None and not args.show:
+        print("models: specify --list, --show, --set, or --reset", file=sys.stderr)
+        return 2
+
+    path = (os.path.join(config.yoke_home(), "config.json") if args.scope == "user"
+            else os.path.join(_git_toplevel(os.getcwd()), ".yoke.json"))
+
+    if args.set or args.reset is not None:
+        reset_entries = []
+        if args.reset is not None:
+            for item in args.reset:
+                item = (item or "").strip()
+                if not item:
+                    cur = config._read(path)
+                    cur_models = cur.get("models", {})
+                    reset_entries.extend(list(cur_models.keys()) or list(config.AGENTS))
+                    continue
+                if "." in item:
+                    ag, ti = item.split(".", 1)
+                    if ag not in config.AGENTS:
+                        print("models: unknown agent %r (choose from %s)" % (ag, ", ".join(config.AGENTS)), file=sys.stderr)
+                        return 2
+                    if ti not in ("plan", "cheap"):
+                        print("models: unknown tier %r (choose from plan, cheap)" % ti, file=sys.stderr)
+                        return 2
+                    reset_entries.append((ag, ti))
+                else:
+                    ag = item
+                    if ag not in config.AGENTS:
+                        print("models: unknown agent %r (choose from %s)" % (ag, ", ".join(config.AGENTS)), file=sys.stderr)
+                        return 2
+                    reset_entries.append(ag)
+
+        sets_dict = {}
+        if args.set:
+            for item in args.set:
+                if "=" not in item:
+                    print("models: --set expects AGENT.TIER=MODEL, got %s" % item, file=sys.stderr)
+                    return 2
+                target, model = item.split("=", 1)
+                if "." not in target:
+                    print("models: --set target expects AGENT.TIER, got %s" % target, file=sys.stderr)
+                    return 2
+                ag, ti = target.split(".", 1)
+                if ag not in config.AGENTS:
+                    print("models: unknown agent %r (choose from %s)" % (ag, ", ".join(config.AGENTS)), file=sys.stderr)
+                    return 2
+                if ti not in ("plan", "cheap"):
+                    print("models: unknown tier %r (choose from plan, cheap)" % ti, file=sys.stderr)
+                    return 2
+                if not model:
+                    print("models: --set MODEL cannot be empty", file=sys.stderr)
+                    return 2
+
+                if ag == "agy":
+                    available, warn = models_mod.list_models("agy")
+                    if warn:
+                        print(warn, file=sys.stderr)
+                    else:
+                        available_ids = [_model_id(m) for m in available]
+                        if model not in available_ids:
+                            print("warning: model %r not in 'agy models'" % model, file=sys.stderr)
+
+                entry = {"model": model}
+                if args.effort is not None:
+                    entry["effort"] = args.effort
+                sets_dict.setdefault(ag, {})[ti] = entry
+
+        config.save_models(path, sets=sets_dict if sets_dict else None,
+                           reset=reset_entries if reset_entries else None)
+        if not args.show:
+            action_desc = "models saved to %s" % path if args.set else "models reset in %s" % path
+            print(action_desc)
+            return 0
+
+    if args.show:
+        repo = _git_toplevel(os.getcwd())
+        cfg = config.load(repo=repo)
+        if args.json:
+            out = {}
+            for ag in config.AGENTS:
+                plan_m, plan_e = config.model_for(cfg, ag, "planner")
+                cheap_m, cheap_e = config.model_for(cfg, ag, "code")
+                out[ag] = {
+                    "plan": {"model": plan_m, "effort": plan_e} if plan_m else None,
+                    "cheap": {"model": cheap_m, "effort": cheap_e} if cheap_m else None,
+                }
+            print(json.dumps(out, indent=2))
+            return 0
+        for ag in config.AGENTS:
+            print("%s:" % ag)
+            plan_m, plan_e = config.model_for(cfg, ag, "planner")
+            cheap_m, cheap_e = config.model_for(cfg, ag, "code")
+            for tier, m, eff in (("plan", plan_m, plan_e), ("cheap", cheap_m, cheap_e)):
+                if m:
+                    eff_str = " (effort: %s)" % eff if eff else ""
+                    print("  %s: %s%s" % (tier, m, eff_str))
+                else:
+                    print("  %s: (unset)" % tier)
+        return 0
+    return 0
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="yoke")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -232,6 +368,18 @@ def main(argv=None):
     su.add_argument("--secondary", choices=config.AGENTS, help="agent used for 'secondary' roles")
     su.add_argument("--map", action="append", default=[], metavar="ROLE=AGENT",
                     help="map a role (code, review, qa, docs, ...) to primary, secondary, an agent, or auto (review only); repeatable")
+    mo = sub.add_parser("models", help="list, show, configure, or reset model choices per agent")
+    mo.add_argument("--list", action="store_true", help="list available model choices per agent")
+    mo.add_argument("--json", action="store_true", help="output in JSON format")
+    mo.add_argument("--show", action="store_true", help="print effective plan/cheap models per agent")
+    mo.add_argument("--set", action="append", default=[], metavar="AGENT.TIER=MODEL",
+                    help="set model for agent and tier (plan|cheap); repeatable")
+    mo.add_argument("--effort", nargs="?", const="high", default=None,
+                    help="reasoning effort for model (e.g. low, medium, high)")
+    mo.add_argument("--scope", choices=("user", "project", "repo"), default="user",
+                    help="user: ~/.yoke/config.json; project/repo: <repo>/.yoke.json (default: user)")
+    mo.add_argument("--reset", nargs="?", const="", action="append", default=None, metavar="[AGENT[.TIER]]",
+                    help="remove model configuration for AGENT or AGENT.TIER (or all if omitted)")
     tk = sub.add_parser("tickets", help="import or show tickets")
     tk.add_argument("action", choices=["import", "show"])
     tk.add_argument("file", nargs="?", help="tickets JSON (import)")
@@ -253,6 +401,8 @@ def main(argv=None):
         from . import mcp_server
         mcp_server.serve()
         return 0
+    if args.cmd == "models":
+        return models_cmd(args)
     if args.cmd == "tickets":
         if args.action == "import" and not args.file:
             p.error("tickets import needs a file")

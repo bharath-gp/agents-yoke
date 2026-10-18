@@ -96,6 +96,55 @@ class TestConfig(Tmp):
         res = config.save_roles(p, mapping={"review": "auto"})
         self.assertEqual(res["by_role"]["review"], "auto")
 
+    def test_model_for_tiers(self):
+        cfg = {
+            "roles": {"by_role": {"plan_review": "secondary", "code": "secondary", "qa": "secondary", "docs": "secondary"}},
+            "models": {
+                "claude": {
+                    "plan": {"model": "claude-sonnet-5-5", "effort": "high"},
+                    "cheap": {"model": "claude-haiku-5-5", "effort": "low"},
+                }
+            }
+        }
+        self.assertEqual(config.model_for(cfg, "claude", "plan_review"), ("claude-sonnet-5-5", "high"))
+        self.assertEqual(config.model_for(cfg, "claude", "requirements"), ("claude-sonnet-5-5", "high"))
+        self.assertEqual(config.model_for(cfg, "claude", "planner"), ("claude-sonnet-5-5", "high"))
+        self.assertEqual(config.model_for(cfg, "claude", "code"), ("claude-haiku-5-5", "low"))
+        self.assertEqual(config.model_for(cfg, "claude", "qa"), ("claude-haiku-5-5", "low"))
+        self.assertEqual(config.model_for(cfg, "claude", "docs"), ("claude-haiku-5-5", "low"))
+        self.assertEqual(config.model_for(cfg, "claude", "router"), (None, None))
+        self.assertEqual(config.model_for(cfg, "claude", "unknown_role"), (None, None))
+        self.assertEqual(config.model_for(cfg, "unknown_agent", "code"), (None, None))
+        self.assertEqual(config.model_for(cfg, adapters.FakeAdapter(FAKE_CLI), "code"), (None, None))
+        self.assertEqual(config.model_for({"models": {}}, "claude", "code"), (None, None))
+        self.assertEqual(config.model_for({}, "claude", "code"), (None, None))
+        self.assertEqual(config.model_for(None, "claude", "code"), (None, None))
+        cfg_fake = {"models": {"fake": {"cheap": {"model": "m-fake", "effort": "low"}}}}
+        self.assertEqual(config.model_for(cfg_fake, adapters.FakeAdapter(FAKE_CLI), "code"), ("m-fake", "low"))
+        cfg_partial = {"models": {"claude": {"cheap": {"model": "m-only"}}}}
+        self.assertEqual(config.model_for(cfg_partial, "claude", "code"), ("m-only", None))
+        self.assertEqual(config.model_for({"models": {"claude": None}}, "claude", "code"), (None, None))
+        self.assertEqual(config.model_for({"models": {"claude": {"cheap": "invalid"}}}, "claude", "code"), (None, None))
+
+
+    def test_save_models_set_and_reset(self):
+        p = os.path.join(self.tmp, "cfg.json")
+        res = config.save_models(p, sets={"claude": {"plan": {"model": "m-plan", "effort": "high"},
+                                                      "cheap": {"model": "m-cheap", "effort": "low"}}})
+        self.assertEqual(res["claude"]["plan"]["model"], "m-plan")
+        self.assertEqual(res["claude"]["cheap"]["effort"], "low")
+
+        # Reset specific tier
+        res2 = config.save_models(p, reset=[("claude", "plan")])
+        self.assertNotIn("plan", res2.get("claude", {}))
+        self.assertIn("cheap", res2.get("claude", {}))
+
+        # Reset entire agent
+        res3 = config.save_models(p, reset=["claude"])
+        self.assertNotIn("claude", res3)
+        disk_data = json.loads(slurp(p))
+        self.assertEqual(disk_data.get("models"), res3)
+
     def test_routing_review(self):
         cfg = config.load(home=self.tmp)
         routing = cfg["routing"]
@@ -396,6 +445,155 @@ class TestRunCall(Tmp):
         res = calls.run_call(self.run_, Missing(), spec, stage="code")
         self.assertFalse(res.ok)
         self.assertIn("cannot start", res.error)
+
+    def test_run_call_model_fill_and_override(self):
+        cfg = config.deep_merge(self.run_.cfg, {
+            "models": {"fake": {"cheap": {"model": "m-cfg", "effort": "low"}}}
+        })
+        self.run_.update(config=cfg)
+
+        res = self.call({"code": [{"structured_output": {"status": "done"}}]}, ticket="T-001", attempt=1)
+        self.assertTrue(res.ok)
+        cmd = self.run_.read_json("tickets/T-001/attempt-1/code/command.json")
+        self.assertIn("--model", cmd)
+        self.assertEqual(cmd[cmd.index("--model") + 1], "m-cfg")
+        self.assertIn("--effort", cmd)
+        self.assertEqual(cmd[cmd.index("--effort") + 1], "low")
+
+        with open(self.script, "w") as f:
+            json.dump({"code": [{"structured_output": {"status": "done"}}]}, f)
+        if os.path.exists(self.script + ".pos"):
+            os.remove(self.script + ".pos")
+        spec = adapters.CallSpec(prompt="task", schema_path=self.schema_path, cwd=self.tmp,
+                                 timeout_s=30, model="m-override", effort="high",
+                                 env={"FAKE_SCRIPT": self.script})
+        res2 = calls.run_call(self.run_, self.adapter, spec, stage="code", ticket="T-001", attempt=2)
+        self.assertTrue(res2.ok)
+        cmd2 = self.run_.read_json("tickets/T-001/attempt-2/code/command.json")
+        self.assertEqual(cmd2[cmd2.index("--model") + 1], "m-override")
+        self.assertEqual(cmd2[cmd2.index("--effort") + 1], "high")
+
+        # Partial override: model specified, effort filled from config
+        with open(self.script, "w") as f:
+            json.dump({"code": [{"structured_output": {"status": "done"}}]}, f)
+        if os.path.exists(self.script + ".pos"):
+            os.remove(self.script + ".pos")
+        spec_partial = adapters.CallSpec(prompt="task", schema_path=self.schema_path, cwd=self.tmp,
+                                         timeout_s=30, model="m-partial",
+                                         env={"FAKE_SCRIPT": self.script})
+        res3 = calls.run_call(self.run_, self.adapter, spec_partial, stage="code", ticket="T-001", attempt=3)
+        self.assertTrue(res3.ok)
+        cmd3 = self.run_.read_json("tickets/T-001/attempt-3/code/command.json")
+        self.assertEqual(cmd3[cmd3.index("--model") + 1], "m-partial")
+        self.assertEqual(cmd3[cmd3.index("--effort") + 1], "low")
+
+    def test_run_call_model_error_fallback(self):
+        cfg = config.deep_merge(self.run_.cfg, {
+            "models": {"fake": {"cheap": {"model": "bad-model"}}}
+        })
+        self.run_.update(config=cfg)
+
+        script = {
+            "code": [
+                {"stderr": "Error: model bad-model not found", "exit": 1},
+                {"structured_output": {"status": "done"}}
+            ]
+        }
+        res = self.call(script, ticket="T-001", attempt=1)
+        self.assertTrue(res.ok)
+        self.assertTrue(res.audit_dir.endswith("code/fallback"))
+
+        base_dir = self.run_.path("tickets/T-001/attempt-1/code")
+        self.assertTrue(os.path.exists(os.path.join(base_dir, "stdout.log")))
+        self.assertTrue(os.path.exists(os.path.join(base_dir, "stderr.log")))
+        self.assertIn("bad-model", slurp(os.path.join(base_dir, "stderr.log")))
+
+        fallback_cmd = self.run_.read_json("tickets/T-001/attempt-1/code/fallback/command.json")
+        self.assertNotIn("--model", fallback_cmd)
+
+        events = [json.loads(l) for l in slurp(self.run_.path("events.jsonl")).splitlines()]
+        fb_events = [e for e in events if e.get("kind") == "model_fallback"]
+        self.assertEqual(len(fb_events), 1)
+        self.assertEqual(fb_events[0]["model"], "bad-model")
+        self.assertEqual(fb_events[0]["ticket"], "T-001")
+
+    def test_run_call_model_error_in_res_error_fallback(self):
+        cfg = config.deep_merge(self.run_.cfg, {
+            "models": {"fake": {"cheap": {"model": "bad-model"}}}
+        })
+        self.run_.update(config=cfg)
+
+        class ModelErrorAdapter(adapters.FakeAdapter):
+            def parse(self, stdout, exit_code):
+                res = super().parse(stdout, exit_code)
+                if exit_code != 0:
+                    res.error = "provider error: model not found"
+                return res
+
+        script = {
+            "code": [
+                {"exit": 1},
+                {"structured_output": {"status": "done"}}
+            ]
+        }
+        with open(self.script, "w") as f:
+            json.dump(script, f)
+        if os.path.exists(self.script + ".pos"):
+            os.remove(self.script + ".pos")
+        spec = adapters.CallSpec(prompt="task", schema_path=self.schema_path, cwd=self.tmp,
+                                 timeout_s=30, env={"FAKE_SCRIPT": self.script})
+        adapter = ModelErrorAdapter(FAKE_CLI)
+        res = calls.run_call(self.run_, adapter, spec, stage="code", ticket="T-001", attempt=1)
+        self.assertTrue(res.ok)
+        self.assertTrue(res.audit_dir.endswith("code/fallback"))
+        events = [json.loads(l) for l in slurp(self.run_.path("events.jsonl")).splitlines()]
+        fb_events = [e for e in events if e.get("kind") == "model_fallback"]
+        self.assertTrue(any(e.get("ticket") == "T-001" and e.get("stage") == "code" and e.get("model") == "bad-model" for e in fb_events))
+
+
+    def test_run_call_no_fallback_on_non_model_error(self):
+        cfg = config.deep_merge(self.run_.cfg, {
+            "models": {"fake": {"cheap": {"model": "m-fail"}}}
+        })
+        self.run_.update(config=cfg)
+
+        script = {
+            "code": [
+                {"stderr": "Syntax error in script", "exit": 1},
+                {"structured_output": {"status": "done"}}
+            ]
+        }
+        res = self.call(script, ticket="T-001", attempt=1)
+        self.assertFalse(res.ok)
+        self.assertFalse(res.audit_dir.endswith("fallback"))
+        self.assertFalse(os.path.exists(self.run_.path("tickets/T-001/attempt-1/code/fallback")))
+
+    def test_run_call_no_fallback_when_model_unset(self):
+        script = {
+            "code": [
+                {"stderr": "Error: model bad-model not found", "exit": 1},
+                {"structured_output": {"status": "done"}}
+            ]
+        }
+        res = self.call(script, ticket="T-001", attempt=1)
+        self.assertFalse(res.ok)
+        self.assertFalse(os.path.exists(self.run_.path("tickets/T-001/attempt-1/code/fallback")))
+
+    def test_run_call_no_fallback_on_timeout(self):
+        cfg = config.deep_merge(self.run_.cfg, {
+            "models": {"fake": {"cheap": {"model": "m-timeout"}}}
+        })
+        self.run_.update(config=cfg)
+
+        script = {
+            "code": [
+                {"sleep": 999},
+                {"structured_output": {"status": "done"}}
+            ]
+        }
+        res = self.call(script, ticket="T-001", attempt=1, timeout=1)
+        self.assertTrue(res.timed_out)
+        self.assertFalse(os.path.exists(self.run_.path("tickets/T-001/attempt-1/code/fallback")))
 
 
 if __name__ == "__main__":
