@@ -118,6 +118,17 @@ def _call(run, adapter_for, env, ticket, stage, attempt, wt, base, mode, results
     return calls.run_call(run, adapter_for(stage), spec, stage=stage, ticket=ticket["id"], attempt=attempt, label=label)
 
 
+def _call_retry(run, adapter_for, env, ticket, stage, attempt, *args, **kw):
+    """_call, plus one in-place retry when the call itself failed (denial, timeout, bad output).
+    A failed call changed no code, so rerunning the stage beats restarting the whole attempt."""
+    res = _call(run, adapter_for, env, ticket, stage, attempt, *args, **kw)
+    if res.ok:
+        return res
+    run.event("stage_retry", ticket=ticket["id"], attempt=attempt, stage=stage, error=res.error)
+    kw["label"] = (kw.get("label") or stage) + "-retry"
+    return _call(run, adapter_for, env, ticket, stage, attempt, *args, **kw)
+
+
 def _rerun(run, cmd, wt):
     """Runner's independent check: (exit_code, output tail)."""
     try:
@@ -165,8 +176,8 @@ def _review_loop(run, adapter_for, env, ticket, st, wt, base, results, feedback)
     n = 0
     while True:
         label = "review" if n == 0 else ("review-r%d" % n)
-        rev_res = _call(run, adapter_for, env, ticket, "review", attempt, wt, base, "read",
-                        results, feedback, label=label)
+        rev_res = _call_retry(run, adapter_for, env, ticket, "review", attempt, wt, base, "read",
+                              results, feedback, label=label)
         if not rev_res.ok:
             return "review call failed: %s" % rev_res.error
         out = results["review"] = rev_res.structured_output
@@ -222,8 +233,9 @@ def _attempt(run, adapter_for, env, ticket, st, wt, stages):
                 return fb, results, test_cmd, rerun_rc
             continue
         mode = "read" if stage in READ_STAGES else "write"
-        res = _call(run, adapter_for, env, ticket, stage, attempt, wt, base, mode, results, feedback,
-                    resume=st["sessions"].get("code") if stage == "code" and attempt > 1 else None)
+        call = _call if stage == "code" else _call_retry  # a failed code call restarts the attempt anyway
+        res = call(run, adapter_for, env, ticket, stage, attempt, wt, base, mode, results, feedback,
+                   resume=st["sessions"].get("code") if stage == "code" and attempt > 1 else None)
         if not res.ok:
             return "%s call failed: %s" % (stage, res.error), results, test_cmd, rerun_rc
         out = results[stage] = res.structured_output
