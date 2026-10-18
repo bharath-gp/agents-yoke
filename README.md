@@ -33,7 +33,7 @@ Claude Code without npx:
 /yoke:setup
 ```
 
-`/yoke:setup` installs the `yoke` CLI if missing (`uv tool install` from GitHub, `pipx` fallback), runs the environment check and records success, either user-wide (`~/.yoke/setup.json`) or for the current repo only (`~/.yoke/projects/`). Every other skill (`/yoke:grill plan tickets run resume status finish`) first runs `yoke setup --check` and tells you to run `/yoke:setup` if it fails. A SessionStart hook shows the same hint. Rerun setup or the installer to update. The repo must be readable with your git credentials (it is private until made public).
+`/yoke:setup` installs the `yoke` CLI if missing (`uv tool install` from GitHub, `pipx` fallback), runs the environment check and records success, either user-wide (`~/.yoke/setup.json`) or for the current repo only (`~/.yoke/projects/`). Every other skill (`/yoke:grill plan tickets run resume status finish models go`) first runs `yoke setup --check` and tells you to run `/yoke:setup` if it fails. A SessionStart hook shows the same hint. Rerun setup or the installer to update. The repo must be readable with your git credentials (it is private until made public).
 
 Development: `uv tool install --editable .`, then `claude plugin marketplace add . && claude plugin install yoke@yoke`.
 
@@ -74,10 +74,12 @@ yoke models --reset [AGENT[.TIER]] [--scope user|project|repo]   # remove model 
 - `--set`: sets model choices in user config (`~/.yoke/config.json`) or repo config (`<repo>/.yoke.json`).
 - `--reset`: clears model settings for an agent, tier, or all entries.
 
+In agent sessions, run `/yoke:models` (agy: the `models` skill) to interactively inspect, configure, or reset model choices. When kicking off runs with `/yoke:grill` or the end-to-end wrapper `/yoke:go`, a model selection prompt precedes `yoke init` to confirm or update agent models before planning.
+
 
 ## Typical flow
 
-The skills run these for you; the raw commands are for scripting and debugging.
+The skills run these for you; the raw commands are for scripting and debugging. Use `/yoke:go` to step through grill, plan, tickets, and run in sequence, or invoke individual skills (`/yoke:grill`, `/yoke:plan`, `/yoke:tickets`, `/yoke:run`, `/yoke:finish`).
 
 ```bash
 yoke init --requirements req.md   # prints run_id; write plan.md into ~/.yoke/runs/<run_id>/

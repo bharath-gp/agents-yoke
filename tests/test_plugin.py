@@ -12,7 +12,7 @@ from unittest import mock
 from yoke import cli, config, state
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SKILLS = ("setup", "grill", "plan", "tickets", "run", "resume", "status", "finish")
+SKILLS = ("setup", "grill", "plan", "tickets", "run", "resume", "status", "finish", "models", "go")
 
 
 def load(rel):
@@ -51,7 +51,7 @@ class TestPackaging(unittest.TestCase):
             with open(os.path.join(ROOT, "skills", name, "SKILL.md")) as f:
                 subs.update(re.findall(r"`yoke ([a-z-]+)", f.read()))
         known = {"setup", "init", "review-plan", "approve", "tickets", "run", "wait", "status", "escalations",
-                 "unblock", "stop", "pr", "route", "doctor"}
+                 "unblock", "stop", "pr", "route", "doctor", "models"}
         self.assertFalse(subs - known, subs - known)
 
 
@@ -61,6 +61,32 @@ class TestPackaging(unittest.TestCase):
                 continue
             with open(os.path.join(ROOT, "skills", name, "SKILL.md")) as f:
                 self.assertIn("`yoke setup --check`", f.read(), name)
+
+    def test_models_skill(self):
+        path = os.path.join(ROOT, "skills", "models", "SKILL.md")
+        self.assertTrue(os.path.exists(path))
+        with open(path) as f:
+            content = f.read()
+        self.assertIn("`yoke setup --check`", content)
+        self.assertIn("`yoke models --list`", content)
+        self.assertIn("`yoke models --show`", content)
+        self.assertIn("`yoke models --set", content)
+        self.assertIn("`yoke models --reset", content)
+
+    def test_model_pick_step_in_go_and_grill(self):
+        for name in ("go", "grill"):
+            with open(os.path.join(ROOT, "skills", name, "SKILL.md")) as f:
+                content = f.read()
+            self.assertIn("`yoke models --list`", content, name)
+            self.assertIn("`yoke models --set", content, name)
+            list_pos = content.index("`yoke models --list`")
+            init_pos = content.index("`yoke init")
+            self.assertLess(list_pos, init_pos, f"model pick should precede init in {name}")
+
+    def test_setup_skill_points_to_models(self):
+        with open(os.path.join(ROOT, "skills", "setup", "SKILL.md")) as f:
+            content = f.read()
+        self.assertIn("/yoke:models", content)
 
 
 class TestInstaller(unittest.TestCase):

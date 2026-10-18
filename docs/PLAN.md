@@ -305,6 +305,8 @@ skills/tickets/SKILL.md           # wayfinder → tickets.json → ticket approv
 skills/run/SKILL.md               # start runner, orchestrator wait loop, escalations
 skills/resume/SKILL.md            # handoff entry point
 skills/status/SKILL.md
+skills/models/SKILL.md            # model discovery, inspect, configure, and reset
+skills/go/SKILL.md                # end-to-end wrapper running grill, plan, tickets, and run
 skills/finish/SKILL.md            # final review gate, optional PR
 pyproject.toml                    # name yoke, requires-python >=3.9, no deps, script yoke=yoke.cli:main
 yoke/__init__.py
