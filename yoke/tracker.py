@@ -89,7 +89,7 @@ def pr(run):
         raise TrackerError(str(e))
     base = _gh(repo, "repo", "view", "--json", "defaultBranchRef", "-q", ".defaultBranchRef.name")
     try:
-        gitops.git(repo, "push", "-u", "origin", branch)
+        gitops.git(repo, "-c", "core.hooksPath=", "push", "-u", "origin", branch)
     except gitops.GitError as e:
         raise TrackerError(str(e))
     closes = ["Closes #%d" % i["number"] for _, i in sorted(run.read_json("issues.json", {}).items())]

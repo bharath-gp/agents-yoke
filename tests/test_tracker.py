@@ -34,9 +34,38 @@ elif key == "pr create":
 class TrackerBase(Base):
     def setUp(self):
         super().setUp()
-        for k, v in ENV.items():
+        self.bin = os.path.join(self.tmp, "bin")
+        os.makedirs(self.bin)
+        gh = os.path.join(self.bin, "gh")
+        with open(gh, "w") as f:
+            f.write(SHIM % sys.executable)
+        os.chmod(gh, os.stat(gh).st_mode | stat.S_IXUSR)
+        self.log = os.path.join(self.tmp, "gh.log")
+
+        cleanups = []
+        for k in list(os.environ):
+            if k.startswith("GIT_CONFIG_KEY_") or k.startswith("GIT_CONFIG_VALUE_") or k in ("GIT_DIR", "GIT_WORK_TREE"):
+                old = os.environ.pop(k)
+                cleanups.append((k, old))
+
+        overrides = dict(ENV)
+        overrides.update({
+            "YOKE_HOME": self.tmp,
+            "PATH": self.bin + os.pathsep + os.environ.get("PATH", ""),
+            "FAKE_GH_LOG": self.log,
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_CONFIG_SYSTEM": "/dev/null",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_COUNT": "0",
+        })
+        for k, v in overrides.items():
+            old = os.environ.get(k)
             os.environ[k] = v
-            self.addCleanup(os.environ.pop, k)
+            cleanups.append((k, old))
+
+        for k, old in reversed(cleanups):
+            self.addCleanup(lambda k=k, old=old: os.environ.__setitem__(k, old) if old is not None else os.environ.pop(k, None))
+
         git(self.repo, "checkout", "-q", "-b", "main")
         with open(os.path.join(self.repo, "a.txt"), "w") as f:
             f.write("a\n")
@@ -45,17 +74,8 @@ class TrackerBase(Base):
         self.remote = os.path.join(self.tmp, "remote.git")
         subprocess.run(["git", "init", "-q", "--bare", self.remote], check=True)
         git(self.repo, "remote", "add", "origin", self.remote)
-        self.bin = os.path.join(self.tmp, "bin")
-        os.makedirs(self.bin)
-        gh = os.path.join(self.bin, "gh")
-        with open(gh, "w") as f:
-            f.write(SHIM % sys.executable)
-        os.chmod(gh, os.stat(gh).st_mode | stat.S_IXUSR)
-        self.log = os.path.join(self.tmp, "gh.log")
-        for k, v in (("YOKE_HOME", self.tmp), ("PATH", self.bin + os.pathsep + os.environ["PATH"]), ("FAKE_GH_LOG", self.log)):
-            old = os.environ.get(k)
-            os.environ[k] = v
-            self.addCleanup(lambda k=k, old=old: os.environ.__setitem__(k, old) if old else os.environ.pop(k, None))
+        git(self.repo, "config", "core.hooksPath", "")
+        subprocess.run(["git", "-C", self.remote, "config", "core.hooksPath", ""], check=True)
         self.run_.update(config=dict(self.run_.cfg, tracker="github"))
         self.plan()
         self.tickets([
@@ -171,8 +191,8 @@ class TestPr(TrackerBase):
 
     def test_pushes_branch_and_opens_pr_with_closes_lines(self):
         planreview.approve(self.run_, "final")
-        rc, _ = self.pr()
-        self.assertEqual(rc, 0)
+        rc, err = self.pr()
+        self.assertEqual(rc, 0, err)
         self.assertIn(self.branch, git(self.remote, "branch", "--list"))
         pr = [c for c in self.calls() if c[:2] == ["pr", "create"]][0]
         self.assertEqual(pr[pr.index("--base") + 1], "main")
