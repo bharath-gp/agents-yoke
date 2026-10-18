@@ -11,9 +11,8 @@ class GitError(Exception):
     pass
 
 
-def git(path, *args, check=True, env=None):
-    r = subprocess.run(["git", "-C", path] + list(args), capture_output=True, text=True,
-                       env=env if env is not None else os.environ)
+def git(path, *args, check=True):
+    r = subprocess.run(["git", "-C", path] + list(args), capture_output=True, text=True)
     if check and r.returncode != 0:
         raise GitError("git %s: %s" % (" ".join(args), (r.stderr or r.stdout).strip()))
     return r

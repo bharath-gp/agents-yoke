@@ -173,9 +173,6 @@ def _review_loop(run, adapter_for, env, ticket, st, wt, base, results, feedback)
         findings = out.get("findings", [])
         blocking = [f for f in findings if f.get("severity") in ("blocker", "major")]
         if not blocking:
-            suggestions = [f for f in findings if f.get("severity") in ("minor", "nit")]
-            if suggestions:
-                write_feedback(run, tid, attempt, _format_findings(suggestions, "Optional suggestions:"), append=True)
             st["review"]["rounds"] = n
             st["review"]["unresolved"] = []
             save_state(run, tid, st)
@@ -194,8 +191,8 @@ def _review_loop(run, adapter_for, env, ticket, st, wt, base, results, feedback)
         suggestions = [f for f in findings if f.get("severity") in ("minor", "nit")]
         if suggestions:
             fb_parts.append(_format_findings(suggestions, "Optional suggestions:"))
-        write_feedback(run, tid, attempt, "\n\n".join(fb_parts), append=True)
-        coder_fb = _read_feedback(run, tid, attempt)
+        # kept out of feedback.md: that file is the previous attempt's feedback and must survive a re-run
+        coder_fb = "\n\n".join(p for p in [feedback] + fb_parts if p)
         since = gitops.head_sha(wt)
         coder_res = _call(run, adapter_for, env, ticket, "code", attempt, wt, base, "write",
                           results, coder_fb, resume=st["sessions"].get("code"), label="code-r%d" % n)
@@ -204,6 +201,7 @@ def _review_loop(run, adapter_for, env, ticket, st, wt, base, results, feedback)
         results["code"] = coder_res.structured_output
         _post_code(run, ticket, st, wt, since, coder_res)
         gitops.git(wt, "add", "-A")
+        feedback = coder_fb  # the re-review sees what the coder was asked to fix
 
 
 def _attempt(run, adapter_for, env, ticket, st, wt, stages):

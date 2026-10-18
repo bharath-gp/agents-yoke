@@ -79,18 +79,16 @@ def comment(run, tid, text):
         run.event("tracker_error", ticket=tid, error=str(e))
 
 
+PR_FINDINGS_MAX = 50000
+
+
 def pr_body(run):
     """Build PR description with issue closes lines and unresolved review findings."""
     closes = ["Closes #%d" % i["number"] for _, i in sorted(run.read_json("issues.json", {}).items())]
     body = "yoke run `%s`\n\n%s" % (run.run_id, "\n".join(closes))
     findings_by_ticket = {}
-    tickets = run.read_json("tickets.json", {}).get("tickets", [])
-    tids = [t["id"] for t in tickets] if tickets else []
-    for td in glob.glob(run.path("tickets/*/state.json")):
+    for td in sorted(glob.glob(run.path("tickets/*/state.json"))):
         tid = os.path.basename(os.path.dirname(td))
-        if tid not in tids:
-            tids.append(tid)
-    for tid in tids:
         st = run.read_json("tickets/%s/state.json" % tid, {})
         unres = st.get("review", {}).get("unresolved", [])
         if unres:
@@ -106,7 +104,10 @@ def pr_body(run):
                 if f.get("suggestion"):
                     text += " (suggestion: %s)" % f["suggestion"]
                 lines.append("- %s: %s" % (prefix, text) if prefix else "- %s" % text)
-        body = body.rstrip() + "\n\n" + "\n".join(lines)
+        text = "\n".join(lines)
+        if len(text) > PR_FINDINGS_MAX:  # GitHub rejects PR bodies over 65536 chars, after the push
+            text = text[:PR_FINDINGS_MAX] + "\n... (truncated; see ticket issue comments)"
+        body = body.rstrip() + "\n\n" + text
     return body
 
 
@@ -122,8 +123,7 @@ def pr(run):
         raise TrackerError(str(e))
     base = _gh(repo, "repo", "view", "--json", "defaultBranchRef", "-q", ".defaultBranchRef.name")
     try:
-        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_CONFIG_")}
-        gitops.git(repo, "push", "-u", "origin", branch, env=env)
+        gitops.git(repo, "push", "-u", "origin", branch)
     except gitops.GitError as e:
         raise TrackerError(str(e))
     body = pr_body(run)

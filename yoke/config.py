@@ -56,6 +56,8 @@ def agent_for(cfg, role):
     """
     roles = cfg["roles"]
     who = roles["by_role"][role]
+    if who == "auto" and role != "review":
+        raise ValueError("role %s cannot be auto (review only)" % role)
     if role == "review" and who == "auto":
         code_agent = agent_for(cfg, "code")
         if code_agent in AGENTS:

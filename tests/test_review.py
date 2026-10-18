@@ -98,7 +98,7 @@ class TestReviewStage(PipeBase):
         self.assertIn("blocking issue remains", val_prompt)
         self.assertIn("major issue remains", val_prompt)
 
-    def test_minor_nit_only_triggers_no_coder_round_and_suggestions_in_feedback(self):
+    def test_minor_nit_only_triggers_no_coder_round_and_suggestions_reach_validate(self):
         self.setup_tickets(
             [ticket(1)],
             {"code": [resp(CODE, "c1", write={"f1.txt": "1"})],
@@ -108,10 +108,11 @@ class TestReviewStage(PipeBase):
         self.assertEqual(self.go(), "done")
         attempt_dir = self.run_.path("tickets/T-001/attempt-1")
         self.assertFalse(os.path.exists(os.path.join(attempt_dir, "code-r1")))
-        with open(self.run_.path("tickets/T-001/attempt-1/feedback.md")) as f:
-            fb = f.read()
-        self.assertIn("remove trailing space", fb)
-        self.assertIn("tidy spacing", fb)
+        self.assertFalse(os.path.exists(self.run_.path("tickets/T-001/attempt-1/feedback.md")))
+        with open(self.run_.path("tickets/T-001/attempt-1/validate/prompt.md")) as f:
+            val_prompt = f.read()
+        self.assertIn("remove trailing space", val_prompt)
+        self.assertIn("tidy spacing", val_prompt)
 
     def test_verdict_approve_with_blocker_finding_treated_as_blocking(self):
         self.setup_tickets(
