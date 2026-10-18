@@ -22,7 +22,8 @@ if os.environ.get("FAKE_GH_FAIL") == key:
     sys.stderr.write("boom\\n")
     sys.exit(1)
 if key == "issue create":
-    n = sum(1 for l in open(os.environ["FAKE_GH_LOG"]) if l.startswith('["issue", "create"')) + 39
+    with open(os.environ["FAKE_GH_LOG"]) as _f:
+        n = sum(1 for l in _f if l.startswith('["issue", "create"')) + 39
     print("https://github.com/o/r/issues/%%d" %% n)
 elif key == "repo view":
     print("main")
@@ -34,9 +35,15 @@ elif key == "pr create":
 class TrackerBase(Base):
     def setUp(self):
         super().setUp()
+        old_env = {k: os.environ.get(k) for k in ENV}
         for k, v in ENV.items():
             os.environ[k] = v
-            self.addCleanup(os.environ.pop, k)
+        self.addCleanup(self._restore_env, old_env)
+        git_config_keys = [k for k in os.environ if k.startswith("GIT_CONFIG_")]
+        old_git_config = {k: os.environ[k] for k in git_config_keys}
+        for k in git_config_keys:
+            os.environ.pop(k, None)
+        self.addCleanup(self._restore_git_config, old_git_config)
         git(self.repo, "checkout", "-q", "-b", "main")
         with open(os.path.join(self.repo, "a.txt"), "w") as f:
             f.write("a\n")
@@ -64,6 +71,19 @@ class TrackerBase(Base):
             {"id": "T-002", "title": "two", "type": "chore", "description": "d", "exit_criteria": ["ok"],
              "depends_on": ["T-001"], "files_hint": [], "plan_excerpt": "y"}])
 
+    def _restore_env(self, old_env):
+        for k, old in old_env.items():
+            if old is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = old
+
+    def _restore_git_config(self, old_git_config):
+        for k in list(os.environ):
+            if k.startswith("GIT_CONFIG_") and k not in old_git_config:
+                os.environ.pop(k, None)
+        os.environ.update(old_git_config)
+
     def calls(self):
         try:
             with open(self.log) as f:
@@ -85,7 +105,7 @@ class TestDetect(TrackerBase):
         git(self.repo, "remote", "set-url", "origin", "git@github.com:o/r.git")
         self.assertEqual(tracker.detect(self.repo, {"tracker": "auto"}), "github")
         os.environ["FAKE_GH_FAIL"] = "repo view"
-        self.addCleanup(os.environ.pop, "FAKE_GH_FAIL")
+        self.addCleanup(os.environ.pop, "FAKE_GH_FAIL", None)
         self.assertEqual(tracker.detect(self.repo, {"tracker": "auto"}), "local")
 
     def test_auto_local_without_gh(self):
@@ -133,7 +153,7 @@ class TestComment(TrackerBase):
         self.assertEqual(c[0][2], "40")
         self.assertIn("max attempts", c[0][-1])
         os.environ["FAKE_GH_FAIL"] = "issue comment"
-        self.addCleanup(os.environ.pop, "FAKE_GH_FAIL")
+        self.addCleanup(os.environ.pop, "FAKE_GH_FAIL", None)
         pipeline.escalate(self.run_, "T-001", "again")  # gh down: no exception
         self.assertEqual(len(self.run_.read_json("escalations.json")), 2)
 
@@ -180,6 +200,7 @@ class TestPr(TrackerBase):
         body = pr[pr.index("--body") + 1]
         self.assertIn("Closes #40", body)
         self.assertIn("Closes #41", body)
+        self.assertNotIn("Unresolved review findings", body)
         self.assertEqual(self.run_.read_json("run.json")["pr_url"], "https://github.com/o/r/pull/7")
 
     def test_local_tracker_refuses(self):
@@ -188,6 +209,33 @@ class TestPr(TrackerBase):
         rc, err = self.pr()
         self.assertEqual(rc, 1)
         self.assertIn("github", err)
+
+    def test_pr_body_unresolved_findings(self):
+        planreview.approve(self.run_, "final")
+        self.run_.write_json("tickets/T-001/state.json", {
+            "status": "closed",
+            "review": {
+                "rounds": 2,
+                "unresolved": [
+                    {"file": "yoke/foo.py", "line": 42, "severity": "major",
+                     "comment": "critical bug in parsing", "suggestion": "handle empty input"}
+                ]
+            }
+        })
+        rc, err = self.pr()
+        self.assertEqual(rc, 0, err)
+        body = [c for c in self.calls() if c[:2] == ["pr", "create"]][-1]
+        body_text = body[body.index("--body") + 1]
+        self.assertIn("Unresolved review findings", body_text)
+        self.assertIn("critical bug in parsing", body_text)
+        self.assertIn("handle empty input", body_text)
+
+    def test_pr_body_skips_unmerged_ticket_findings(self):
+        self.run_.write_json("tickets/T-001/state.json", {
+            "status": "in_progress",
+            "review": {"rounds": 2, "unresolved": [
+                {"file": "a.py", "line": 1, "severity": "major", "comment": "stale finding", "suggestion": ""}]}})
+        self.assertNotIn("stale finding", tracker.pr_body(self.run_))
 
 
 if __name__ == "__main__":

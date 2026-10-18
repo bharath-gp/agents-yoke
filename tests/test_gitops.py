@@ -15,9 +15,10 @@ def git(repo, *args):
 class GitBase(Tmp):
     def setUp(self):
         super().setUp()
+        old_env = {k: os.environ.get(k) for k in ENV}
         for k, v in ENV.items():
             os.environ[k] = v
-            self.addCleanup(os.environ.pop, k)
+        self.addCleanup(self._restore_env, old_env)
         self.repo = os.path.join(self.tmp, "repo")
         os.makedirs(self.repo)
         git(self.repo, "init", "-q", "-b", "main")
@@ -27,6 +28,13 @@ class GitBase(Tmp):
         self.base = gitops.head_sha(self.repo)
         self.int = os.path.join(self.tmp, "wt", "_integration")
         gitops.ensure_feature_branch(self.repo, "yoke/r1", self.base, self.int)
+
+    def _restore_env(self, old_env):
+        for k, old in old_env.items():
+            if old is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = old
 
     def put(self, d, name, text):
         with open(os.path.join(d, name), "w") as f:

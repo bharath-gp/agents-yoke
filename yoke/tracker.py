@@ -1,6 +1,8 @@
 """Tracker: local (tickets.json only) or GitHub issues + the single push/PR path (PLAN 2.14, M8).
 Issue numbers live in issues.json, not tickets.json, so creating them never invalidates the
 tickets approval hash. The runner never pushes; only pr() does, after `approve final`."""
+import glob
+import os
 import re
 import subprocess
 
@@ -77,6 +79,38 @@ def comment(run, tid, text):
         run.event("tracker_error", ticket=tid, error=str(e))
 
 
+PR_FINDINGS_MAX = 50000
+
+
+def pr_body(run):
+    """Build PR description with issue closes lines and unresolved review findings."""
+    closes = ["Closes #%d" % i["number"] for _, i in sorted(run.read_json("issues.json", {}).items())]
+    body = "yoke run `%s`\n\n%s" % (run.run_id, "\n".join(closes))
+    findings_by_ticket = {}
+    for td in sorted(glob.glob(run.path("tickets/*/state.json"))):
+        tid = os.path.basename(os.path.dirname(td))
+        st = run.read_json("tickets/%s/state.json" % tid, {})
+        unres = st.get("review", {}).get("unresolved", [])
+        if unres and st.get("status") == "closed":  # failed or escalated attempts never merged
+            findings_by_ticket[tid] = unres
+    if findings_by_ticket:
+        lines = ["## Unresolved review findings"]
+        for tid, findings in sorted(findings_by_ticket.items()):
+            lines.append("### %s" % tid)
+            for f in findings:
+                loc = ("%s:%s" % (f.get("file"), f.get("line"))) if f.get("file") else ""
+                prefix = ("[%s] %s" % (f.get("severity", ""), loc)).strip()
+                text = f.get("comment", "")
+                if f.get("suggestion"):
+                    text += " (suggestion: %s)" % f["suggestion"]
+                lines.append("- %s: %s" % (prefix, text) if prefix else "- %s" % text)
+        text = "\n".join(lines)
+        if len(text) > PR_FINDINGS_MAX:  # GitHub rejects PR bodies over 65536 chars, after the push
+            text = text[:PR_FINDINGS_MAX] + "\n... (truncated; see ticket issue comments)"
+        body = body.rstrip() + "\n\n" + text
+    return body
+
+
 def pr(run):
     """Push the feature branch and open the PR. Needs github tracker and valid final approval."""
     info = run.read_json("run.json")
@@ -92,8 +126,7 @@ def pr(run):
         gitops.git(repo, "push", "-u", "origin", branch)
     except gitops.GitError as e:
         raise TrackerError(str(e))
-    closes = ["Closes #%d" % i["number"] for _, i in sorted(run.read_json("issues.json", {}).items())]
-    body = "yoke run `%s`\n\n%s" % (run.run_id, "\n".join(closes))
+    body = pr_body(run)
     url = _gh(repo, "pr", "create", "--base", base, "--head", branch,
               "--title", "yoke: %s" % run.run_id, "--body", body).splitlines()[-1]
     run.update(pr_url=url)

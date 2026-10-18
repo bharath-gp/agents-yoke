@@ -24,6 +24,7 @@ def val(ok=True, met=True):
 
 
 DOCS = {"status": "done", "files_changed": [], "summary": "s"}
+REV = {"verdict": "approve", "findings": [], "summary": "s"}
 
 
 def resp(obj, session=None, **extra):
@@ -43,7 +44,7 @@ class PipeBase(GitBase):
     def setUp(self):
         super().setUp()
         os.environ["YOKE_HOME"] = self.tmp
-        self.addCleanup(os.environ.pop, "YOKE_HOME")
+        self.addCleanup(os.environ.pop, "YOKE_HOME", None)
         self.run_ = planreview.init_run(self.repo, None, {"max_attempts_per_ticket": 2}, home=self.tmp)
         self.script = os.path.join(self.tmp, "script.json")
         self.env = {"FAKE_SCRIPT": self.script}
@@ -54,6 +55,10 @@ class PipeBase(GitBase):
         self.run_.write_json("tickets.json", {"tickets": tickets})
         with open(self.script, "w") as f:
             json.dump(script, f)
+        for ext in (".pos", ".lock"):
+            p = self.script + ext
+            if os.path.exists(p):
+                os.remove(p)
         planreview.approve(self.run_, "plan")
         planreview.approve(self.run_, "tickets")
 
@@ -73,6 +78,7 @@ class TestHappy(PipeBase):
         self.setup_tickets(
             [ticket(1), ticket(2, deps=["T-001"]), ticket(3)],
             {"code": [resp(CODE, "c%d" % i, write={"f%d.txt" % i: "x"}) for i in (1, 2, 3)],
+             "review": [resp(REV)] * 3,
              "validate": [resp(val())] * 3,
              "router": [{"exit": 1}]})
         self.assertEqual(self.go(), "done")
@@ -82,7 +88,8 @@ class TestHappy(PipeBase):
         self.assertEqual(self.tstate(1)["status"], "closed")
         self.assertFalse(os.path.exists(self.run_.path("worktrees/T-001")))
         self.assertEqual(git(self.repo, "rev-parse", "--abbrev-ref", "HEAD"), "main")  # user checkout untouched
-        gates = [json.loads(l) for l in open(self.run_.path("events.jsonl")) if '"close_gate"' in l]
+        with open(self.run_.path("events.jsonl")) as f:
+            gates = [json.loads(l) for l in f if '"close_gate"' in l]
         self.assertEqual(len(gates), 3)
         self.assertTrue(all(g["ok"] for g in gates))
 
@@ -97,11 +104,13 @@ class TestRetries(PipeBase):
         self.setup_tickets(
             [ticket(1, "bugfix")],
             {"code": [resp(CODE, "cs", write={"f.txt": "1"}), resp(CODE, "cs", write={"g.txt": "1"})],
+             "review": [resp(REV)] * 2,
              "qa": [resp(qa("true", "fail", ["boom"])), resp(qa("test -f g.txt"))],
              "validate": [resp(val())], "docs": [resp(DOCS)], "router": [{"exit": 1}]})
         self.assertEqual(self.go(), "done")
         self.assertEqual(self.tstate(1)["attempt"], 2)
-        fb = open(self.run_.path("tickets/T-001/attempt-2/feedback.md")).read()
+        with open(self.run_.path("tickets/T-001/attempt-2/feedback.md")) as f:
+            fb = f.read()
         self.assertIn("boom", fb)
         cmd = self.run_.read_json("tickets/T-001/attempt-2/code/command.json")
         self.assertIn("--resume", cmd)
@@ -111,15 +120,18 @@ class TestRetries(PipeBase):
         self.setup_tickets(
             [ticket(1)],
             {"code": [resp(CODE, "cs", write={"f.txt": "1"}), resp(CODE, "cs")],
+             "review": [resp(REV)] * 2,
              "validate": [resp(val(False)), resp(val())], "router": [{"exit": 1}]})
         self.assertEqual(self.go(), "done")
-        self.assertIn("fix the thing", open(self.run_.path("tickets/T-001/attempt-2/feedback.md")).read())
+        with open(self.run_.path("tickets/T-001/attempt-2/feedback.md")) as f:
+            self.assertIn("fix the thing", f.read())
         self.assertIn("--resume", self.run_.read_json("tickets/T-001/attempt-2/code/command.json"))
 
     def test_approve_with_unmet_criterion_rejected(self):
         self.setup_tickets(
             [ticket(1)],
             {"code": [resp(CODE, "cs", write={"f.txt": "1"})],
+             "review": [resp(REV)] * 2,
              "validate": [resp(val(True, met=False)), resp(val())], "router": [{"exit": 1}]})
         self.assertEqual(self.go(), "done")
         self.assertEqual(self.tstate(1)["attempt"], 2)
@@ -131,12 +143,14 @@ class TestRetries(PipeBase):
              "validate": [resp(val())], "router": [{"exit": 1}]})
         self.assertEqual(self.go(), "done")
         self.assertEqual(self.tstate(1)["attempt"], 2)
-        self.assertIn("exit", open(self.run_.path("tickets/T-001/attempt-2/feedback.md")).read())
+        with open(self.run_.path("tickets/T-001/attempt-2/feedback.md")) as f:
+            self.assertIn("exit", f.read())
 
     def test_max_attempts_blocks_and_independent_ticket_closes(self):
         self.setup_tickets(
             [ticket(1), ticket(2, deps=["T-001"]), ticket(3)],
             {"code": [resp(CODE, "a", write={"x": "1"}), resp(CODE, "a"), resp(CODE, "b", write={"y": "1"})],
+             "review": [resp(REV)] * 3,
              "validate": [resp(val(False)), resp(val(False)), resp(val())], "router": [{"exit": 1}]})
         self.assertEqual(self.go(), "needs_user")
         self.assertEqual(self.tstate(1)["status"], "blocked")
@@ -157,9 +171,11 @@ class TestRetries(PipeBase):
         self.setup_tickets(
             [ticket(1)],
             {"code": [resp(CODE, "cs", write={"f.txt": "1"}, commit=True)],
+             "review": [resp(REV)],
              "validate": [resp(val())], "router": [{"exit": 1}]})
         self.assertEqual(self.go(), "done")
-        self.assertIn('"agent_commit"', open(self.run_.path("events.jsonl")).read())
+        with open(self.run_.path("events.jsonl")) as f:
+            self.assertIn('"agent_commit"', f.read())
 
 
 class TestUnblockAndLock(PipeBase):
@@ -167,7 +183,9 @@ class TestUnblockAndLock(PipeBase):
         blocked = dict(CODE, status="blocked", blocked_reason="why")
         self.setup_tickets(
             [ticket(1)],
-            {"code": [resp(blocked), resp(CODE, "s", write={"f": "1"})], "validate": [resp(val())],
+            {"code": [resp(blocked), resp(CODE, "s", write={"f": "1"})],
+             "review": [resp(REV)],
+             "validate": [resp(val())],
              "router": [{"exit": 1}]})
         self.assertEqual(self.go(), "needs_user")
         scheduler.unblock(self.run_, "T-001", note="use the stub")

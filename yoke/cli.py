@@ -78,7 +78,11 @@ def setup_markers():
 
 
 def setup_cmd(args):
-    """`--check`: exit 1 with a hint until setup passed for the user or this repo. Else run doctor, record it."""
+    """`--check`: exit 1 with a hint until setup passed for the user or this repo. Else run doctor, record it.
+
+    Prints configured roles and resolved agents. Warns if an explicit review override
+    matches the code agent.
+    """
     user, project = setup_markers()
     if args.check:
         if os.path.exists(user) or os.path.exists(project):
@@ -107,6 +111,8 @@ def setup_cmd(args):
     print("primary=%s secondary=%s" % (cfg["roles"]["primary"], cfg["roles"]["secondary"]))
     for role, who in cfg["roles"]["by_role"].items():
         print("  %-13s %s" % (role, config.agent_for(cfg, role)))
+    if cfg["roles"]["by_role"].get("review") != "auto" and config.agent_for(cfg, "review") == config.agent_for(cfg, "code"):
+        print("warning: review agent equals code agent (%s)" % config.agent_for(cfg, "review"))
     rec = {"setup": True, "doctor_live": args.live}
     if args.scope == "project":
         rec["repo"] = _git_toplevel(os.getcwd())
@@ -225,7 +231,7 @@ def main(argv=None):
     su.add_argument("--primary", choices=config.AGENTS, help="agent used for 'primary' roles")
     su.add_argument("--secondary", choices=config.AGENTS, help="agent used for 'secondary' roles")
     su.add_argument("--map", action="append", default=[], metavar="ROLE=AGENT",
-                    help="map a role (code, qa, docs, ...) to primary, secondary or an agent; repeatable")
+                    help="map a role (code, review, qa, docs, ...) to primary, secondary, an agent, or auto (review only); repeatable")
     tk = sub.add_parser("tickets", help="import or show tickets")
     tk.add_argument("action", choices=["import", "show"])
     tk.add_argument("file", nargs="?", help="tickets JSON (import)")

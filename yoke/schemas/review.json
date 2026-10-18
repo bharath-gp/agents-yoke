@@ -1,0 +1,30 @@
+{
+  "type": "object",
+  "required": ["verdict", "findings", "summary"],
+  "additionalProperties": false,
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": ["approve", "changes_requested"]
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["file", "line", "severity", "comment", "suggestion"],
+        "additionalProperties": false,
+        "properties": {
+          "file": {"type": "string"},
+          "line": {"type": "integer"},
+          "severity": {
+            "type": "string",
+            "enum": ["blocker", "major", "minor", "nit"]
+          },
+          "comment": {"type": "string"},
+          "suggestion": {"type": "string"}
+        }
+      }
+    },
+    "summary": {"type": "string"}
+  }
+}

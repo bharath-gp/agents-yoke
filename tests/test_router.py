@@ -133,9 +133,9 @@ class TestDecisions(RouterCase):
 class TestRoute(unittest.TestCase):
     def test_route_table_per_type(self):
         cfg = config.load(home=tempfile.mkdtemp())
-        want = {"feature": "code qa validate docs", "bugfix": "code qa validate docs",
-                "refactor": "code qa validate", "test": "qa validate", "docs": "docs validate",
-                "chore": "code validate", "spike": "code validate"}
+        want = {"feature": "code review qa validate docs", "bugfix": "code review qa validate docs",
+                "refactor": "code review qa validate", "test": "qa validate", "docs": "docs validate",
+                "chore": "code review validate", "spike": "code review validate"}
         for typ, stages in want.items():
             r = router.route_ticket(cfg, {"type": typ})
             self.assertEqual(" ".join(s["stage"] for s in r["stages"]), stages)

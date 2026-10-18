@@ -47,7 +47,7 @@ class TestInit(Base):
 
     def test_cli_init_prints_run_id_and_overrides_roles(self):
         os.environ["YOKE_HOME"] = self.tmp
-        self.addCleanup(os.environ.pop, "YOKE_HOME")
+        self.addCleanup(os.environ.pop, "YOKE_HOME", None)
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             self.assertEqual(cli.main(["init", "--repo", self.repo, "--secondary", "claude"]), 0)

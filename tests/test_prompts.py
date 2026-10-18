@@ -1,5 +1,8 @@
 import os
+import string
 import unittest
+
+from yoke import schema
 
 PROMPTS = os.path.join(os.path.dirname(__file__), "..", "yoke", "prompts")
 NO_SHELL = "You have no shell in this environment. Do not run any command; edit files only."
@@ -25,6 +28,162 @@ class TestNoShellPrompts(unittest.TestCase):
         self.assertNotIn(", run them", qa)
         self.assertIn("do not run them", qa)
         self.assertIn("runner", qa)
+
+
+class TestReviewPrompt(unittest.TestCase):
+    def test_review_prompt_contains_instructions(self):
+        content = _read("review")
+        for expected in ("no edits", "no running tests", "no commits", "no push", "return only JSON"):
+            self.assertIn(expected, content)
+
+    def test_review_prompt_renders_with_string_template(self):
+        content = _read("review")
+        template = string.Template(content)
+        substitutions = {
+            "base_sha": "8ec46bde240ae91c626190371f5bf3c971955af6",
+            "ticket": '{"id": "T-002", "title": "Review schema and prompt"}',
+            "plan_excerpt": "Review schema and prompt excerpt",
+            "prior_results": "{}",
+            "feedback": "(none)",
+            "worktree": "/tmp/worktree",
+        }
+        try:
+            rendered = template.substitute(substitutions)
+        except (KeyError, ValueError) as exc:
+            self.fail("Template substitution raised %s: %s" % (type(exc).__name__, exc))
+        self.assertIsInstance(rendered, str)
+        for var in substitutions:
+            self.assertNotIn("$" + var, rendered)
+
+
+class TestReviewSchema(unittest.TestCase):
+    def setUp(self):
+        self.schema = schema.load_schema("review")
+
+    def test_validates_sample_payloads_and_rejects_unknown_severity_or_extra_property(self):
+        # Sample approve payload
+        approve_payload = {
+            "verdict": "approve",
+            "findings": [],
+            "summary": "Implementation looks clean and complete.",
+        }
+        self.assertEqual(schema.validate(approve_payload, self.schema), [])
+
+        # Sample changes_requested payload with findings
+        changes_payload = {
+            "verdict": "changes_requested",
+            "findings": [
+                {
+                    "file": "yoke/schemas/review.json",
+                    "line": 10,
+                    "severity": "blocker",
+                    "comment": "Missing required field",
+                    "suggestion": "Add field to schema",
+                }
+            ],
+            "summary": "Found blocker finding that requires fixes.",
+        }
+        self.assertEqual(schema.validate(changes_payload, self.schema), [])
+
+        # Rejects unknown severity
+        unknown_sev_payload = {
+            "verdict": "changes_requested",
+            "findings": [
+                {
+                    "file": "yoke/schemas/review.json",
+                    "line": 10,
+                    "severity": "invalid_severity",
+                    "comment": "Invalid severity level",
+                    "suggestion": "Use blocker instead",
+                }
+            ],
+            "summary": "Invalid severity payload.",
+        }
+        self.assertTrue(schema.validate(unknown_sev_payload, self.schema))
+
+        # Rejects extra property
+        extra_prop_payload = {
+            "verdict": "approve",
+            "findings": [],
+            "summary": "Looks good.",
+            "extra_property": "not_allowed",
+        }
+        self.assertTrue(schema.validate(extra_prop_payload, self.schema))
+
+    def test_validates_sample_approve_payload(self):
+        payload = {
+            "verdict": "approve",
+            "findings": [],
+            "summary": "Implementation looks clean and complete.",
+        }
+        errs = schema.validate(payload, self.schema)
+        self.assertEqual(errs, [])
+
+    def test_validates_sample_changes_requested_payload_with_findings(self):
+        payload = {
+            "verdict": "changes_requested",
+            "findings": [
+                {
+                    "file": "yoke/schemas/review.json",
+                    "line": 10,
+                    "severity": "blocker",
+                    "comment": "Missing required field",
+                    "suggestion": "Add field to schema",
+                },
+                {
+                    "file": "yoke/prompts/review.md",
+                    "line": 5,
+                    "severity": "nit",
+                    "comment": "Minor phrasing tweak",
+                    "suggestion": "Adjust wording",
+                },
+            ],
+            "summary": "Found blocker finding that requires fixes.",
+        }
+        errs = schema.validate(payload, self.schema)
+        self.assertEqual(errs, [])
+
+    def test_rejects_unknown_severity(self):
+        payload = {
+            "verdict": "changes_requested",
+            "findings": [
+                {
+                    "file": "yoke/cli.py",
+                    "line": 20,
+                    "severity": "catastrophic",
+                    "comment": "Unknown severity value",
+                    "suggestion": "Use blocker instead",
+                }
+            ],
+            "summary": "Invalid severity payload.",
+        }
+        errs = schema.validate(payload, self.schema)
+        self.assertTrue(errs)
+
+    def test_rejects_extra_property(self):
+        extra_top = {
+            "verdict": "approve",
+            "findings": [],
+            "summary": "Looks good.",
+            "extra_field": "unexpected",
+        }
+        self.assertTrue(schema.validate(extra_top, self.schema))
+
+        extra_in_finding = {
+            "verdict": "changes_requested",
+            "findings": [
+                {
+                    "file": "yoke/cli.py",
+                    "line": 20,
+                    "severity": "major",
+                    "comment": "Some comment",
+                    "suggestion": "Some suggestion",
+                    "extra_key": True,
+                }
+            ],
+            "summary": "Payload with unexpected finding key.",
+        }
+        self.assertTrue(schema.validate(extra_in_finding, self.schema))
 
 
 if __name__ == "__main__":
