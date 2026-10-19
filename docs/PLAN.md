@@ -349,7 +349,7 @@ yoke run [--run R] [--parallel N] [--detach] [--resume]
 yoke wait [--run R] [--timeout S]
 yoke status [--run R] [--brief] [--active] [--json]
 yoke escalations [--run R]
-yoke unblock T-xxx --note TEXT | --skip | --reset-attempts   # user responses to escalations
+yoke unblock [T-xxx] [--note TEXT] [--skip] [--reset-attempts] | --milestone MS-xx [--note TEXT] [--waive REASON]   # user responses to escalations
 yoke stop [--run R]                   # SIGTERM runner; workers killed; resumable
 yoke pr [--run R]                     # requires approve final; push branch + gh pr create
 yoke clean [--run R]

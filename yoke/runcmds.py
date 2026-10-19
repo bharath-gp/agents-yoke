@@ -8,7 +8,7 @@ import subprocess
 import sys
 import time
 
-from . import gitops, planreview, scheduler, state
+from . import gitops, milestones, planreview, scheduler, state
 
 CMDS = ("run", "status", "escalations", "unblock", "stop", "wait", "clean", "runs")
 
@@ -31,7 +31,9 @@ def add_parsers(sub):
     e = sub.add_parser("escalations", help="list open escalations")
     e.add_argument("--run")
     u = sub.add_parser("unblock", help="answer an escalation")
-    u.add_argument("ticket")
+    u.add_argument("ticket", nargs="?")
+    u.add_argument("--milestone")
+    u.add_argument("--waive", metavar="REASON")
     u.add_argument("--run")
     u.add_argument("--note")
     u.add_argument("--skip", action="store_true")
@@ -338,11 +340,27 @@ def dispatch(args):
         for e in run.read_json("escalations.json", []):
             print("#%d %s: %s" % (e["id"], e["ticket"] or "-", e["reason"]))
     elif args.cmd == "unblock":
-        if not (args.note or args.skip or args.reset_attempts):
-            print("yoke: give --note, --skip or --reset-attempts", file=sys.stderr)
+        if not args.ticket and not args.milestone:
+            print("yoke: give ticket or --milestone", file=sys.stderr)
             return 1
-        scheduler.unblock(run, args.ticket, args.note, args.skip, args.reset_attempts)
-        print("unblocked %s" % args.ticket)
+        if args.ticket and args.milestone:
+            print("yoke: cannot pass both ticket and --milestone", file=sys.stderr)
+            return 1
+        if args.milestone:
+            if args.skip or args.reset_attempts:
+                print("yoke: --skip and --reset-attempts require ticket", file=sys.stderr)
+                return 1
+            scheduler.unblock_milestone(run, args.milestone, note=args.note, waive=args.waive)
+            print("unblocked milestone %s" % args.milestone)
+        else:
+            if args.waive:
+                print("yoke: --waive requires --milestone", file=sys.stderr)
+                return 1
+            if not (args.note or args.skip or args.reset_attempts):
+                print("yoke: give --note, --skip or --reset-attempts", file=sys.stderr)
+                return 1
+            scheduler.unblock(run, args.ticket, args.note, args.skip, args.reset_attempts)
+            print("unblocked %s" % args.ticket)
     else:
         pid = scheduler.read_lock(run)
         if not pid or not scheduler._alive(pid):

@@ -1,6 +1,8 @@
 """Milestone handling: milestone extraction, ticket merging, and fix ticket generation."""
 import copy
 
+from . import state
+
 
 def milestones_of(run_or_doc):
     """Return milestone list for run or tickets doc; falls back to implicit MS-00."""
@@ -103,3 +105,70 @@ def make_fix_ticket(
         "plan_excerpt": t_plan_excerpt,
         "milestone": ms_id,
     }
+
+
+def milestones_path(run):
+    return run.path("milestones.json")
+
+
+def load_states(run):
+    """Return dict of milestone_id -> gate state dict from milestones.json."""
+    if not hasattr(run, "read_json"):
+        return {}
+    data = run.read_json("milestones.json", {})
+    if isinstance(data, list):
+        return {m["id"]: m for m in data if isinstance(m, dict) and "id" in m}
+    if isinstance(data, dict):
+        if "milestones" in data and isinstance(data["milestones"], list):
+            return {m["id"]: m for m in data["milestones"] if isinstance(m, dict) and "id" in m}
+        return dict(data)
+    return {}
+
+
+def save_states(run, states):
+    """Persist gate state dict to milestones.json."""
+    if hasattr(run, "write_json"):
+        run.write_json("milestones.json", states)
+
+
+def get_milestone_state(run, mid):
+    states = load_states(run)
+    return states.get(mid, {"id": mid, "status": "open", "fix_count": 0})
+
+
+def set_milestone_state(run, mid, **updates):
+    states = load_states(run)
+    st = states.setdefault(mid, {"id": mid, "status": "open", "fix_count": 0})
+    st.update(updates)
+    save_states(run, states)
+    return st
+
+
+def unblock_milestone(run, milestone, note=None, waive=None):
+    """Reset fix_count to 0, clear escalations, and either record waiver or set status to open."""
+    if not milestone:
+        raise ValueError("milestone id is required")
+    states = load_states(run)
+    st = states.setdefault(milestone, {"id": milestone, "status": "open", "fix_count": 0})
+    st["fix_count"] = 0
+    if waive:
+        st["status"] = "waived"
+        st["waive_reason"] = waive
+        save_states(run, states)
+        run.event("milestone_waived", milestone=milestone, reason=waive)
+        map_path = run.path("map.md")
+        try:
+            with open(map_path, "a") as f:
+                f.write("\n## Milestone %s waived\nReason: %s\n" % (milestone, waive))
+        except OSError:
+            pass
+    else:
+        st["status"] = "open"
+        if note:
+            st["note"] = note
+        save_states(run, states)
+
+    with state._LOCK:
+        esc = [e for e in run.read_json("escalations.json", []) if e.get("ticket") != milestone]
+        run.write_json("escalations.json", esc)
+    run.event("unblock", milestone=milestone, note=note, waive=waive)

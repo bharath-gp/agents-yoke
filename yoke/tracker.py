@@ -172,3 +172,13 @@ def pr(run):
     run.update(pr_url=url)
     run.event("pr_opened", url=url, at=state.now())
     return url
+
+
+def close_github_milestone(run, milestone_id):
+    """Hook function to close GitHub milestone (wired in a later ticket). Never raises."""
+    pass
+
+
+def create_fix_issue(run, fix_ticket):
+    """Hook function to create a GitHub issue for a fix ticket (wired in a later ticket). Never raises."""
+    pass

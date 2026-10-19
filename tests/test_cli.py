@@ -84,5 +84,78 @@ class TestSetup(unittest.TestCase):
                 self.assertIn("warning", text.lower())
 
 
+class TestUnblockCLI(unittest.TestCase):
+    def test_unblock_help_shows_milestone_and_waive(self):
+        import contextlib
+        import io
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            with self.assertRaises(SystemExit) as cm:
+                cli.main(["unblock", "--help"])
+        self.assertEqual(cm.exception.code, 0)
+        text = out.getvalue()
+        self.assertIn("--milestone", text)
+        self.assertIn("--waive", text)
+
+    def test_bare_unblock_exits_nonzero(self):
+        import contextlib
+        import io
+        from unittest import mock
+        from yoke import state
+        with tempfile.TemporaryDirectory() as d:
+            repo = os.path.join(d, "repo")
+            os.makedirs(repo)
+            with mock.patch("yoke.cli._git_toplevel", return_value=repo), \
+                 mock.patch.dict(os.environ, {"YOKE_HOME": d}):
+                with self.assertRaises(SystemExit):
+                    cli.main(["unblock"])
+                cfg = config.load(repo=repo, home=d)
+                run = state.Run.create(repo, cfg, home=d)
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    rc = cli.main(["unblock", "--run", run.run_id])
+                self.assertNotEqual(rc, 0)
+                with contextlib.redirect_stderr(err):
+                    rc2 = cli.main(["unblock"])
+                self.assertNotEqual(rc2, 0)
+                self.assertIn("give ticket or --milestone", err.getvalue())
+
+    def test_unblock_both_ticket_and_milestone_exits_nonzero(self):
+        import contextlib
+        import io
+        from unittest import mock
+        from yoke import state
+        with tempfile.TemporaryDirectory() as d:
+            repo = os.path.join(d, "repo")
+            os.makedirs(repo)
+            with mock.patch("yoke.cli._git_toplevel", return_value=repo), \
+                 mock.patch.dict(os.environ, {"YOKE_HOME": d}):
+                cfg = config.load(repo=repo, home=d)
+                run = state.Run.create(repo, cfg, home=d)
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    rc = cli.main(["unblock", "T-001", "--milestone", "MS-01", "--run", run.run_id])
+                self.assertNotEqual(rc, 0)
+                self.assertIn("cannot pass both", err.getvalue())
+
+    def test_unblock_milestone_with_ticket_flags_exits_nonzero(self):
+        import contextlib
+        import io
+        from unittest import mock
+        from yoke import state
+        with tempfile.TemporaryDirectory() as d:
+            repo = os.path.join(d, "repo")
+            os.makedirs(repo)
+            with mock.patch("yoke.cli._git_toplevel", return_value=repo), \
+                 mock.patch.dict(os.environ, {"YOKE_HOME": d}):
+                cfg = config.load(repo=repo, home=d)
+                run = state.Run.create(repo, cfg, home=d)
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    rc = cli.main(["unblock", "--milestone", "MS-01", "--skip", "--run", run.run_id])
+                self.assertNotEqual(rc, 0)
+                self.assertIn("require ticket", err.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()
