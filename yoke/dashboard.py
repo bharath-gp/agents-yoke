@@ -518,18 +518,17 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             self._send_json(400, {"error": "Invalid run id"}, head=head)
             return
 
-        # Resolve under runs/ and reject traversal
+        # Pick the id from the directory listing, so no user-supplied string reaches a path
         home = getattr(self.server, "home", None) or config.yoke_home()
-        runs_dir = os.path.realpath(os.path.join(home, "runs"))
-        target_dir = os.path.realpath(os.path.join(runs_dir, unquoted))
-
-        if unquoted in (".", "..") or os.path.dirname(target_dir) != runs_dir:
-            self._send_json(400, {"error": "Path traversal rejected"}, head=head)
-            return
-
-        if not os.path.isdir(target_dir):
+        runs_dir = os.path.join(home, "runs")
+        try:
+            name = next((n for n in os.listdir(runs_dir) if n == unquoted), None)
+        except OSError:
+            name = None
+        if name is None:
             self._send_json(404, {"error": "Run not found"}, head=head)
             return
+        target_dir = os.path.join(runs_dir, name)
 
         run_json_path = os.path.join(target_dir, "run.json")
         if not os.path.isfile(run_json_path):
@@ -547,7 +546,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             return
 
         try:
-            run_obj = state.Run(unquoted, home=home)
+            run_obj = state.Run(name, home=home)
             detail = run_detail(run_obj)
         except Exception:
             self._send_json(404, {"error": "Run not found"}, head=head)
