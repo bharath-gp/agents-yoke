@@ -369,6 +369,11 @@ class TestRunCall(Tmp):
                         stage="plan_review", attempt=3)
         self.assertEqual(res.audit_dir, self.run_.path("plan-review/round-3"))
 
+    def test_wayfinder_dir(self):
+        res = self.call({"wayfinder": [{"structured_output": {"status": "done"}}]},
+                        stage="wayfinder", attempt=2)
+        self.assertEqual(res.audit_dir, self.run_.path("chart/round-2"))
+
     def test_schema_reask_succeeds(self):
         res = self.call({"code": [{"structured_output": {"status": "bogus"}, "session_id": "s1"},
                                   {"structured_output": {"status": "done"}, "session_id": "s1"}]},

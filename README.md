@@ -106,6 +106,7 @@ The skills run these for you; the raw commands below are for scripting and debug
 yoke init --requirements req.md   # prints run_id; write plan.md into ~/.yoke/runs/<run_id>/
 yoke review-plan                  # one read-only secondary review round
 yoke approve plan                 # also: tickets (creates GitHub issues if tracker=github), final
+yoke tickets chart [--feedback "note"] # map approved plan to milestones/tickets via wayfinder
 yoke tickets import tickets.json  # validate milestones/tickets and warn; `yoke tickets show` groups by milestone
 yoke route T-001                  # stages and agents for a ticket
 yoke run --detach --parallel 2    # background runner; always resumes from disk

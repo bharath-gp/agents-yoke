@@ -235,6 +235,25 @@ class TestReviewSchema(unittest.TestCase):
         self.assertTrue(schema.validate(extra_in_finding, self.schema))
 
 
+class TestChartPrompt(unittest.TestCase):
+    def test_chart_prompt_renders_and_all_variables_supplied_by_chart_round(self):
+        content = _read("chart")
+        import re
+        template_vars = set(re.findall(r"\$([a-zA-Z_][a-zA-Z0-9_]*)", content))
+        self.assertEqual(template_vars, {"requirements", "plan", "feedback", "max_tickets"})
+        from yoke import chart
+        rendered, supplied = chart.chart_prompt({"max_tickets": 40}, "plan text", "req text", "feedback text")
+        self.assertEqual(template_vars, set(supplied.keys()))
+        for v in template_vars:
+            self.assertIn(v, supplied)
+            self.assertNotIn("$" + v, rendered)
+
+    def test_chart_prompt_has_wayfinder_rules(self):
+        content = _read("chart")
+        for rule in ("destination", "milestones", "exit_check", "out of scope"):
+            self.assertIn(rule, content)
+
+
 if __name__ == "__main__":
     unittest.main()
 

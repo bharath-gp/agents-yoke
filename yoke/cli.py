@@ -225,19 +225,7 @@ def pr_cmd(args):
     return 0
 
 
-def tickets_cmd(args):
-    run = _run(args)
-    if args.action == "import":
-        errs, ts = tickets_mod.import_tickets(run, args.file)
-        for e in errs:
-            print("error: " + e, file=sys.stderr)
-        if not errs:
-            doc = run.read_json("tickets.json", {})
-            for w in tickets_mod.warnings(doc):
-                print("warning: " + w)
-            print("imported %d tickets" % len(ts))
-        return 1 if errs else 0
-    doc = run.read_json("tickets.json", {"tickets": []})
+def _print_tickets_table(doc):
     tickets = doc.get("tickets", [])
     ms_list = milestones.milestones_of(doc)
     for ms in ms_list:
@@ -251,6 +239,46 @@ def tickets_cmd(args):
         for t in m_tickets:
             print("  %s [%s] %s%s" % (t["id"], t["type"], t["title"],
                                       "  (after %s)" % ",".join(t["depends_on"]) if t["depends_on"] else ""))
+
+
+def chart_cmd(run, args, adapter=None):
+    from . import chart as chart_mod, planreview
+    try:
+        n, res = chart_mod.chart_round(run, adapter=adapter, feedback=getattr(args, "feedback", None))
+    except (chart_mod.ChartError, planreview.ApprovalError) as e:
+        print("yoke: %s" % e, file=sys.stderr)
+        return 1
+    if not res.ok or not res.schema_valid:
+        print("chart failed: %s" % res.error, file=sys.stderr)
+        return 1
+    import_errs = getattr(res, "import_errs", [])
+    if import_errs:
+        for err in import_errs:
+            print("error: %s" % err, file=sys.stderr)
+        return 1
+    doc = run.read_json("tickets.json", {})
+    for w in tickets_mod.warnings(doc):
+        print("warning: " + w)
+    _print_tickets_table(doc)
+    return 0
+
+
+def tickets_cmd(args, adapter=None):
+    run = _run(args)
+    if args.action == "chart":
+        return chart_cmd(run, args, adapter=adapter)
+    if args.action == "import":
+        errs, ts = tickets_mod.import_tickets(run, args.file, adapter=adapter)
+        for e in errs:
+            print("error: " + e, file=sys.stderr)
+        if not errs:
+            doc = run.read_json("tickets.json", {})
+            for w in tickets_mod.warnings(doc):
+                print("warning: " + w)
+            print("imported %d tickets" % len(ts))
+        return 1 if errs else 0
+    doc = run.read_json("tickets.json", {"tickets": []})
+    _print_tickets_table(doc)
     return 0
 
 
@@ -437,9 +465,10 @@ def main(argv=None):
                     help="user: ~/.yoke/config.json; project/repo: <repo>/.yoke.json (default: user)")
     mo.add_argument("--reset", nargs="?", const="", action="append", default=None, metavar="[AGENT[.TIER]]",
                     help="remove model configuration for AGENT or AGENT.TIER (or all if omitted)")
-    tk = sub.add_parser("tickets", help="import or show tickets")
-    tk.add_argument("action", choices=["import", "show"])
+    tk = sub.add_parser("tickets", help="import, show, or chart tickets")
+    tk.add_argument("action", choices=["import", "show", "chart"])
     tk.add_argument("file", nargs="?", help="tickets JSON (import)")
+    tk.add_argument("--feedback", help="feedback text for chart")
     tk.add_argument("--run")
     rt = sub.add_parser("route", help="show the stage route for a ticket")
     rt.add_argument("ticket")
