@@ -33,7 +33,7 @@ Claude Code without npx:
 /yoke:setup
 ```
 
-`/yoke:setup` installs the `yoke` CLI if missing (`uv tool install` from GitHub, `pipx` fallback), runs the environment check and records success, either user-wide (`~/.yoke/setup.json`) or for the current repo only (`~/.yoke/projects/`). Every other skill (`/yoke:go grill plan tickets run resume status finish models`) first runs `yoke setup --check` and tells you to run `/yoke:setup` if it fails. A SessionStart hook shows the same hint. Rerun setup or the installer to update. The repo must be readable with your git credentials (it is private until made public).
+`/yoke:setup` installs the `yoke` CLI if missing (`uv tool install` from GitHub, `pipx` fallback), runs the environment check and records success, either user-wide (`~/.yoke/setup.json`) or for the current repo only (`~/.yoke/projects/`). Every other skill (`/yoke:go grill plan tickets run resume status finish models dashboard`) first runs `yoke setup --check` and tells you to run `/yoke:setup` if it fails. A SessionStart hook shows the same hint. Rerun setup or the installer to update. The repo must be readable with your git credentials (it is private until made public).
 
 Development: `uv tool install --editable .`, then `claude plugin marketplace add . && claude plugin install yoke@yoke`.
 
@@ -98,6 +98,7 @@ yoke provides the following skills for host agents (Claude Code and Antigravity)
 | `/yoke:resume [run_id]` | Inspect active runs (`yoke runs --active`) or pick up an interrupted run with run id. |
 | `/yoke:models` | Inspect, set or reset the plan-tier and cheap-tier models per agent. |
 | `/yoke:status [run_id]` | Check run progress, escalations, and active run states. |
+| `/yoke:dashboard [--port N]` | Serve local read-only web dashboard showing yoke runs, ticket status, and progress. |
 | `/yoke:finish [run_id]` | Final review gate: review commits, diffs, open issues, final approval, and open pull request. |
 
 The skills run these for you; the raw commands below are for scripting and debugging:

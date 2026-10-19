@@ -12,7 +12,7 @@ from unittest import mock
 from yoke import cli, config, state
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SKILLS = ("setup", "grill", "plan", "tickets", "run", "resume", "status", "finish", "go", "models")
+SKILLS = ("setup", "grill", "plan", "tickets", "run", "resume", "status", "finish", "go", "models", "dashboard")
 
 
 def load(rel):
@@ -56,7 +56,7 @@ class TestPackaging(unittest.TestCase):
             with open(os.path.join(ROOT, "skills", name, "SKILL.md")) as f:
                 subs.update(re.findall(r"`yoke ([a-z-]+)", f.read()))
         known = {"setup", "init", "review-plan", "approve", "tickets", "run", "wait", "status", "escalations",
-                 "unblock", "stop", "pr", "route", "doctor", "models", "runs", "map"}
+                 "unblock", "stop", "pr", "route", "doctor", "models", "runs", "map", "dashboard"}
         self.assertFalse(subs - known, subs - known)
 
 
@@ -84,9 +84,20 @@ class TestPackaging(unittest.TestCase):
             self.assertTrue(re.search(rf"- `{target}`:.*--run R", text), f"Missing branch for {target}")
 
     def test_skills_run_flag(self):
+        # 'dashboard' is exempt because it is not run-scoped.
+        self.assertNotIn("dashboard", ("plan", "tickets", "run", "finish", "status"))
         for name in ("plan", "tickets", "run", "finish", "status"):
             with open(os.path.join(ROOT, "skills", name, "SKILL.md")) as f:
                 self.assertIn("--run", f.read(), name)
+
+    def test_dashboard_skill(self):
+        path = os.path.join(ROOT, "skills", "dashboard", "SKILL.md")
+        self.assertTrue(os.path.exists(path))
+        with open(path) as f:
+            content = f.read()
+        self.assertIn("`yoke setup --check`", content)
+        self.assertIn("`yoke dashboard", content)
+        self.assertIn("/api/runs", content)
 
     def test_grill_mentions_go(self):
         with open(os.path.join(ROOT, "skills", "grill", "SKILL.md")) as f:
