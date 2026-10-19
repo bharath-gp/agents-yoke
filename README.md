@@ -33,7 +33,7 @@ Claude Code without npx:
 /yoke:setup
 ```
 
-`/yoke:setup` installs the `yoke` CLI if missing (`uv tool install` from GitHub, `pipx` fallback), runs the environment check and records success, either user-wide (`~/.yoke/setup.json`) or for the current repo only (`~/.yoke/projects/`). Every other skill (`/yoke:go grill plan tickets run resume status finish models`) first runs `yoke setup --check` and tells you to run `/yoke:setup` if it fails. A SessionStart hook shows the same hint. Rerun setup or the installer to update. The repo must be readable with your git credentials (it is private until made public).
+`/yoke:setup` installs the `yoke` CLI if missing (`uv tool install` from GitHub, `pipx` fallback), runs the environment check and records success, either user-wide (`~/.yoke/setup.json`) or for the current repo only (`~/.yoke/projects/`). Every other skill (`/yoke:go grill plan tickets run resume status finish models dashboard`) first runs `yoke setup --check` and tells you to run `/yoke:setup` if it fails. A SessionStart hook shows the same hint. Rerun setup or the installer to update. The repo must be readable with your git credentials (it is private until made public).
 
 Development: `uv tool install --editable .`, then `claude plugin marketplace add . && claude plugin install yoke@yoke`.
 
@@ -98,6 +98,7 @@ yoke provides the following skills for host agents (Claude Code and Antigravity)
 | `/yoke:resume [run_id]` | Inspect active runs (`yoke runs --active`) or pick up an interrupted run with run id. |
 | `/yoke:models` | Inspect, set or reset the plan-tier and cheap-tier models per agent. |
 | `/yoke:status [run_id]` | Check run progress, escalations, and active run states. |
+| `/yoke:dashboard [--port N]` | Serve local read-only web dashboard showing yoke runs, ticket status, and progress. |
 | `/yoke:finish [run_id]` | Final review gate: review commits, diffs, open issues, final approval, and open pull request. |
 
 The skills run these for you; the raw commands below are for scripting and debugging:
@@ -114,6 +115,7 @@ yoke run --detach --parallel 2    # background runner; always resumes from disk
 yoke wait                         # blocks until escalation, done, needs_user, stopped, died or timeout
 yoke runs [--active] [--json]     # list runs for this repo with goal and next step
 yoke status [--json|--brief]      # also: escalations, unblock [T-001|--milestone MS-01], stop; --active lists active runs
+yoke dashboard [--port N]         # serve local read-only web UI on 127.0.0.1 (default port 8765)
 yoke approve final && yoke pr     # push branch, open PR
 yoke clean                        # remove worktrees (keeps branches and audit)
 ```
@@ -127,6 +129,23 @@ Subcommands take `--run <id>`; default is the latest run for the current repo. `
 - **Sequential milestone barrier**: The runner executes tickets milestone-by-milestone. Tickets belonging to later milestones do not become ready until all preceding milestones pass or are waived.
 - **Exit checks & fix tickets**: When all tickets in a milestone complete, the runner runs its `exit_check` in the integration worktree. If the check fails, the runner auto-generates fix tickets (`F-001`, `F-002` up to `max_fix_tickets_per_milestone`, default 2). If fixes are exhausted, the gate escalates.
 - **Unblocking milestones**: Answer gate escalations with `yoke unblock --milestone MS-xx [--note TEXT]` to retry the gate check or `yoke unblock --milestone MS-xx --waive REASON` to log the waiver to `map.md` and proceed.
+
+## Web dashboard (`yoke dashboard`)
+
+`yoke dashboard [--port N]` (or the `/yoke:dashboard` skill in agent sessions) serves a local, read-only web interface on `127.0.0.1` (default port `8765`):
+
+- **Skill integration**: In agent sessions, run `/yoke:dashboard [--port N]` (agy: the `dashboard` skill) to launch or inspect the dashboard server.
+
+- **Self-contained**: Single-file interface (`yoke/dashboard.html`) with inline CSS and JavaScript, using no CDNs or external network dependencies.
+- **Run picker**: Sidebar listing all runs with live state badges, goal descriptions, progress counters, and runner active indicators. The selected run is tracked in the URL hash (`#<run_id>`).
+- **Detail view**:
+  - **Run overview**: Displays run ID, state, feature branch, runner heartbeat, and agent calls against total budget.
+  - **Stage strip**: Visual breadcrumbs across lifecycle stages (`grill`, `plan`, `tickets`, `run`, `finish`).
+  - **Progress & Milestones**: Overall done vs remaining progress bar, plus milestone cards showing gate status, exit checks, and fix ticket counts.
+  - **Ticket table**: Real-time ticket statuses, attempt counts, active stage and agent, last update timestamps, and explicit `waiting_for` dependency reasons.
+  - **Escalations & Events**: Panel listing open escalations alongside a reverse-chronological event stream.
+  - **Decisions log**: Rendered implementation decisions and gate waivers from `map.md`.
+- **Live updates & safety**: Automatically polls `/api/runs` and `/api/runs/<id>` every 3 seconds with visible disconnected indicators and polling paused when the browser tab is hidden. All data is safely rendered using `textContent` (never `innerHTML`). Automatically adapts to dark and light modes via `prefers-color-scheme`.
 
 ## GitHub tracker & milestones
 

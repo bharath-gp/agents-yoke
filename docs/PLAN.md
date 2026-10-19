@@ -45,6 +45,7 @@ Status legend per milestone: `[ ]` todo, `[~]` in progress, `[x]` done. Update t
    | [M12](#m12) | Run listing, `go` skill, multi-run resume | [2.11](#s2-11) |
    | [M13](#m13) | Model selection & configuration | [2.6](#s2-6) |
    | [M14](#m14) | Milestones, destination map, and charting | [2.5](#s2-5), [2.7](#s2-7), [2.8](#s2-8), [2.14](#s2-14), [2.16](#s2-16) |
+   | [M15](#m15) | Web dashboard (read-only UI & HTTP server) | [2.2](#s2-2), [2.8](#s2-8), [2.16](#s2-16) |
 4. [Verification matrix](#s4)
 5. [Out of scope](#s5)
 - [Appendix A: Topic index](#appA)
@@ -369,6 +370,7 @@ yoke stop [--run R]                   # SIGTERM runner; workers killed; resumabl
 yoke pr [--run R]                     # requires approve final; push branch + gh pr create
 yoke clean [--run R]
 yoke route T-xxx [--run R]            # debug: show stages/agents/models for a ticket
+yoke dashboard [--port N]             # serve local read-only web UI on 127.0.0.1 (default port 8765)
 yoke models [--list] [--show] [--set AGENT.TIER=MODEL] [--effort E] [--scope user|project|repo] [--reset [AGENT[.TIER]]]
 yoke mcp                              # stdio MCP server
 yoke doctor [--live]
@@ -526,6 +528,15 @@ Files: `yoke/milestones.py`, `yoke/chart.py`, `yoke/schemas/chart.json`, `yoke/p
 - GitHub tracker integration: creates GitHub milestones upon ticket approval, associates ticket issues with milestones, creates fix ticket issues, and closes GitHub milestones when gates pass.
 - Notes: Built `yoke/milestones.py`, `yoke/chart.py`, added `yoke tickets chart` and `yoke map` commands, updated `scheduler.py` with milestone barriers and exit check runner re-testing, enhanced `tracker.py` with milestone lifecycle integration, updated all relevant skills (`tickets`, `go`, `run`, `finish`), and bumped package version to 0.5.0.
 
+<a id="m15"></a>
+### M15: Web dashboard (read-only UI & HTTP server) (0.6.0) `[x]`
+Files: `yoke/dashboard.py`, `yoke/dashboard.html`, `yoke/cli.py` (`dashboard`), `skills/dashboard/SKILL.md`, `tests/test_dashboard.py`, `tests/test_plugin.py`, `README.md`, `CLAUDE.md`, `docs/PLAN.md`, `.claude-plugin/plugin.json`, `pyproject.toml`.
+- Dashboard data layer: `dashboard.py` exposes `list_runs(home)` and `run_detail(run_id, home)` assembling state, tickets, milestone gates from `milestones.json`, open escalations, decisions and gate waivers from `map.md`, and reverse-chronological event streams with tail-reading optimization (`read_events_tail`).
+- Local HTTP server: `serve(host, port, home)` serves single-file UI at `GET /` and JSON endpoints `GET /api/runs` and `GET /api/runs/<id>`. Includes 404 for unknown endpoints or runs, automatic port increment retry (`bind_server`), and `yoke dashboard [--port N]` CLI subcommand.
+- Single-file web interface: `dashboard.html` with zero external dependencies, dark and light theme support via `prefers-color-scheme`, responsive layout, active run badge, stage strip breadcrumbs, progress bar, milestone gate cards, ticket status table, escalations, event stream, and decisions log. Uses URL hash routing (`#<run_id>`) and periodic 3-second polling with visibility awareness. Safe rendering via `textContent`.
+- Plugin skill: `/yoke:dashboard [--port N]` skill for Claude and Antigravity agents.
+- Notes: Built `yoke/dashboard.py`, `yoke/dashboard.html`, added `yoke dashboard` command in `cli.py`, created `skills/dashboard/SKILL.md`, and bumped package version to 0.6.0. Deviations: (a) read-only design: mutations, approvals, and escalations must still go through CLI or skills to preserve hash-bound verification and audit trail integrity; (b) tail reading: `read_events_tail` seeks from the end of `events.jsonl` rather than loading the whole file into memory.
+
 ---
 
 <a id="s4"></a>
@@ -546,7 +557,6 @@ Files: `yoke/milestones.py`, `yoke/chart.py`, `yoke/schemas/chart.json`, `yoke/p
 ## 5. Deliberately out of scope (add when needed)
 - Token/cost caps (requirements say none initially; usage is recorded).
 - Auto-merge of PRs or pushing without `yoke pr`.
-- Web dashboard (status.json + `yoke status` suffice).
 - More than two agents in one run beyond per-role overrides.
 
 <a id="appA"></a>
@@ -607,4 +617,5 @@ Files: `yoke/milestones.py`, `yoke/chart.py`, `yoke/schemas/chart.json`, `yoke/p
 | `.claude-plugin/*`, `skills/*/SKILL.md`, `hooks/hooks.json` | plugin, skills, SessionStart hook | [2.11](#s2-11), [2.15](#s2-15) | [M7](#m7) |
 | `yoke/prbody.py` | PR template matching and body fill | [2.14](#s2-14) | [M8](#m8) |
 | `yoke/tracker.py` | local / GitHub tracker, `pr_body`, `pr` | [2.14](#s2-14) | [M8](#m8) |
+| `yoke/dashboard.py`, `yoke/dashboard.html` | read-only dashboard server and UI | [2.16](#s2-16) | [M15](#m15) |
 | `tests/fake_cli.py`, `tests/test_*.py`, `tests/e2e.sh` | fake CLI, unit + e2e tests | [4](#s4) | [M1](#m1)–[M9](#m9) |

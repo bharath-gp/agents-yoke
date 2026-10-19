@@ -2,7 +2,7 @@
 
 ## State of the repo
 
-`yoke`: Claude plans and validates, Antigravity (`agy`) codes, runs QA and writes docs. Milestones M0-M14 are done. [docs/PLAN.md](docs/PLAN.md) is the source of truth for design; each milestone's "Notes" in section 3 records deviations from it. [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) is discovery output. Keep PLAN.md anchors (`#s2-8`, `#m4`, ...) stable. Usage lives in [README.md](README.md).
+`yoke`: Claude plans and validates, Antigravity (`agy`) codes, runs QA and writes docs. Milestones M0-M15 are done. [docs/PLAN.md](docs/PLAN.md) is the source of truth for design; each milestone's "Notes" in section 3 records deviations from it. [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) is discovery output. Keep PLAN.md anchors (`#s2-8`, `#m4`, ...) stable. Usage lives in [README.md](README.md).
 
 ## Commands
 
@@ -33,3 +33,4 @@ tests/e2e.sh [normal|fallback]                        # manual, real agents, spe
 - Git (`gitops.py`): feature branch `yoke/<run_id>`, one worktree and branch `yoke/<run_id>-T-001` per ticket, runner commits, rebase then `--ff-only` merge under a merge lock; a rebase conflict is re-applied with `cherry-pick -n` for the coder to resolve.
 - `router.py` (Ollama, then small Claude call, then deterministic default; never blocks) is imported by the runner and exposed over stdio MCP by `mcp_server.py` (`.mcp.json`).
 - `tracker.py`: GitHub milestones and issues on `approve tickets`, gate close/fix tracking, `yoke pr`; plugin files are `.claude-plugin/`, `hooks/`, `skills/`.
+- `dashboard.py`: local read-only HTTP server and JSON API (`/api/runs`, `/api/runs/<id>`) serving single-file UI (`dashboard.html`) on 127.0.0.1; run picker, stage strip, milestone gate status, ticket table, and live polling.

@@ -1,6 +1,6 @@
 [project]
 name = "yoke"
-version = "0.5.0"
+version = "0.6.0"
 description = "Primary/secondary agent loop: Claude plans and validates, agy codes."
 requires-python = ">=3.9"
 dependencies = []
@@ -16,4 +16,4 @@ build-backend = "setuptools.build_meta"
 packages = ["yoke"]
 
 [tool.setuptools.package-data]
-yoke = ["defaults.json", "schemas/*.json", "prompts/*.md", "githooks/*"]
+yoke = ["defaults.json", "schemas/*.json", "prompts/*.md", "githooks/*", "dashboard.html"]

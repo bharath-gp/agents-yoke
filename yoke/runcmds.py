@@ -8,9 +8,9 @@ import subprocess
 import sys
 import time
 
-from . import gitops, milestones, planreview, scheduler, state
+from . import config, gitops, milestones, planreview, scheduler, state
 
-CMDS = ("run", "status", "escalations", "unblock", "stop", "wait", "clean", "runs", "map")
+CMDS = ("run", "status", "escalations", "unblock", "stop", "wait", "clean", "runs", "map", "dashboard")
 
 
 def add_parsers(sub):
@@ -47,6 +47,8 @@ def add_parsers(sub):
     c.add_argument("--run")
     st = sub.add_parser("stop", help="SIGTERM the runner and its workers")
     st.add_argument("--run")
+    d = sub.add_parser("dashboard", help="serve local read-only web UI")
+    d.add_argument("--port", type=int, default=8765, help="port to bind to (default: 8765)")
 
 
 def wait_for(run, timeout, poll=2):
@@ -271,17 +273,7 @@ def render_map(run):
             tid = t["id"]
             st = sts.get(tid, "pending")
             dep_str = " (after %s)" % ", ".join(t.get("depends_on", [])) if t.get("depends_on") else ""
-            reasons = []
-            if st == "pending":
-                blocked_gates = [
-                    em["id"] for em in all_milestones[:ms_idx.get(t.get("milestone", "MS-00"), 0)]
-                    if ms_states.get(em["id"], {}).get("status") not in ("passed", "waived")
-                ]
-                if blocked_gates:
-                    reasons.append("blocked by gate %s" % ", ".join(blocked_gates))
-                unclosed = [d for d in t.get("depends_on", []) if sts.get(d) != "closed"]
-                if unclosed:
-                    reasons.append("waiting for %s" % ", ".join(unclosed))
+            reasons = milestones.ticket_waiting_for(t, all_milestones, ms_states, sts, ms_idx)
             wait_str = " (%s)" % "; ".join(reasons) if reasons else ""
             lines.append("  %s [%s] %s%s%s" % (tid, st, t.get("title", ""), dep_str, wait_str))
 
@@ -384,6 +376,9 @@ def dispatch(args):
         else:
             print("no runs for this repo")
         return 0
+    if args.cmd == "dashboard":
+        from . import dashboard
+        return dashboard.serve(config.yoke_home(), args.port)
     run = cli._run(args)
     if args.cmd == "run":
         try:

@@ -1,0 +1,1161 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>yoke dashboard</title>
+  <style>
+    :root {
+      --bg: #f8fafc;
+      --card-bg: #ffffff;
+      --card-hover: #f1f5f9;
+      --border: #e2e8f0;
+      --border-dark: #cbd5e1;
+      --text: #0f172a;
+      --text-muted: #64748b;
+      --text-subtle: #94a3b8;
+      --accent: #2563eb;
+      --accent-hover: #1d4ed8;
+      --accent-bg: #eff6ff;
+
+      --state-running: #2563eb;
+      --state-running-bg: #eff6ff;
+      --state-done: #16a34a;
+      --state-done-bg: #f0fdf4;
+      --state-failed: #dc2626;
+      --state-failed-bg: #fef2f2;
+      --state-needs-user: #d97706;
+      --state-needs-user-bg: #fffbeb;
+      --state-stopped: #64748b;
+      --state-stopped-bg: #f1f5f9;
+      --state-pending: #64748b;
+      --state-pending-bg: #f1f5f9;
+
+      --dot-alive: #16a34a;
+      --dot-dead: #94a3b8;
+      --warn-bg: #fef3c7;
+      --warn-text: #92400e;
+      --error-bg: #fee2e2;
+      --error-text: #991b1b;
+
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #090d16;
+        --card-bg: #131c2e;
+        --card-hover: #1a263d;
+        --border: #1e293b;
+        --border-dark: #334155;
+        --text: #f1f5f9;
+        --text-muted: #94a3b8;
+        --text-subtle: #64748b;
+        --accent: #3b82f6;
+        --accent-hover: #60a5fa;
+        --accent-bg: #1e3a8a;
+
+        --state-running: #60a5fa;
+        --state-running-bg: #1e3a8a;
+        --state-done: #4ade80;
+        --state-done-bg: #14532d;
+        --state-failed: #f87171;
+        --state-failed-bg: #7f1d1d;
+        --state-needs-user: #fbbf24;
+        --state-needs-user-bg: #78350f;
+        --state-stopped: #94a3b8;
+        --state-stopped-bg: #1e293b;
+        --state-pending: #94a3b8;
+        --state-pending-bg: #1e293b;
+
+        --dot-alive: #4ade80;
+        --dot-dead: #64748b;
+        --warn-bg: #78350f;
+        --warn-text: #fef3c7;
+        --error-bg: #7f1d1d;
+        --error-text: #fecaca;
+      }
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: var(--font-sans);
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      font-size: 14px;
+    }
+
+    header.app-header {
+      background: var(--card-bg);
+      border-bottom: 1px solid var(--border);
+      padding: 12px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .brand h1 {
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+
+    .header-status {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 12px;
+    }
+
+    .disconnected-badge {
+      display: none;
+      background: var(--error-bg);
+      color: var(--error-text);
+      padding: 4px 10px;
+      border-radius: 9999px;
+      font-weight: 600;
+      animation: pulse 1.5s infinite ease-in-out;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    .last-updated {
+      color: var(--text-muted);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .app-layout {
+      display: grid;
+      grid-template-columns: 320px 1fr;
+      min-height: calc(100vh - 49px);
+    }
+
+    @media (max-width: 900px) {
+      .app-layout {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    aside.sidebar {
+      background: var(--card-bg);
+      border-right: 1px solid var(--border);
+      overflow-y: auto;
+      max-height: calc(100vh - 49px);
+    }
+
+    .sidebar-header {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+      font-weight: 600;
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .run-list {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .run-item {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
+      transition: background 0.15s ease;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .run-item:hover {
+      background: var(--card-hover);
+    }
+
+    .run-item.selected {
+      background: var(--accent-bg);
+      border-left: 4px solid var(--accent);
+      padding-left: 12px;
+    }
+
+    .run-item-top {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .runner-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .runner-dot.alive {
+      background: var(--dot-alive);
+      box-shadow: 0 0 6px var(--dot-alive);
+    }
+
+    .runner-dot.dead {
+      background: var(--dot-dead);
+    }
+
+    .run-item-id {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      flex: 1;
+    }
+
+    .run-item-goal {
+      font-size: 13px;
+      color: var(--text);
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      word-break: break-word;
+    }
+
+    .run-item-meta {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    main.main-content {
+      padding: 24px;
+      overflow-y: auto;
+      max-height: calc(100vh - 49px);
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 18px 20px;
+    }
+
+    .card-title {
+      font-size: 15px;
+      font-weight: 700;
+      margin-bottom: 14px;
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .badge-running { background: var(--state-running-bg); color: var(--state-running); }
+    .badge-done { background: var(--state-done-bg); color: var(--state-done); }
+    .badge-needs_user, .badge-needs-user { background: var(--state-needs-user-bg); color: var(--state-needs-user); }
+    .badge-stopped { background: var(--state-stopped-bg); color: var(--state-stopped); }
+    .badge-pending { background: var(--state-pending-bg); color: var(--state-pending); }
+    .badge-in_progress, .badge-in-progress { background: var(--state-running-bg); color: var(--state-running); }
+    .badge-failed { background: var(--state-failed-bg); color: var(--state-failed); }
+
+    .detail-header-card {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .detail-title-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .detail-run-id {
+      font-family: var(--font-mono);
+      font-size: 20px;
+      font-weight: 700;
+    }
+
+    .detail-meta-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px;
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+
+    .detail-meta-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .detail-destination {
+      font-size: 14px;
+      color: var(--text);
+      padding-top: 6px;
+      border-top: 1px solid var(--border);
+    }
+
+    .out-of-scope-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+    }
+
+    .chip {
+      display: inline-block;
+      padding: 2px 8px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      font-size: 12px;
+    }
+
+    .chip-oos {
+      color: var(--text-muted);
+      text-decoration: line-through;
+    }
+
+    /* Stage Strip */
+    .stage-strip {
+      display: flex;
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .stage-step {
+      flex: 1;
+      padding: 12px 10px;
+      text-align: center;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      border-right: 1px solid var(--border);
+      color: var(--text-subtle);
+      font-weight: 500;
+      font-size: 13px;
+      text-transform: capitalize;
+      background: var(--card-bg);
+    }
+
+    .stage-step:last-child {
+      border-right: none;
+    }
+
+    .stage-step.active {
+      background: var(--accent-bg);
+      color: var(--accent);
+      font-weight: 700;
+    }
+
+    .stage-step.completed {
+      color: var(--text);
+    }
+
+    .stage-num {
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      border: 1px solid currentColor;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+    }
+
+    /* Progress bar */
+    .progress-section {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .progress-track {
+      width: 100%;
+      height: 10px;
+      background: var(--border);
+      border-radius: 5px;
+      overflow: hidden;
+    }
+
+    .progress-bar-fill {
+      height: 100%;
+      background: var(--state-done);
+      width: 0%;
+      transition: width 0.3s ease;
+    }
+
+    .progress-labels {
+      display: flex;
+      justify-content: space-between;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    /* Milestones */
+    .milestone-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 12px;
+    }
+
+    .milestone-card {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .milestone-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .milestone-id {
+      font-family: var(--font-mono);
+      font-weight: 700;
+      font-size: 12px;
+    }
+
+    .gate-chip {
+      font-size: 10px;
+      font-weight: 700;
+      padding: 2px 6px;
+      border-radius: 4px;
+      text-transform: uppercase;
+    }
+
+    .gate-open { background: var(--state-running-bg); color: var(--state-running); }
+    .gate-passed, .gate-closed { background: var(--state-done-bg); color: var(--state-done); }
+    .gate-failed { background: var(--state-failed-bg); color: var(--state-failed); }
+    .gate-checking { background: var(--state-needs-user-bg); color: var(--state-needs-user); }
+
+    .milestone-title {
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .milestone-progress {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .milestone-check {
+      font-size: 11px;
+      font-family: var(--font-mono);
+      color: var(--text-muted);
+      background: var(--card-bg);
+      padding: 2px 4px;
+      border-radius: 3px;
+      word-break: break-all;
+    }
+
+    /* Tickets Table */
+    .table-container {
+      overflow-x: auto;
+    }
+
+    table.ticket-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+      text-align: left;
+    }
+
+    table.ticket-table th {
+      padding: 10px 12px;
+      background: var(--bg);
+      border-bottom: 1px solid var(--border-dark);
+      font-weight: 600;
+      color: var(--text-muted);
+      font-size: 12px;
+    }
+
+    table.ticket-table td {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+
+    table.ticket-table tr:hover td {
+      background: var(--card-hover);
+    }
+
+    .cell-id {
+      font-family: var(--font-mono);
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    .ticket-title-text {
+      font-weight: 500;
+      margin-bottom: 4px;
+    }
+
+    .ticket-waiting-for {
+      font-size: 11px;
+      color: var(--warn-text);
+      background: var(--warn-bg);
+      display: inline-block;
+      padding: 2px 6px;
+      border-radius: 4px;
+      margin-top: 2px;
+    }
+
+    .status-chip {
+      display: inline-block;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: capitalize;
+    }
+
+    .status-closed { background: var(--state-done-bg); color: var(--state-done); }
+    .status-in_progress, .status-in-progress { background: var(--state-running-bg); color: var(--state-running); }
+    .status-pending { background: var(--state-pending-bg); color: var(--state-pending); }
+    .status-blocked { background: var(--state-failed-bg); color: var(--state-failed); }
+    .status-skipped { background: var(--state-stopped-bg); color: var(--state-stopped); }
+
+    /* Escalations */
+    .escalation-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .escalation-item {
+      background: var(--warn-bg);
+      color: var(--warn-text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .escalation-top {
+      display: flex;
+      gap: 12px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .escalation-reason {
+      font-size: 13px;
+      word-break: break-word;
+    }
+
+    /* Event feed */
+    .event-feed-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      max-height: 360px;
+      overflow-y: auto;
+    }
+
+    .event-item {
+      display: flex;
+      gap: 12px;
+      align-items: baseline;
+      padding: 6px 0;
+      border-bottom: 1px solid var(--border);
+      font-size: 12px;
+    }
+
+    .event-time {
+      font-family: var(--font-mono);
+      color: var(--text-muted);
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .event-kind {
+      font-weight: 600;
+      padding: 1px 6px;
+      border-radius: 3px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      white-space: nowrap;
+    }
+
+    .event-details {
+      color: var(--text);
+      word-break: break-word;
+      font-family: var(--font-mono);
+      font-size: 11px;
+    }
+
+    /* Decisions Log */
+    .decisions-pre {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 12px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 300px;
+      overflow-y: auto;
+      line-height: 1.4;
+    }
+
+    .empty-note {
+      color: var(--text-muted);
+      font-style: italic;
+      padding: 8px 0;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand">
+      <h1>yoke dashboard</h1>
+    </div>
+    <div class="header-status">
+      <span id="disconnected-badge" class="disconnected-badge">Disconnected</span>
+      <span id="last-updated" class="last-updated">Last updated: (connecting)</span>
+    </div>
+  </header>
+
+  <div class="app-layout">
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <span>Runs</span>
+        <span id="run-count">0</span>
+      </div>
+      <div id="run-picker-list" class="run-list"></div>
+    </aside>
+
+    <main class="main-content">
+      <div id="detail-empty" class="card">
+        <div class="empty-note">No run selected. Select a run from the list to view details.</div>
+      </div>
+
+      <div id="detail-content" style="display: none; flex-direction: column; gap: 20px;">
+        <!-- Header: run id, state, branch, agent calls/budget -->
+        <section class="card detail-header-card">
+          <div class="detail-title-row">
+            <span id="detail-run-id" class="detail-run-id"></span>
+            <span id="detail-state-badge" class="badge"></span>
+          </div>
+          <div class="detail-meta-row">
+            <div class="detail-meta-item">
+              <span id="detail-alive-dot" class="runner-dot"></span>
+              <span id="detail-alive-text"></span>
+            </div>
+            <div class="detail-meta-item">
+              <span id="detail-branch"></span>
+            </div>
+            <div class="detail-meta-item">
+              <span id="detail-calls"></span>
+            </div>
+          </div>
+          <div id="detail-destination" class="detail-destination"></div>
+          <div id="detail-out-of-scope" class="out-of-scope-row"></div>
+        </section>
+
+        <!-- Stage strip -->
+        <section class="stage-strip" id="stage-strip"></section>
+
+        <!-- Progress bar with done/remaining -->
+        <section class="card progress-section">
+          <div class="card-title">Progress</div>
+          <div class="progress-track">
+            <div id="progress-bar-fill" class="progress-bar-fill"></div>
+          </div>
+          <div class="progress-labels">
+            <span id="progress-text-summary"></span>
+            <span id="progress-breakdown"></span>
+          </div>
+        </section>
+
+        <!-- Milestone strip with gate chips -->
+        <section class="card">
+          <div class="card-title">Milestones</div>
+          <div id="milestone-strip" class="milestone-grid"></div>
+        </section>
+
+        <!-- Ticket table with status chips and waiting-for notes -->
+        <section class="card">
+          <div class="card-title">Tickets</div>
+          <div class="table-container">
+            <table class="ticket-table">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Title</th>
+                  <th>Milestone</th>
+                  <th>Status</th>
+                  <th>Stage / Agent</th>
+                  <th>Attempts</th>
+                  <th>Updated</th>
+                </tr>
+              </thead>
+              <tbody id="ticket-tbody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- Escalations panel -->
+        <section class="card">
+          <div class="card-title">Escalations</div>
+          <div id="escalations-list" class="escalation-list"></div>
+        </section>
+
+        <!-- Event feed newest first -->
+        <section class="card">
+          <div class="card-title">Event Feed (Newest First)</div>
+          <div id="events-list" class="event-feed-list"></div>
+        </section>
+
+        <!-- Decisions log -->
+        <section class="card">
+          <div class="card-title">Decisions Log</div>
+          <pre id="decisions-content" class="decisions-pre"></pre>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    (function() {
+      let runsList = [];
+      let isDisconnected = false;
+
+      function el(tag, className, text) {
+        const elem = document.createElement(tag);
+        if (className) elem.className = className;
+        if (text !== undefined && text !== null) elem.textContent = String(text);
+        return elem;
+      }
+
+      function clearElement(element) {
+        while (element.firstChild) {
+          element.removeChild(element.firstChild);
+        }
+      }
+
+      function normalizeClass(str) {
+        if (!str) return 'unknown';
+        return String(str).toLowerCase().replace(/[^a-z0-9_-]/g, '-');
+      }
+
+      function formatTime(isoStr) {
+        if (!isoStr) return '-';
+        try {
+          const d = new Date(isoStr);
+          if (isNaN(d.getTime())) return isoStr;
+          return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        } catch (e) {
+          return isoStr;
+        }
+      }
+
+      function getSelectedRunId(runs) {
+        const hash = window.location.hash.replace(/^#/, '').trim();
+        if (hash) {
+          return hash;
+        }
+        if (runs && runs.length > 0) {
+          return runs[0].run_id;
+        }
+        return null;
+      }
+
+      function setDisconnected(status) {
+        isDisconnected = status;
+        const badge = document.getElementById('disconnected-badge');
+        badge.style.display = status ? 'inline-block' : 'none';
+      }
+
+      function setLastUpdated() {
+        const now = new Date();
+        const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        document.getElementById('last-updated').textContent = 'Last updated: ' + timeStr;
+      }
+
+      function renderRunPicker(runs) {
+        const listContainer = document.getElementById('run-picker-list');
+        clearElement(listContainer);
+        document.getElementById('run-count').textContent = String(runs ? runs.length : 0);
+
+        if (!runs || runs.length === 0) {
+          const empty = el('div', 'run-item');
+          empty.appendChild(el('div', 'empty-note', 'No runs found'));
+          listContainer.appendChild(empty);
+          return;
+        }
+
+        const selectedId = getSelectedRunId(runs);
+
+        runs.forEach(r => {
+          const isSelected = r.run_id === selectedId;
+          const item = el('div', 'run-item' + (isSelected ? ' selected' : ''));
+          item.addEventListener('click', () => {
+            window.location.hash = '#' + r.run_id;
+          });
+
+          const topRow = el('div', 'run-item-top');
+          const dot = el('span', 'runner-dot ' + (r.runner_alive ? 'alive' : 'dead'));
+          dot.setAttribute('title', r.runner_alive ? 'Runner active' : 'Runner stopped');
+          const idSpan = el('span', 'run-item-id', r.run_id);
+          const badge = el('span', 'badge badge-' + normalizeClass(r.state), r.state || 'unknown');
+
+          topRow.appendChild(dot);
+          topRow.appendChild(idSpan);
+          topRow.appendChild(badge);
+
+          const goalRow = el('div', 'run-item-goal', r.goal || '(no goal)');
+
+          const metaRow = el('div', 'run-item-meta');
+          const prog = el('span', 'run-meta-prog', 'Progress: ' + (r.progress || '0/0'));
+          metaRow.appendChild(prog);
+          if (r.next) {
+            const nextStep = el('span', 'run-meta-next', 'Next: ' + r.next);
+            metaRow.appendChild(nextStep);
+          }
+
+          item.appendChild(topRow);
+          item.appendChild(goalRow);
+          item.appendChild(metaRow);
+          listContainer.appendChild(item);
+        });
+      }
+
+      function renderRunDetail(d) {
+        const emptyState = document.getElementById('detail-empty');
+        const content = document.getElementById('detail-content');
+
+        if (!d || !d.run_id) {
+          emptyState.style.display = 'block';
+          content.style.display = 'none';
+          return;
+        }
+
+        emptyState.style.display = 'none';
+        content.style.display = 'flex';
+
+        // Header: run id, state, branch, agent calls/budget
+        document.getElementById('detail-run-id').textContent = d.run_id;
+
+        const stateBadge = document.getElementById('detail-state-badge');
+        const runState = (d.status && d.status.state) || d.stage || 'unknown';
+        stateBadge.className = 'badge badge-' + normalizeClass(runState);
+        stateBadge.textContent = runState;
+
+        const branchElem = document.getElementById('detail-branch');
+        branchElem.textContent = (d.status && d.status.branch) ? 'Branch: ' + d.status.branch : 'Branch: (none)';
+
+        const callsElem = document.getElementById('detail-calls');
+        const agentCalls = (d.status && d.status.agent_calls !== undefined) ? d.status.agent_calls : 0;
+        const maxCalls = (d.status && d.status.max_agent_calls !== null && d.status.max_agent_calls !== undefined) ? d.status.max_agent_calls : 'unlimited';
+        callsElem.textContent = 'Agent Calls: ' + agentCalls + ' / ' + maxCalls;
+
+        const aliveDot = document.getElementById('detail-alive-dot');
+        const isAlive = Boolean(d.status && d.status.runner_alive);
+        aliveDot.className = 'runner-dot ' + (isAlive ? 'alive' : 'dead');
+        document.getElementById('detail-alive-text').textContent = isAlive ? 'Runner Alive' : 'Runner Inactive';
+
+        document.getElementById('detail-destination').textContent = d.destination ? 'Destination: ' + d.destination : '';
+
+        const oosContainer = document.getElementById('detail-out-of-scope');
+        clearElement(oosContainer);
+        if (d.out_of_scope && d.out_of_scope.length > 0) {
+          const oosLabel = el('span', 'meta-label', 'Out of scope: ');
+          oosContainer.appendChild(oosLabel);
+          d.out_of_scope.forEach(item => {
+            const chip = el('span', 'chip chip-oos', item);
+            oosContainer.appendChild(chip);
+          });
+        }
+
+        // Stage strip: grill, plan, tickets, run, finish
+        const stages = ['grill', 'plan', 'tickets', 'run', 'finish'];
+        const stageStrip = document.getElementById('stage-strip');
+        clearElement(stageStrip);
+        const currentStage = d.stage || 'grill';
+        const currentIndex = stages.indexOf(currentStage);
+
+        stages.forEach((stg, idx) => {
+          let cls = 'stage-step';
+          if (stg === currentStage) {
+            cls += ' active';
+          } else if (currentIndex !== -1 && idx < currentIndex) {
+            cls += ' completed';
+          }
+          const stepEl = el('div', cls);
+          const num = el('span', 'stage-num', String(idx + 1));
+          const label = el('span', 'stage-label', stg);
+          stepEl.appendChild(num);
+          stepEl.appendChild(label);
+          stageStrip.appendChild(stepEl);
+        });
+
+        // Progress bar with done/remaining
+        const prog = d.progress || { total: 0, closed: 0, remaining: 0 };
+        const total = prog.total || 0;
+        const closed = prog.closed || 0;
+        const remaining = prog.remaining !== undefined ? prog.remaining : (total - closed);
+        const inProgress = prog.in_progress || 0;
+        const blocked = prog.blocked || 0;
+        const pending = prog.pending || 0;
+
+        const pct = total > 0 ? Math.round((closed / total) * 100) : 0;
+        const fill = document.getElementById('progress-bar-fill');
+        fill.style.width = pct + '%';
+        document.getElementById('progress-text-summary').textContent = closed + ' of ' + total + ' tickets done (' + pct + '%), ' + remaining + ' remaining';
+        document.getElementById('progress-breakdown').textContent = 'Done: ' + closed + ' | In Progress: ' + inProgress + ' | Blocked: ' + blocked + ' | Pending: ' + pending;
+
+        // Milestone strip with gate chips
+        const msStrip = document.getElementById('milestone-strip');
+        clearElement(msStrip);
+        if (!d.milestones || d.milestones.length === 0) {
+          msStrip.appendChild(el('div', 'empty-note', 'No milestones defined'));
+        } else {
+          d.milestones.forEach(m => {
+            const card = el('div', 'milestone-card');
+            const header = el('div', 'milestone-card-header');
+            const idEl = el('span', 'milestone-id', m.id);
+            const gateChip = el('span', 'gate-chip gate-' + normalizeClass(m.gate_status), 'Gate: ' + (m.gate_status || 'open'));
+            header.appendChild(idEl);
+            header.appendChild(gateChip);
+
+            const titleEl = el('div', 'milestone-title', m.title || '');
+            const progEl = el('div', 'milestone-progress', 'Tickets: ' + (m.progress || (m.closed + '/' + m.total)));
+            card.appendChild(header);
+            card.appendChild(titleEl);
+            card.appendChild(progEl);
+            if (m.exit_check) {
+              const checkEl = el('div', 'milestone-check', 'Exit check: ' + m.exit_check);
+              card.appendChild(checkEl);
+            }
+            msStrip.appendChild(card);
+          });
+        }
+
+        // Ticket table with status chips and waiting-for notes
+        const tbody = document.getElementById('ticket-tbody');
+        clearElement(tbody);
+        if (!d.tickets || d.tickets.length === 0) {
+          const tr = el('tr');
+          const td = el('td', 'empty-note', 'No tickets in this run');
+          td.setAttribute('colspan', '7');
+          tr.appendChild(td);
+          tbody.appendChild(tr);
+        } else {
+          d.tickets.forEach(t => {
+            const tr = el('tr');
+
+            const tdId = el('td', 'cell-id', t.id);
+            const tdTitle = el('td', 'cell-title');
+            const titleSpan = el('div', 'ticket-title-text', t.title || '');
+            tdTitle.appendChild(titleSpan);
+            if (t.waiting_for) {
+              const wf = el('div', 'ticket-waiting-for', 'Waiting: ' + t.waiting_for);
+              tdTitle.appendChild(wf);
+            }
+
+            const tdMilestone = el('td', 'cell-milestone', t.milestone || '-');
+
+            const tdStatus = el('td', 'cell-status');
+            const stChip = el('span', 'status-chip status-' + normalizeClass(t.status), t.status || 'pending');
+            tdStatus.appendChild(stChip);
+
+            const tdStageAgent = el('td', 'cell-stage-agent');
+            const stageText = t.last_stage || '-';
+            const agentText = t.agent ? ' (' + t.agent + ')' : '';
+            tdStageAgent.textContent = stageText + agentText;
+
+            const tdAttempts = el('td', 'cell-attempts', String(t.attempts !== undefined ? t.attempts : 0));
+            const tdUpdated = el('td', 'cell-updated', formatTime(t.updated));
+
+            tr.appendChild(tdId);
+            tr.appendChild(tdTitle);
+            tr.appendChild(tdMilestone);
+            tr.appendChild(tdStatus);
+            tr.appendChild(tdStageAgent);
+            tr.appendChild(tdAttempts);
+            tr.appendChild(tdUpdated);
+
+            tbody.appendChild(tr);
+          });
+        }
+
+        // Escalations panel
+        const escList = document.getElementById('escalations-list');
+        clearElement(escList);
+        if (!d.escalations || d.escalations.length === 0) {
+          escList.appendChild(el('div', 'empty-note', 'No open escalations'));
+        } else {
+          d.escalations.forEach(e => {
+            const item = el('div', 'escalation-item');
+            const top = el('div', 'escalation-top');
+            const num = el('span', 'escalation-id', '#' + e.id);
+            const tick = el('span', 'escalation-ticket', e.ticket ? 'Ticket: ' + e.ticket : 'Global');
+            const time = el('span', 'escalation-time', formatTime(e.at));
+            top.appendChild(num);
+            top.appendChild(tick);
+            top.appendChild(time);
+
+            const reason = el('div', 'escalation-reason', e.reason || '');
+            item.appendChild(top);
+            item.appendChild(reason);
+            escList.appendChild(item);
+          });
+        }
+
+        // Event feed newest first
+        const eventList = document.getElementById('events-list');
+        clearElement(eventList);
+        const events = (d.events || []).slice().reverse();
+        if (events.length === 0) {
+          eventList.appendChild(el('div', 'empty-note', 'No events logged'));
+        } else {
+          events.forEach(ev => {
+            const item = el('div', 'event-item');
+            const time = el('span', 'event-time', formatTime(ev.at));
+            const kind = el('span', 'event-kind event-kind-' + normalizeClass(ev.kind), ev.kind || 'event');
+            item.appendChild(time);
+            item.appendChild(kind);
+
+            const details = [];
+            if (ev.ticket) details.push('ticket=' + ev.ticket);
+            if (ev.stage) details.push('stage=' + ev.stage);
+            if (ev.status) details.push('status=' + ev.status);
+            if (ev.attempt) details.push('attempt=' + ev.attempt);
+            if (ev.reason) details.push('reason=' + ev.reason);
+            if (ev.message) details.push(ev.message);
+
+            if (details.length > 0) {
+              const detailSpan = el('span', 'event-details', details.join(' '));
+              item.appendChild(detailSpan);
+            }
+            eventList.appendChild(item);
+          });
+        }
+
+        // Decisions log
+        const decisionsEl = document.getElementById('decisions-content');
+        decisionsEl.textContent = d.decisions ? d.decisions : '(no decisions logged)';
+      }
+
+      let isPolling = false;
+      let repollRequested = false;
+
+      async function poll() {
+        if (document.hidden) {
+          return;
+        }
+        if (isPolling) {
+          repollRequested = true;
+          return;
+        }
+        isPolling = true;
+
+        try {
+          const runsRes = await fetch('/api/runs');
+          if (!runsRes.ok) {
+            throw new Error('Failed to fetch runs');
+          }
+          runsList = await runsRes.json();
+          renderRunPicker(runsList);
+
+          const selectedId = getSelectedRunId(runsList);
+          if (selectedId) {
+            const detailRes = await fetch('/api/runs/' + encodeURIComponent(selectedId));
+            if (!detailRes.ok) {
+              if (detailRes.status === 404) {
+                renderRunDetail(null);
+              } else {
+                throw new Error('Failed to fetch run detail');
+              }
+            } else {
+              const detailData = await detailRes.json();
+              renderRunDetail(detailData);
+            }
+          } else {
+            renderRunDetail(null);
+          }
+
+          setDisconnected(false);
+          setLastUpdated();
+        } catch (err) {
+          setDisconnected(true);
+        } finally {
+          isPolling = false;
+          if (repollRequested) {
+            repollRequested = false;
+            poll();
+          }
+        }
+      }
+
+      window.addEventListener('hashchange', () => {
+        renderRunPicker(runsList);
+        poll();
+      });
+
+      document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) {
+          poll();
+        }
+      });
+
+      poll();
+      setInterval(poll, 3000);
+    })();
+  </script>
+</body>
+</html>
