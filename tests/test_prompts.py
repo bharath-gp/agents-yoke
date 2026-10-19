@@ -91,6 +91,8 @@ class TestReviewPrompt(unittest.TestCase):
         substitutions = {
             "base_sha": "8ec46bde240ae91c626190371f5bf3c971955af6",
             "ticket": '{"id": "T-002", "title": "Review schema and prompt"}',
+            "destination": "build milestone system",
+            "out_of_scope": "unrelated features",
             "plan_excerpt": "Review schema and prompt excerpt",
             "prior_results": "{}",
             "feedback": "(none)",
@@ -103,6 +105,27 @@ class TestReviewPrompt(unittest.TestCase):
         self.assertIsInstance(rendered, str)
         for var in substitutions:
             self.assertNotIn("$" + var, rendered)
+
+    def test_code_review_and_validate_prompts_render_destination_and_out_of_scope(self):
+        import re
+        substitutions = {
+            "base_sha": "8ec46bde240ae91c626190371f5bf3c971955af6",
+            "ticket": '{"id": "T-004", "title": "yoke map"}',
+            "destination": "build milestone system destination",
+            "out_of_scope": "unrelated features out of scope",
+            "plan_excerpt": "Relevant plan excerpt text",
+            "prior_results": "{}",
+            "feedback": "(none)",
+            "worktree": "/tmp/worktree",
+        }
+        for name in ("code", "review", "validate"):
+            content = _read(name)
+            template = string.Template(content)
+            rendered = template.substitute(substitutions)
+            self.assertIn("build milestone system destination", rendered)
+            self.assertIn("unrelated features out of scope", rendered)
+            leftover = re.findall(r"\$[a-zA-Z_][a-zA-Z0-9_]*", rendered)
+            self.assertEqual(leftover, [], "Leftover variables in %s: %s" % (name, leftover))
 
 
 class TestReviewSchema(unittest.TestCase):

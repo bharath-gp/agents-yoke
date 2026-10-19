@@ -2,6 +2,12 @@ You have no shell in this environment. Do not run any command; edit files only. 
 Ticket (JSON):
 $ticket
 
+Destination:
+$destination
+
+Out of scope:
+$out_of_scope
+
 Relevant plan section:
 $plan_excerpt
 

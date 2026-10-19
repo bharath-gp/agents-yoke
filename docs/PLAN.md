@@ -349,6 +349,7 @@ yoke review-plan [--run R]            # one secondary read-only review round on 
 yoke approve plan|tickets|final [--run R]
 yoke tickets import FILE [--run R]    # validate schema+deps, classify missing types via router, write tickets.json
 yoke tickets show [--run R]           # table: id, type, stages, deps, title
+yoke map [--run R]                    # render destination, out-of-scope, milestone gates, frontier, decisions log
 yoke run [--run R] [--parallel N] [--detach] [--resume]
 yoke wait [--run R] [--timeout S]
 yoke status [--run R] [--brief] [--active] [--json]

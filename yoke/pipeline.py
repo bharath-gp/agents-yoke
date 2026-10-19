@@ -7,7 +7,7 @@ import re
 import string
 import subprocess
 
-from . import adapters, calls, config, gitops, planreview, router, schema, state, tracker
+from . import adapters, calls, config, gitops, milestones, planreview, router, schema, state, tracker
 
 PKG = os.path.dirname(os.path.abspath(__file__))
 
@@ -101,9 +101,11 @@ def _call(run, adapter_for, env, ticket, stage, attempt, wt, base, mode, results
     cfg = run.cfg
     if run.read_json("run.json")["agent_calls"] >= cfg["max_agent_calls_total"]:
         raise BudgetExhausted()
+    dest, oos, _ = milestones.destination_and_scope(run, ticket)
     with open(os.path.join(PKG, "prompts", stage + ".md")) as f:
         prompt = string.Template(f.read()).safe_substitute(
             ticket=json.dumps(ticket, indent=2), plan_excerpt=ticket["plan_excerpt"],
+            destination=dest, out_of_scope=oos,
             prior_results=json.dumps(results, indent=2), feedback=feedback or "(none)",
             base_sha=base, worktree=wt, **_vars(cfg, ticket))
     over = next((s for s in router.route_ticket(cfg, ticket)["stages"] if s["stage"] == stage), {})
@@ -326,6 +328,31 @@ def _close(run, adapter_for, ticket, st, wt, stages, results, test_cmd, rerun_rc
     return None
 
 
+def _append_decision(run, ticket, results):
+    tid = ticket["id"]
+    val = results.get("validate")
+    val_summary = val.get("summary") if isinstance(val, dict) else None
+    if val_summary and str(val_summary).strip():
+        map_line = "- %s %s: %s\n" % (tid, ticket["title"], str(val_summary).strip())
+    else:
+        map_line = "- %s %s\n" % (tid, ticket["title"])
+    map_path = run.path("map.md")
+    with state._LOCK:
+        if os.path.exists(map_path):
+            try:
+                with open(map_path) as f:
+                    content = f.read()
+                if any(line.startswith("- %s " % tid) or line == ("- %s" % tid) for line in content.splitlines()):
+                    return
+            except OSError:
+                pass
+        try:
+            with open(map_path, "a") as f:
+                f.write(map_line)
+        except OSError:
+            pass
+
+
 def run_ticket(run, ticket, adapter_for=None, env=None, merge_lock=None):
     """Drive one ticket to closed or blocked. Returns the final status; BudgetExhausted propagates."""
     cfg, info, tid = run.cfg, run.read_json("run.json"), ticket["id"]
@@ -344,6 +371,7 @@ def run_ticket(run, ticket, adapter_for=None, env=None, merge_lock=None):
             if fb is None:
                 fb = _close(run, adapter_for, ticket, st, wt, stages, results, test_cmd, rc, merge_lock)
             if fb is None:
+                _append_decision(run, ticket, results)
                 st["status"] = "closed"
                 save_state(run, tid, st)
                 gitops.remove_worktree(info["repo"], wt)

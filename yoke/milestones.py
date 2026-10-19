@@ -18,6 +18,28 @@ def milestones_of(run_or_doc):
     return [{"id": "MS-00", "title": "implicit", "exit_check": None}]
 
 
+def destination_and_scope(run_or_doc, ticket=None):
+    """Return (destination_str, out_of_scope_str, out_of_scope_list) tuple."""
+    if hasattr(run_or_doc, "read_json"):
+        doc = run_or_doc.read_json("tickets.json", {})
+    elif isinstance(run_or_doc, dict):
+        doc = run_or_doc
+    else:
+        doc = {}
+    dest = (ticket.get("destination") if ticket else None) or doc.get("destination") or "(none)"
+    raw_oos = (ticket.get("out_of_scope") if ticket else None) or doc.get("out_of_scope") or []
+    if isinstance(raw_oos, list):
+        oos_list = list(raw_oos)
+        oos_str = "\n".join("- %s" % x for x in oos_list) if oos_list else "(none)"
+    elif isinstance(raw_oos, str) and raw_oos.strip():
+        oos_list = [raw_oos.strip()]
+        oos_str = raw_oos.strip()
+    else:
+        oos_list = []
+        oos_str = "(none)"
+    return dest, oos_str, oos_list
+
+
 def merged_tickets(run_or_tickets, fixes=None):
     """Return tickets from tickets.json followed by fix tickets from fixes.json."""
     if fixes is not None:

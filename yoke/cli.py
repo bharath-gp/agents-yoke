@@ -284,7 +284,7 @@ def tickets_cmd(args, adapter=None):
 
 def route_cmd(args):
     run = _run(args)
-    t = next((t for t in run.read_json("tickets.json")["tickets"] if t["id"] == args.ticket), None)
+    t = next((t for t in milestones.merged_tickets(run) if t["id"] == args.ticket), None)
     if t is None:
         sys.exit("yoke: no such ticket " + args.ticket)
     print(json.dumps(router.route_ticket(run.cfg, t), indent=2))

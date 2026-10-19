@@ -26,7 +26,7 @@ Argument: optional work description, used to seed the interview.
    - Runner death: if the runner died and the run is not finished, restart with `yoke run --run R --resume --detach`.
 6. Final:
    - Confirm `yoke status --run R` says done.
-   - Summarize commits, diff stat, and open or skipped tickets. Ask whether to approve the result.
+   - Summarize commits, diff stat, and open or skipped tickets. Run `yoke map --run R` so the decisions log is part of the final summary. Ask whether to approve the result.
    - Only on an explicit yes, run `yoke approve final --run R`.
    - Only for a GitHub repo and on an explicit yes, run `yoke pr --run R`.
 7. Rules: stops are only plan approval, escalations, final approval, and PR confirmation. Never push except via `yoke pr --run R`. Never pass permission-bypass flags to any agent.

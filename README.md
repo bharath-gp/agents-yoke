@@ -108,6 +108,7 @@ yoke review-plan                  # one read-only secondary review round
 yoke approve plan                 # also: tickets (creates GitHub milestones/issues if tracker=github), final
 yoke tickets chart [--feedback "note"] # map approved plan to milestones/tickets via wayfinder
 yoke tickets import tickets.json  # validate milestones/tickets and warn; `yoke tickets show` groups by milestone
+yoke map                          # render destination, out-of-scope, milestone gates, frontier, decisions log
 yoke route T-001                  # stages and agents for a ticket
 yoke run --detach --parallel 2    # background runner; always resumes from disk
 yoke wait                         # blocks until escalation, done, needs_user, stopped, died or timeout

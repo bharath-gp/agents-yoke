@@ -92,6 +92,13 @@ class TestHappy(PipeBase):
             gates = [json.loads(l) for l in f if '"close_gate"' in l]
         self.assertEqual(len(gates), 3)
         self.assertTrue(all(g["ok"] for g in gates))
+        with open(self.run_.path("map.md")) as f:
+            map_lines = f.read().splitlines()
+        self.assertEqual(sorted(map_lines), [
+            "- T-001 ticket 1: s",
+            "- T-002 ticket 2: s",
+            "- T-003 ticket 3: s",
+        ])
 
     def test_refuses_without_approval(self):
         self.run_.write_json("tickets.json", {"tickets": [ticket(1)]})
