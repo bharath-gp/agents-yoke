@@ -2,8 +2,9 @@
 import copy
 import os
 import string
+import sys
 
-from . import adapters, calls, config, planreview, schema, tickets
+from . import adapters, calls, config, planreview, schema, tickets, tracker
 
 PKG = os.path.dirname(os.path.abspath(__file__))
 
@@ -18,6 +19,44 @@ def next_round(run):
     d = run.path("chart")
     done = [n for n in os.listdir(d) if n.startswith("round-")] if os.path.isdir(d) else []
     return len(done) + 1
+
+
+def ticket_offset(run):
+    """Starting offset for T-ids: highest GitHub issue/PR number, frozen in run.json on first use.
+    Falls back to 0 (T-0001) with a warning if gh is unusable; local tracker mode just uses 0."""
+    info = run.read_json("run.json")
+    if "ticket_offset" in info:
+        return info["ticket_offset"]
+    offset, source = 0, "local"
+    if tracker.detect(info["repo"], run.cfg) == "github":
+        try:
+            offset, source = tracker.highest_number(info["repo"]), "github"
+        except tracker.TrackerError as e:
+            source = "fallback"
+            print("warning: gh unavailable (%s); ticket ids start at T-0001" % e, file=sys.stderr)
+    elif run.cfg.get("tracker", "auto") != "local":
+        print("warning: no usable GitHub tracker; ticket ids start at T-0001", file=sys.stderr)
+    run.update(ticket_offset=offset)
+    run.event("ticket_offset", offset=offset, source=source)
+    return offset
+
+
+def renumber(run, tickets_list):
+    """Give tickets contiguous T-ids after the run's offset, remapping depends_on. Skipped when ids clash,
+    so tickets.check still reports the duplicates."""
+    olds = [t.get("id") for t in tickets_list if isinstance(t, dict)]
+    if len(set(olds)) != len(olds):
+        return
+    offset = ticket_offset(run)
+    mapping = {}
+    for i, t in enumerate(tickets_list):
+        if isinstance(t, dict):
+            mapping[t.get("id")] = "T-%04d" % (offset + i + 1)
+    for t in tickets_list:
+        if isinstance(t, dict):
+            t["id"] = mapping[t.get("id")]
+            t["depends_on"] = [mapping.get(d, d) for d in t.get("depends_on", [])]
+    run.update(id_counter=offset + len(tickets_list))
 
 
 def chart_prompt(cfg, plan, requirements="(none provided)", feedback=None):
@@ -77,7 +116,8 @@ def chart_round(run, adapter=None, feedback=None, env=None):
         tickets_list = raw_out.get("tickets", [])
         for idx, t in enumerate(tickets_list):
             if isinstance(t, dict) and not t.get("id"):
-                t["id"] = "T-%03d" % (idx + 1)
+                t["id"] = "tmp-%d" % (idx + 1)
+        renumber(run, tickets_list)
         run.write_json("chart/tickets.json", raw_out)
         import_errs, _ = tickets.import_tickets(run, run.path("chart/tickets.json"), adapter=adapter)
 

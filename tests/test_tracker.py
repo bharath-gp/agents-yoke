@@ -6,6 +6,7 @@ import stat
 import subprocess
 import sys
 import unittest
+from unittest import mock
 
 from tests.test_gitops import ENV, git
 from tests.test_planreview import Base
@@ -152,6 +153,22 @@ class TestIssues(TrackerBase):
     def test_tickets_json_untouched_so_approval_stays_valid(self):
         self.approve_all()
         planreview.check_approval(self.run_, "tickets")
+
+    def test_issue_number_mismatch_warns_and_keeps_ids(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.approve_all()
+        self.assertIn("T-001 became issue #40", err.getvalue())
+        self.assertEqual(self.run_.read_json("issues.json")["T-001"]["number"], 40)
+        self.assertEqual([t["id"] for t in self.run_.read_json("tickets.json")["tickets"]], ["T-001", "T-002"])
+
+    def test_highest_number_spans_issues_and_prs(self):
+        out = {"issue": '[{"number": 56}, {"number": 3}]', "pr": '[{"number": 60}]'}
+        with mock.patch.object(tracker, "_gh", side_effect=lambda repo, kind, *a: out[kind]):
+            self.assertEqual(tracker.highest_number("."), 60)
+        out["pr"] = "[]"
+        with mock.patch.object(tracker, "_gh", side_effect=lambda repo, kind, *a: out[kind]):
+            self.assertEqual(tracker.highest_number("."), 56)
 
     def test_local_tracker_makes_no_gh_calls(self):
         self.run_.update(config=dict(self.run_.cfg, tracker="local"))

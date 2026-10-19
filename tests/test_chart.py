@@ -146,7 +146,7 @@ class TestChart(BaseChartTest):
         self.assertEqual(n, 1)
         self.assertTrue(res.ok and res.schema_valid)
         doc = self.run_.read_json("tickets.json")
-        self.assertEqual(doc["tickets"][0]["id"], "T-001")
+        self.assertEqual(doc["tickets"][0]["id"], "T-0001")
         self.assertEqual(doc["tickets"][0]["type"], "feature")
 
     def test_schema_invalid_result_triggers_single_reask(self):
@@ -206,9 +206,9 @@ class TestChart(BaseChartTest):
         self.assertEqual(ret, 0)
         out = buf.getvalue()
         self.assertIn("MS-01: m1", out)
-        self.assertIn("T-001 [feature] ticket 1", out)
+        self.assertIn("T-0001 [feature] ticket 1", out)
         self.assertIn("MS-02: m2", out)
-        self.assertIn("T-002 [feature] ticket 2", out)
+        self.assertIn("T-0002 [feature] ticket 2", out)
 
         # Check prompt has feedback
         prompt_path = self.run_.path("chart/round-1/prompt.md")
@@ -272,7 +272,58 @@ class TestChart(BaseChartTest):
         self.assertEqual(ret, 0)
         out = buf.getvalue()
         self.assertIn("MS-01: m1", out)
-        self.assertIn("T-001 [feature] ticket 1", out)
+        self.assertIn("T-0001 [feature] ticket 1", out)
+
+
+class TestTicketNumbering(BaseChartTest):
+    def go(self, highest=None, fail=False, tracker_mode="github"):
+        self.plan()
+        if not os.path.exists(self.run_.path("plan.approval.json")) and not planreview_approved(self.run_):
+            planreview.approve(self.run_, "plan")
+        seen = io.StringIO()
+        side = chart.tracker.TrackerError("gh missing") if fail else None
+        with patch.object(chart.tracker, "detect", return_value=tracker_mode), \
+                patch.object(chart.tracker, "highest_number", return_value=highest, side_effect=side), \
+                contextlib.redirect_stderr(seen):
+            self.chart(VALID_CHART)
+        return [t["id"] for t in self.run_.read_json("tickets.json")["tickets"]], seen.getvalue()
+
+    def test_starts_after_highest_github_number(self):
+        ids, _ = self.go(highest=56)
+        self.assertEqual(ids, ["T-0057", "T-0058"])
+        deps = [t["depends_on"] for t in self.run_.read_json("tickets.json")["tickets"]]
+        self.assertEqual(deps, [[], ["T-0057"]])
+        self.assertEqual(self.run_.alloc_number(), 59)
+
+    def test_gh_failure_falls_back_with_warning(self):
+        ids, err = self.go(fail=True)
+        self.assertEqual(ids, ["T-0001", "T-0002"])
+        self.assertIn("warning", err)
+
+    def test_rechart_reuses_stored_offset_byte_stable(self):
+        self.go(highest=56)
+        first = open(self.run_.path("tickets.json")).read()
+        ids, _ = self.go(highest=99)
+        self.assertEqual(ids, ["T-0057", "T-0058"])
+        self.assertEqual(first, open(self.run_.path("tickets.json")).read())
+
+    def test_shared_counter_never_duplicates_and_handles_legacy(self):
+        self.go(highest=68)  # T-0069, T-0070
+        self.assertEqual(self.run_.alloc_number(), 71)
+        self.run_.write_json("fixes.json", [{"id": "F-0075"}])
+        self.assertEqual(self.run_.alloc_number(), 76)
+        legacy = self.run_.read_json("run.json")
+        legacy.pop("id_counter"); legacy.pop("ticket_offset")
+        self.run_.write_json("run.json", legacy)
+        self.assertEqual(self.run_.alloc_number(), 76)  # recovered from tickets/fixes on disk
+
+
+def planreview_approved(run):
+    try:
+        planreview.check_approval(run, "plan")
+        return True
+    except Exception:
+        return False
 
 
 if __name__ == "__main__":

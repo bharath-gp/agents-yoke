@@ -15,7 +15,7 @@
   "properties": {
     "id": {
       "type": "string",
-      "pattern": "^[TF]-\\d{3}$"
+      "pattern": "^[TF]-\\d{3,}$"
     },
     "title": {
       "type": "string",
