@@ -369,6 +369,7 @@ yoke stop [--run R]                   # SIGTERM runner; workers killed; resumabl
 yoke pr [--run R]                     # requires approve final; push branch + gh pr create
 yoke clean [--run R]
 yoke route T-xxx [--run R]            # debug: show stages/agents/models for a ticket
+yoke dashboard [--port N]             # serve local read-only web UI on 127.0.0.1 (default port 8765)
 yoke models [--list] [--show] [--set AGENT.TIER=MODEL] [--effort E] [--scope user|project|repo] [--reset [AGENT[.TIER]]]
 yoke mcp                              # stdio MCP server
 yoke doctor [--live]

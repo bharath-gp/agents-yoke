@@ -1,7 +1,11 @@
-"""Dashboard data layer: list_runs, run_detail, and helper functions (pure functions, no HTTP)."""
+"""Dashboard data layer and HTTP server: list_runs, run_detail, and serve."""
 import datetime
+import http.server
 import json
 import os
+import re
+import sys
+import urllib.parse
 
 from . import config, milestones, runcmds, scheduler, state
 
@@ -414,3 +418,196 @@ def run_detail(run):
         "events": events,
         "decisions": decisions,
     }
+
+
+RUN_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+class DashboardHandler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        pass
+
+    def end_headers(self):
+        self.send_header("Cache-Control", "no-store")
+        super().end_headers()
+
+    def do_GET(self):
+        self._dispatch(head=False)
+
+    def do_HEAD(self):
+        self._dispatch(head=True)
+
+    def do_POST(self):
+        self._send_405()
+
+    def do_PUT(self):
+        self._send_405()
+
+    def do_DELETE(self):
+        self._send_405()
+
+    def do_PATCH(self):
+        self._send_405()
+
+    def do_OPTIONS(self):
+        self._send_405()
+
+    def __getattr__(self, name):
+        if name.startswith("do_"):
+            return self._send_405
+        raise AttributeError(name)
+
+    def _send_405(self):
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            if length > 0:
+                self.rfile.read(min(length, 1048576))
+        except Exception:
+            pass
+        self.close_connection = True
+        self._send_json(405, {"error": "Method Not Allowed"}, head=False, headers={"Allow": "GET, HEAD"})
+
+    def _send_json(self, status, obj, head=False, headers=None):
+        body = json.dumps(obj).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        if headers:
+            for k, v in headers.items():
+                self.send_header(k, v)
+        self.end_headers()
+        if not head:
+            self.wfile.write(body)
+
+    def _serve_html(self, head=False):
+        html_path = os.path.join(os.path.dirname(__file__), "dashboard.html")
+        body = None
+        if os.path.isfile(html_path):
+            try:
+                with open(html_path, "rb") as f:
+                    body = f.read()
+            except OSError:
+                pass
+        if body is None:
+            body = b"<!doctype html><html><head><title>yoke dashboard</title></head><body><h1>yoke dashboard</h1></body></html>\n"
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if not head:
+            self.wfile.write(body)
+
+    def _serve_runs_list(self, head=False):
+        home = getattr(self.server, "home", None) or config.yoke_home()
+        runs = list_runs(home=home)
+        self._send_json(200, runs, head=head)
+
+    def _serve_run_detail(self, raw_id, head=False):
+        if not raw_id:
+            self._send_json(404, {"error": "Run not found"}, head=head)
+            return
+
+        # Validate run id against ^[A-Za-z0-9._-]+$
+        if not RUN_ID_RE.match(raw_id):
+            self._send_json(400, {"error": "Invalid run id"}, head=head)
+            return
+
+        unquoted = urllib.parse.unquote(raw_id)
+        if not RUN_ID_RE.match(unquoted):
+            self._send_json(400, {"error": "Invalid run id"}, head=head)
+            return
+
+        # Resolve under runs/ and reject traversal
+        home = getattr(self.server, "home", None) or config.yoke_home()
+        runs_dir = os.path.realpath(os.path.join(home, "runs"))
+        target_dir = os.path.realpath(os.path.join(runs_dir, unquoted))
+
+        if unquoted in (".", "..") or os.path.dirname(target_dir) != runs_dir:
+            self._send_json(400, {"error": "Path traversal rejected"}, head=head)
+            return
+
+        if not os.path.isdir(target_dir):
+            self._send_json(404, {"error": "Run not found"}, head=head)
+            return
+
+        run_json_path = os.path.join(target_dir, "run.json")
+        if not os.path.isfile(run_json_path):
+            self._send_json(404, {"error": "Run not found"}, head=head)
+            return
+
+        try:
+            with open(run_json_path, "r", encoding="utf-8") as f:
+                info = json.load(f)
+            if not isinstance(info, dict) or info.get("kind") == "research":
+                self._send_json(404, {"error": "Run not found"}, head=head)
+                return
+        except Exception:
+            self._send_json(404, {"error": "Run not found"}, head=head)
+            return
+
+        try:
+            run_obj = state.Run(unquoted, home=home)
+            detail = run_detail(run_obj)
+        except Exception:
+            self._send_json(404, {"error": "Run not found"}, head=head)
+            return
+
+        self._send_json(200, detail, head=head)
+
+    def _dispatch(self, head=False):
+        parsed = urllib.parse.urlsplit(self.path)
+        path = parsed.path
+
+        if path == "/" or path == "":
+            self._serve_html(head=head)
+            return
+
+        if path == "/api/runs":
+            self._serve_runs_list(head=head)
+            return
+
+        if path.startswith("/api/runs/"):
+            raw_id = path[len("/api/runs/"):]
+            self._serve_run_detail(raw_id, head=head)
+            return
+
+        self._send_json(404, {"error": "Not Found"}, head=head)
+
+
+class DashboardServer(http.server.ThreadingHTTPServer):
+    daemon_threads = True
+
+    def __init__(self, server_address, RequestHandlerClass, home=None):
+        self.home = home or config.yoke_home()
+        super().__init__(server_address, RequestHandlerClass)
+
+
+def make_server(home=None, port=8765):
+    """Create a DashboardServer bound to 127.0.0.1 on port."""
+    if home is None:
+        home = config.yoke_home()
+    return DashboardServer(("127.0.0.1", int(port)), DashboardHandler, home=home)
+
+
+def serve(home=None, port=8765, ready=None):
+    """Serve local read-only web UI on 127.0.0.1 until Ctrl-C."""
+    if home is None:
+        home = config.yoke_home()
+    try:
+        httpd = make_server(home, port)
+    except OSError as e:
+        print("error: port %s: %s" % (port, e), file=sys.stderr)
+        sys.exit(1)
+
+    print("dashboard: http://127.0.0.1:%d" % httpd.server_address[1], flush=True)
+    if callable(ready):
+        ready(httpd)
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        httpd.server_close()
+    return 0
+

@@ -1,10 +1,15 @@
+import contextlib
+import http.client
+import io
 import json
 import os
 import re
+import socket
 import tempfile
+import threading
 import unittest
 
-from yoke import config, dashboard, milestones, runcmds, state
+from yoke import cli, config, dashboard, milestones, runcmds, state
 
 
 class TestDashboard(unittest.TestCase):
@@ -332,6 +337,176 @@ class TestDashboard(unittest.TestCase):
         self.assertIsNone(t_map["T-MTIME"]["last_stage"])
         self.assertIsNotNone(t_map["T-MTIME"]["updated"])
         self.assertTrue(re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", t_map["T-MTIME"]["updated"]))
+
+
+class TestServe(unittest.TestCase):
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.addCleanup(self._td.cleanup)
+        self.tmp = os.path.realpath(self._td.name)
+        os.environ["YOKE_HOME"] = self.tmp
+        self.addCleanup(os.environ.pop, "YOKE_HOME", None)
+        self.repo_dir = os.path.join(self.tmp, "repo")
+        os.makedirs(self.repo_dir)
+        self.cfg = config.load(home=self.tmp, overrides={
+            "max_tickets": 40,
+            "kill_grace_s": 1,
+            "router": {"ollama_url": "http://127.0.0.1:1"}
+        })
+        self.run = state.Run.create(self.repo_dir, self.cfg, home=self.tmp)
+        self.server = dashboard.make_server(self.tmp, 0)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+        self.port = self.server.server_address[1]
+
+    def test_server_address_host_is_127_0_0_1(self):
+        self.assertEqual(self.server.server_address[0], "127.0.0.1")
+
+    def test_api_runs_list(self):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port)
+        conn.request("GET", "/api/runs")
+        res = conn.getresponse()
+        self.assertEqual(res.status, 200)
+        self.assertEqual(res.getheader("Cache-Control"), "no-store")
+        body = res.read().decode("utf-8")
+        conn.close()
+        data = json.loads(body)
+        self.assertIsInstance(data, list)
+        self.assertEqual(len(data), 1)
+        self.assertEqual(data[0]["run_id"], self.run.run_id)
+
+    def test_api_run_detail_known(self):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port)
+        conn.request("GET", "/api/runs/%s" % self.run.run_id)
+        res = conn.getresponse()
+        self.assertEqual(res.status, 200)
+        self.assertEqual(res.getheader("Cache-Control"), "no-store")
+        body = res.read().decode("utf-8")
+        conn.close()
+        data = json.loads(body)
+        self.assertEqual(data["run_id"], self.run.run_id)
+
+    def test_api_run_detail_unknown(self):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port)
+        conn.request("GET", "/api/runs/nonexistent-run")
+        res = conn.getresponse()
+        self.assertEqual(res.status, 404)
+        self.assertEqual(res.getheader("Cache-Control"), "no-store")
+        body = res.read().decode("utf-8")
+        conn.close()
+        data = json.loads(body)
+        self.assertIn("error", data)
+
+    def test_traversal_ids_rejected(self):
+        for bad_id in ("..", "%2e%2e", "a/b"):
+            conn = http.client.HTTPConnection("127.0.0.1", self.port)
+            conn.request("GET", "/api/runs/" + bad_id)
+            res = conn.getresponse()
+            self.assertIn(res.status, (400, 404))
+            self.assertEqual(res.getheader("Cache-Control"), "no-store")
+            conn.close()
+
+    def test_post_returns_405(self):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port)
+        conn.request("POST", "/api/runs", body=b"{}")
+        res = conn.getresponse()
+        self.assertEqual(res.status, 405)
+        self.assertEqual(res.getheader("Cache-Control"), "no-store")
+        self.assertEqual(res.getheader("Allow"), "GET, HEAD")
+        conn.close()
+
+    def test_port_in_use_exits_one(self):
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        in_use_port = s.getsockname()[1]
+        self.addCleanup(s.close)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            with self.assertRaises(SystemExit) as cm:
+                dashboard.serve(self.tmp, in_use_port)
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn(str(in_use_port), err.getvalue())
+
+    def test_serve_in_thread(self):
+        server_holder = []
+        ready = threading.Event()
+        out = io.StringIO()
+
+        def run_serve():
+            with contextlib.redirect_stdout(out):
+                dashboard.serve(self.tmp, 0, ready=lambda s: (server_holder.append(s), ready.set()))
+
+        t = threading.Thread(target=run_serve, daemon=True)
+        t.start()
+        self.assertTrue(ready.wait(timeout=5))
+        server = server_holder[0]
+        port = server.server_address[1]
+        try:
+            self.assertEqual(server.server_address[0], "127.0.0.1")
+            self.assertIn("dashboard: http://127.0.0.1:%d" % port, out.getvalue())
+            conn = http.client.HTTPConnection("127.0.0.1", port)
+            conn.request("GET", "/api/runs")
+            res = conn.getresponse()
+            self.assertEqual(res.status, 200)
+            self.assertEqual(res.getheader("Cache-Control"), "no-store")
+            data = json.loads(res.read().decode("utf-8"))
+            self.assertEqual(data[0]["run_id"], self.run.run_id)
+            conn.close()
+        finally:
+            server.shutdown()
+            t.join(timeout=5)
+
+    def test_root_serves_html_and_head(self):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port)
+        conn.request("GET", "/")
+        res = conn.getresponse()
+        self.assertEqual(res.status, 200)
+        self.assertEqual(res.getheader("Cache-Control"), "no-store")
+        self.assertIn("text/html", res.getheader("Content-Type"))
+        body = res.read().decode("utf-8")
+        self.assertIn("yoke dashboard", body)
+        conn.close()
+
+        conn = http.client.HTTPConnection("127.0.0.1", self.port)
+        conn.request("HEAD", "/")
+        res = conn.getresponse()
+        self.assertEqual(res.status, 200)
+        self.assertEqual(res.getheader("Cache-Control"), "no-store")
+        self.assertEqual(res.read(), b"")
+        conn.close()
+
+    def test_api_runs_head(self):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port)
+        conn.request("HEAD", "/api/runs")
+        res = conn.getresponse()
+        self.assertEqual(res.status, 200)
+        self.assertEqual(res.getheader("Cache-Control"), "no-store")
+        self.assertEqual(res.read(), b"")
+        conn.close()
+
+    def test_unsupported_methods_return_405(self):
+        for method in ("PUT", "DELETE", "PATCH"):
+            conn = http.client.HTTPConnection("127.0.0.1", self.port)
+            conn.request(method, "/api/runs")
+            res = conn.getresponse()
+            self.assertEqual(res.status, 405)
+            self.assertEqual(res.getheader("Cache-Control"), "no-store")
+            self.assertEqual(res.getheader("Allow"), "GET, HEAD")
+            conn.close()
+
+    def test_cli_dashboard_help(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            with self.assertRaises(SystemExit) as cm:
+                cli.main(["dashboard", "--help"])
+        self.assertEqual(cm.exception.code, 0)
+        text = out.getvalue()
+        self.assertIn("--port", text)
+        self.assertIn("8765", text)
+        self.assertNotIn("--host", text)
+        self.assertNotIn("--run", text)
 
 
 if __name__ == "__main__":
