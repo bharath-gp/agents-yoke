@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 
-from yoke import adapters, cli, config, state, tickets
+from yoke import adapters, cli, config, milestones, state, tickets
 try:
     from tests.test_core import FAKE_CLI
 except ImportError:
@@ -87,6 +87,79 @@ class TestTickets(unittest.TestCase):
         out = buf.getvalue()
         self.assertIn("T-002 [test] t2  (after T-001)", out)
         self.assertIn('"stage": "qa"', out)
+
+    def test_milestone_imports_and_rejections(self):
+        # Valid map import
+        p = os.path.join(self.tmp, "map.json")
+        doc = {
+            "destination": "dest",
+            "out_of_scope": ["scope"],
+            "milestones": [
+                {"id": "MS-01", "title": "m1", "exit_check": "check1"},
+                {"id": "MS-02", "title": "m2", "exit_check": "check2"},
+            ],
+            "tickets": [
+                tk(1, milestone="MS-01"),
+                tk(2, ["T-001"], milestone="MS-02"),
+            ],
+        }
+        with open(p, "w") as f:
+            json.dump(doc, f)
+        errs, ts = tickets.import_tickets(self.run_, p)
+        self.assertEqual(errs, [])
+        self.assertEqual(len(ts), 2)
+        ms = milestones.milestones_of(self.run_)
+        self.assertEqual([m["id"] for m in ms], ["MS-01", "MS-02"])
+
+        # Rejection cases
+        cases = {
+            "missing exit_check": {
+                "milestones": [{"id": "MS-01", "title": "m1"}],
+                "tickets": [tk(1, milestone="MS-01")],
+            },
+            "backward-dependency violation": {
+                "milestones": [
+                    {"id": "MS-01", "title": "m1", "exit_check": "c1"},
+                    {"id": "MS-02", "title": "m2", "exit_check": "c2"},
+                ],
+                "tickets": [
+                    tk(1, ["T-002"], milestone="MS-01"),
+                    tk(2, milestone="MS-02"),
+                ],
+            },
+            "orphan milestone": {
+                "milestones": [
+                    {"id": "MS-01", "title": "m1", "exit_check": "c1"},
+                    {"id": "MS-02", "title": "m2", "exit_check": "c2"},
+                ],
+                "tickets": [tk(1, milestone="MS-01")],
+            },
+            "unknown milestone": {
+                "milestones": [{"id": "MS-01", "title": "m1", "exit_check": "c1"}],
+                "tickets": [tk(1, milestone="MS-99")],
+            },
+            "duplicate milestone id": {
+                "milestones": [
+                    {"id": "MS-01", "title": "m1", "exit_check": "c1"},
+                    {"id": "MS-01", "title": "m1 dup", "exit_check": "c2"},
+                ],
+                "tickets": [tk(1, milestone="MS-01")],
+            },
+        }
+        for needle, bad_doc in cases.items():
+            with open(p, "w") as f:
+                json.dump(bad_doc, f)
+            errs, out = tickets.import_tickets(self.run_, p)
+            self.assertIsNone(out, needle)
+            self.assertTrue(any(needle in e for e in errs), (needle, errs))
+
+        # File with no milestones yields one implicit MS-00
+        p_no_ms = os.path.join(self.tmp, "no_ms.json")
+        with open(p_no_ms, "w") as f:
+            json.dump({"tickets": [tk(1)]}, f)
+        errs, out = tickets.import_tickets(self.run_, p_no_ms)
+        self.assertEqual(errs, [])
+        self.assertEqual(milestones.milestones_of(self.run_), [{"id": "MS-00", "title": "implicit", "exit_check": None}])
 
 
 if __name__ == "__main__":

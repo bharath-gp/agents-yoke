@@ -47,7 +47,7 @@ During ticket execution, the `review` stage runs an iterative review loop (up to
 
 ### Model selection and tiers
 
-Models can be configured per agent across two tiers: `plan` (used for `requirements`, `planner`, `plan_review`) and `cheap` (used for all other execution stages such as `code`, `qa`, `docs`, `review`, and `validate`):
+Models can be configured per agent across two tiers: `plan` (used for `requirements`, `planner`, `plan_review`, `wayfinder`) and `cheap` (used for all other execution stages such as `code`, `qa`, `docs`, `review`, and `validate`):
 
 ```json
 "models": {
@@ -106,7 +106,7 @@ The skills run these for you; the raw commands below are for scripting and debug
 yoke init --requirements req.md   # prints run_id; write plan.md into ~/.yoke/runs/<run_id>/
 yoke review-plan                  # one read-only secondary review round
 yoke approve plan                 # also: tickets (creates GitHub issues if tracker=github), final
-yoke tickets import tickets.json  # validate, classify untyped tickets; `yoke tickets show`
+yoke tickets import tickets.json  # validate milestones/tickets and warn; `yoke tickets show` groups by milestone
 yoke route T-001                  # stages and agents for a ticket
 yoke run --detach --parallel 2    # background runner; always resumes from disk
 yoke wait                         # blocks until escalation, done, needs_user, stopped, died or timeout

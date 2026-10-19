@@ -4,6 +4,42 @@
     "tickets"
   ],
   "properties": {
+    "destination": {
+      "type": "string"
+    },
+    "out_of_scope": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "milestones": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "title"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^MS-\\d{2}$"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "exit_check": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
     "tickets": {
       "type": "array",
       "items": {
@@ -66,6 +102,10 @@
           },
           "plan_excerpt": {
             "type": "string"
+          },
+          "milestone": {
+            "type": "string",
+            "pattern": "^MS-\\d{2}$"
           },
           "notes": {
             "type": "string"

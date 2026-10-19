@@ -109,6 +109,7 @@ class TestConfig(Tmp):
         self.assertEqual(config.model_for(cfg, "claude", "plan_review"), ("claude-sonnet-5-5", "high"))
         self.assertEqual(config.model_for(cfg, "claude", "requirements"), ("claude-sonnet-5-5", "high"))
         self.assertEqual(config.model_for(cfg, "claude", "planner"), ("claude-sonnet-5-5", "high"))
+        self.assertEqual(config.model_for(cfg, "claude", "wayfinder"), ("claude-sonnet-5-5", "high"))
         self.assertEqual(config.model_for(cfg, "claude", "code"), ("claude-haiku-5-5", "low"))
         self.assertEqual(config.model_for(cfg, "claude", "qa"), ("claude-haiku-5-5", "low"))
         self.assertEqual(config.model_for(cfg, "claude", "docs"), ("claude-haiku-5-5", "low"))

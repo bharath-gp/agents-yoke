@@ -568,6 +568,7 @@ Files: `yoke/models.py`, `yoke/config.py`, `yoke/calls.py`, `yoke/cli.py` (`mode
 | `yoke/models.py` | model discovery (`agy models`, claude static) | [2.6](#s2-6) | T-002 |
 | `yoke/state.py` | run dir, atomic JSON, events, status | [2.2](#s2-2) | [M1](#m1) |
 | `yoke/schema.py`, `schemas/*.json` | stdlib validator, schemas | [2.7](#s2-7) | [M1](#m1)–[M4](#m4) |
+| `yoke/milestones.py` | milestone extraction, ticket merging, fix tickets | [2.7](#s2-7) | T-001 |
 | `yoke/adapters.py` | Claude / agy / Fake adapters | [2.4](#s2-4) | [M1](#m1) |
 | `yoke/calls.py` | audited call, timeout kill, re-ask | [2.12](#s2-12), [2.13](#s2-13) | [M1](#m1) |
 | `yoke/planreview.py`, `prompts/plan_review.md` | bounded plan review | [2.3](#s2-3) | [M2](#m2) |

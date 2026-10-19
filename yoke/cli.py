@@ -8,7 +8,7 @@ import subprocess
 import sys
 import urllib.request
 
-from . import config, models as models_mod, research, router, runcmds, state, tracker, tickets as tickets_mod
+from . import config, milestones, models as models_mod, research, router, runcmds, state, tracker, tickets as tickets_mod
 
 OLLAMA_URL = "http://127.0.0.1:11434"
 DECISION_MODEL = "tev1:4b"  # /v1/systemone; M0 spike: 10/10 ticket types, ~0.75s
@@ -232,11 +232,25 @@ def tickets_cmd(args):
         for e in errs:
             print("error: " + e, file=sys.stderr)
         if not errs:
+            doc = run.read_json("tickets.json", {})
+            for w in tickets_mod.warnings(doc):
+                print("warning: " + w)
             print("imported %d tickets" % len(ts))
         return 1 if errs else 0
-    for t in run.read_json("tickets.json", {"tickets": []})["tickets"]:
-        print("%s [%s] %s%s" % (t["id"], t["type"], t["title"],
-                                "  (after %s)" % ",".join(t["depends_on"]) if t["depends_on"] else ""))
+    doc = run.read_json("tickets.json", {"tickets": []})
+    tickets = doc.get("tickets", [])
+    ms_list = milestones.milestones_of(doc)
+    for ms in ms_list:
+        mid = ms["id"]
+        m_title = ms.get("title", "")
+        m_tickets = [t for t in tickets if t.get("milestone", "MS-00") == mid]
+        if not m_tickets and mid == "MS-00" and len(ms_list) > 1:
+            continue
+        header = "%s: %s" % (mid, m_title) if m_title else mid
+        print(header)
+        for t in m_tickets:
+            print("  %s [%s] %s%s" % (t["id"], t["type"], t["title"],
+                                      "  (after %s)" % ",".join(t["depends_on"]) if t["depends_on"] else ""))
     return 0
 
 

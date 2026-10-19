@@ -9,12 +9,13 @@
     "exit_criteria",
     "depends_on",
     "files_hint",
-    "plan_excerpt"
+    "plan_excerpt",
+    "milestone"
   ],
   "properties": {
     "id": {
       "type": "string",
-      "pattern": "^T-\\d{3}$"
+      "pattern": "^[TF]-\\d{3}$"
     },
     "title": {
       "type": "string",
@@ -58,6 +59,10 @@
     },
     "plan_excerpt": {
       "type": "string"
+    },
+    "milestone": {
+      "type": "string",
+      "pattern": "^MS-\\d{2}$"
     },
     "notes": {
       "type": "string"
