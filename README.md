@@ -132,7 +132,9 @@ Subcommands take `--run <id>`; default is the latest run for the current repo. `
 
 ## Web dashboard (`yoke dashboard`)
 
-`yoke dashboard [--port N]` serves a local, read-only web interface on `127.0.0.1` (default port `8765`):
+`yoke dashboard [--port N]` (or the `/yoke:dashboard` skill in agent sessions) serves a local, read-only web interface on `127.0.0.1` (default port `8765`):
+
+- **Skill integration**: In agent sessions, run `/yoke:dashboard [--port N]` (agy: the `dashboard` skill) to launch or inspect the dashboard server.
 
 - **Self-contained**: Single-file interface (`yoke/dashboard.html`) with inline CSS and JavaScript, using no CDNs or external network dependencies.
 - **Run picker**: Sidebar listing all runs with live state badges, goal descriptions, progress counters, and runner active indicators. The selected run is tracked in the URL hash (`#<run_id>`).
