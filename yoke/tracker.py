@@ -1,7 +1,9 @@
-"""Tracker: local (tickets.json only) or GitHub issues + the single push/PR path (PLAN 2.14, M8).
-Issue numbers live in issues.json, not tickets.json, so creating them never invalidates the
-tickets approval hash. The runner never pushes; only pr() does, after `approve final`."""
+"""Tracker: local (tickets.json only) or GitHub issues and milestones + the single push/PR path (PLAN 2.14, M8).
+Issue numbers live in issues.json and milestone numbers in gh_milestones.json, not tickets.json,
+so creating them never invalidates the tickets approval hash. The runner never pushes; only pr() does,
+after `approve final`."""
 import glob
+import json
 import os
 import re
 import subprocess
@@ -50,16 +52,78 @@ def _body(t):
     return "\n".join(lines)
 
 
+def _repo_slug(repo):
+    url = gitops.git(repo, "remote", "get-url", "origin", check=False).stdout.strip()
+    url = re.sub(r"\.git$", "", url)
+    m = re.search(r"github\.com[:/]([^/]+/[^/]+)$", url)
+    if m:
+        return m.group(1)
+    raise TrackerError("could not determine GitHub repository from origin: %s" % url)
+
+
+def _lookup_milestone(repo, slug, title):
+    """Lookup existing milestone number by title on HTTP 422."""
+    raw = _gh(repo, "api", "--paginate", "repos/%s/milestones" % slug, "-f", "state=all")
+    try:
+        data = json.loads(raw)
+    except ValueError as e:
+        raise TrackerError("could not parse milestone list JSON: %s" % e)
+    if isinstance(data, list):
+        for item in data:
+            if isinstance(item, dict) and item.get("title") == title:
+                return int(item["number"])
+    raise TrackerError("milestone with title %r not found in %s" % (title, slug))
+
+
+def create_milestones(run):
+    """Create GitHub milestones for milestones in tickets.json (skip ones already in gh_milestones.json)."""
+    tickets_doc = run.read_json("tickets.json", {})
+    ms_list = tickets_doc.get("milestones")
+    if not ms_list:
+        return {}
+    repo = run.read_json("run.json")["repo"]
+    slug = _repo_slug(repo)
+    gh_milestones = run.read_json("gh_milestones.json", {})
+    for m in ms_list:
+        mid = m.get("id")
+        if not mid or mid in gh_milestones:
+            continue
+        m_title = m.get("title", mid)
+        try:
+            out = _gh(repo, "api", "repos/%s/milestones" % slug, "-f", "title=%s" % m_title, "-q", ".number")
+            m_num = re.search(r"\b(\d+)\b", out)
+            num = int(m_num.group(1)) if m_num else int(out.strip())
+        except TrackerError as e:
+            if "422" in str(e):
+                num = _lookup_milestone(repo, slug, m_title)
+            else:
+                raise
+        gh_milestones[mid] = num
+        run.write_json("gh_milestones.json", gh_milestones)
+        run.event("milestone_created", milestone=mid, number=num)
+    return gh_milestones
+
+
 def create_issues(run):
     """One issue per ticket, skipping tickets that already have one (safe to retry). Returns issues.json."""
     repo = run.read_json("run.json")["repo"]
+    tickets_doc = run.read_json("tickets.json", {})
+    ms_list = tickets_doc.get("milestones")
+    if ms_list:
+        create_milestones(run)
+    ms_map = {m["id"]: m.get("title", m["id"]) for m in (ms_list or []) if "id" in m}
+
     issues = run.read_json("issues.json", {})
-    todo = [t for t in run.read_json("tickets.json")["tickets"] if t["id"] not in issues]
+    todo = [t for t in tickets_doc.get("tickets", []) if t["id"] not in issues]
     if todo:
         _gh(repo, "label", "create", LABEL, "--force", "--description", "created by yoke")
     for t in todo:
-        url = _gh(repo, "issue", "create", "--title", "%s: %s" % (t["id"], t["title"]),
-                  "--body", _body(t), "--label", LABEL).splitlines()[-1]
+        args = ["issue", "create", "--title", "%s: %s" % (t["id"], t["title"]),
+                "--body", _body(t), "--label", LABEL]
+        mid = t.get("milestone")
+        if ms_list and mid in ms_map:
+            args += ["--milestone", ms_map[mid]]
+        url = _gh(repo, *args).splitlines()[-1]
         m = re.search(r"/issues/(\d+)$", url)
         if not m:
             raise TrackerError("could not read issue number from: %s" % url)
@@ -172,3 +236,54 @@ def pr(run):
     run.update(pr_url=url)
     run.event("pr_opened", url=url, at=state.now())
     return url
+
+
+def close_milestone(run, milestone_id):
+    """Close GitHub milestone for passed yoke milestone. Never raises."""
+    try:
+        info = run.read_json("run.json", {})
+        repo = info.get("repo")
+        if not repo or detect(repo, info.get("config") or run.cfg) != "github":
+            return
+        if isinstance(milestone_id, dict):
+            milestone_id = milestone_id.get("id")
+        gh_milestones = run.read_json("gh_milestones.json", {})
+        entry = gh_milestones.get(milestone_id)
+        if entry is None:
+            return
+        number = entry.get("number") if isinstance(entry, dict) else entry
+        slug = _repo_slug(repo)
+        _gh(repo, "api", "-X", "PATCH", "repos/%s/milestones/%s" % (slug, number), "-f", "state=closed")
+        run.event("milestone_closed", milestone=milestone_id, number=number)
+    except Exception as e:
+        run.event("tracker_error", milestone=milestone_id, ticket=milestone_id, error=str(e))
+
+
+def create_fix_issue(run, fix_ticket):
+    """Create a GitHub issue for a fix ticket in the same milestone. Never raises."""
+    try:
+        info = run.read_json("run.json", {})
+        repo = info.get("repo")
+        if not repo or detect(repo, info.get("config") or run.cfg) != "github":
+            return
+        issues = run.read_json("issues.json", {})
+        fid = fix_ticket.get("id")
+        if not fid or fid in issues:
+            return
+        tickets_doc = run.read_json("tickets.json", {})
+        ms_list = tickets_doc.get("milestones", [])
+        ms_map = {m["id"]: m.get("title", m["id"]) for m in ms_list if "id" in m}
+        args = ["issue", "create", "--title", "%s: %s" % (fid, fix_ticket.get("title", fid)),
+                "--body", _body(fix_ticket), "--label", LABEL]
+        mid = fix_ticket.get("milestone")
+        if mid in ms_map:
+            args += ["--milestone", ms_map[mid]]
+        url = _gh(repo, *args).splitlines()[-1]
+        m = re.search(r"/issues/(\d+)$", url)
+        if not m:
+            raise TrackerError("could not read issue number from: %s" % url)
+        issues[fid] = {"number": int(m.group(1)), "url": url}
+        run.write_json("issues.json", issues)
+        run.event("issue_created", ticket=fid, number=issues[fid]["number"])
+    except Exception as e:
+        run.event("tracker_error", ticket=fix_ticket.get("id"), milestone=fix_ticket.get("milestone"), error=str(e))

@@ -23,6 +23,8 @@
   "max_attempts_per_ticket": 3,
   "max_plan_review_rounds": 3,
   "max_review_rounds": 2,
+  "max_fix_tickets_per_milestone": 2,
+  "max_chart_rounds": 3,
   "max_tickets": 40,
   "max_agent_calls_total": 300,
   "parallel": 1,
@@ -37,7 +39,8 @@
     "research": 1800,
     "factcheck": 1200,
     "router_fallback": 120,
-    "pr_body": 300
+    "pr_body": 300,
+    "wayfinder": 1200
   },
   "kill_grace_s": 15,
   "router": {

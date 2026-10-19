@@ -8,7 +8,7 @@ import subprocess
 import sys
 import urllib.request
 
-from . import config, models as models_mod, research, router, runcmds, state, tracker, tickets as tickets_mod
+from . import config, milestones, models as models_mod, research, router, runcmds, state, tracker, tickets as tickets_mod
 
 OLLAMA_URL = "http://127.0.0.1:11434"
 DECISION_MODEL = "tev1:4b"  # /v1/systemone; M0 spike: 10/10 ticket types, ~0.75s
@@ -225,24 +225,66 @@ def pr_cmd(args):
     return 0
 
 
-def tickets_cmd(args):
+def _print_tickets_table(doc):
+    tickets = doc.get("tickets", [])
+    ms_list = milestones.milestones_of(doc)
+    for ms in ms_list:
+        mid = ms["id"]
+        m_title = ms.get("title", "")
+        m_tickets = [t for t in tickets if t.get("milestone", "MS-00") == mid]
+        if not m_tickets and mid == "MS-00" and len(ms_list) > 1:
+            continue
+        header = "%s: %s" % (mid, m_title) if m_title else mid
+        print(header)
+        for t in m_tickets:
+            print("  %s [%s] %s%s" % (t["id"], t["type"], t["title"],
+                                      "  (after %s)" % ",".join(t["depends_on"]) if t["depends_on"] else ""))
+
+
+def chart_cmd(run, args, adapter=None):
+    from . import chart as chart_mod, planreview
+    try:
+        n, res = chart_mod.chart_round(run, adapter=adapter, feedback=getattr(args, "feedback", None))
+    except (chart_mod.ChartError, planreview.ApprovalError) as e:
+        print("yoke: %s" % e, file=sys.stderr)
+        return 1
+    if not res.ok or not res.schema_valid:
+        print("chart failed: %s" % res.error, file=sys.stderr)
+        return 1
+    import_errs = getattr(res, "import_errs", [])
+    if import_errs:
+        for err in import_errs:
+            print("error: %s" % err, file=sys.stderr)
+        return 1
+    doc = run.read_json("tickets.json", {})
+    for w in tickets_mod.warnings(doc):
+        print("warning: " + w)
+    _print_tickets_table(doc)
+    return 0
+
+
+def tickets_cmd(args, adapter=None):
     run = _run(args)
+    if args.action == "chart":
+        return chart_cmd(run, args, adapter=adapter)
     if args.action == "import":
-        errs, ts = tickets_mod.import_tickets(run, args.file)
+        errs, ts = tickets_mod.import_tickets(run, args.file, adapter=adapter)
         for e in errs:
             print("error: " + e, file=sys.stderr)
         if not errs:
+            doc = run.read_json("tickets.json", {})
+            for w in tickets_mod.warnings(doc):
+                print("warning: " + w)
             print("imported %d tickets" % len(ts))
         return 1 if errs else 0
-    for t in run.read_json("tickets.json", {"tickets": []})["tickets"]:
-        print("%s [%s] %s%s" % (t["id"], t["type"], t["title"],
-                                "  (after %s)" % ",".join(t["depends_on"]) if t["depends_on"] else ""))
+    doc = run.read_json("tickets.json", {"tickets": []})
+    _print_tickets_table(doc)
     return 0
 
 
 def route_cmd(args):
     run = _run(args)
-    t = next((t for t in run.read_json("tickets.json")["tickets"] if t["id"] == args.ticket), None)
+    t = next((t for t in milestones.merged_tickets(run) if t["id"] == args.ticket), None)
     if t is None:
         sys.exit("yoke: no such ticket " + args.ticket)
     print(json.dumps(router.route_ticket(run.cfg, t), indent=2))
@@ -423,9 +465,10 @@ def main(argv=None):
                     help="user: ~/.yoke/config.json; project/repo: <repo>/.yoke.json (default: user)")
     mo.add_argument("--reset", nargs="?", const="", action="append", default=None, metavar="[AGENT[.TIER]]",
                     help="remove model configuration for AGENT or AGENT.TIER (or all if omitted)")
-    tk = sub.add_parser("tickets", help="import or show tickets")
-    tk.add_argument("action", choices=["import", "show"])
+    tk = sub.add_parser("tickets", help="import, show, or chart tickets")
+    tk.add_argument("action", choices=["import", "show", "chart"])
     tk.add_argument("file", nargs="?", help="tickets JSON (import)")
+    tk.add_argument("--feedback", help="feedback text for chart")
     tk.add_argument("--run")
     rt = sub.add_parser("route", help="show the stage route for a ticket")
     rt.add_argument("ticket")

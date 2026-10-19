@@ -2,6 +2,12 @@ You are the validator, read-only. Inspect the change with 'git diff $base_sha' (
 Ticket (JSON):
 $ticket
 
+Destination:
+$destination
+
+Out of scope:
+$out_of_scope
+
 Relevant plan section:
 $plan_excerpt
 

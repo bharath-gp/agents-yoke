@@ -109,6 +109,7 @@ class TestConfig(Tmp):
         self.assertEqual(config.model_for(cfg, "claude", "plan_review"), ("claude-sonnet-5-5", "high"))
         self.assertEqual(config.model_for(cfg, "claude", "requirements"), ("claude-sonnet-5-5", "high"))
         self.assertEqual(config.model_for(cfg, "claude", "planner"), ("claude-sonnet-5-5", "high"))
+        self.assertEqual(config.model_for(cfg, "claude", "wayfinder"), ("claude-sonnet-5-5", "high"))
         self.assertEqual(config.model_for(cfg, "claude", "code"), ("claude-haiku-5-5", "low"))
         self.assertEqual(config.model_for(cfg, "claude", "qa"), ("claude-haiku-5-5", "low"))
         self.assertEqual(config.model_for(cfg, "claude", "docs"), ("claude-haiku-5-5", "low"))
@@ -367,6 +368,11 @@ class TestRunCall(Tmp):
         res = self.call({"plan_review": [{"structured_output": {"status": "done"}}]},
                         stage="plan_review", attempt=3)
         self.assertEqual(res.audit_dir, self.run_.path("plan-review/round-3"))
+
+    def test_wayfinder_dir(self):
+        res = self.call({"wayfinder": [{"structured_output": {"status": "done"}}]},
+                        stage="wayfinder", attempt=2)
+        self.assertEqual(res.audit_dir, self.run_.path("chart/round-2"))
 
     def test_schema_reask_succeeds(self):
         res = self.call({"code": [{"structured_output": {"status": "bogus"}, "session_id": "s1"},

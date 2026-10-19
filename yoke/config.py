@@ -113,7 +113,7 @@ def save_roles(path, primary=None, secondary=None, mapping=None):
     return out["roles"]
 
 
-PLAN_ROLES = ("requirements", "planner", "plan_review")
+PLAN_ROLES = ("requirements", "planner", "plan_review", "wayfinder")
 
 
 def model_for(cfg, agent, role):

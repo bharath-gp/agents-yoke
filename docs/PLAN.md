@@ -44,6 +44,7 @@ Status legend per milestone: `[ ]` todo, `[~]` in progress, `[x]` done. Update t
    | [M11](#m11) | Code review stage & iterative revisions | [2.5](#s2-5), [2.6](#s2-6), [2.8](#s2-8) |
    | [M12](#m12) | Run listing, `go` skill, multi-run resume | [2.11](#s2-11) |
    | [M13](#m13) | Model selection & configuration | [2.6](#s2-6) |
+   | [M14](#m14) | Milestones, destination map, and charting | [2.5](#s2-5), [2.7](#s2-7), [2.8](#s2-8), [2.14](#s2-14), [2.16](#s2-16) |
 4. [Verification matrix](#s4)
 5. [Out of scope](#s5)
 - [Appendix A: Topic index](#appA)
@@ -167,9 +168,10 @@ Default role map (config `roles`):
 {"primary": "claude", "secondary": "agy",
  "by_role": {"requirements": "primary", "planner": "primary", "wayfinder": "primary",
              "orchestrator": "primary", "plan_review": "secondary",
-             "code": "secondary", "review": "auto", "qa": "secondary", "validate": "primary", "docs": "secondary"}}
+             "code": "secondary", "review": "auto", "qa": "secondary", "validate": "primary", "docs": "secondary",
+             "search": "primary", "research": "secondary", "factcheck": "primary", "pr_body": "primary"}}
 ```
-`by_role` values may be `primary`, `secondary`, a concrete agent name, or `auto` (for `review` only, resolving to the opposite of `code`). CLI flags `--primary`/`--secondary` override at `yoke init`.
+`by_role` values may be `primary`, `secondary`, a concrete agent name, or `auto` (for `review` only, resolving to the opposite of `code`). `wayfinder` maps `plan.md` into destination, milestones, and tickets (`chart.py`). CLI flags `--primary`/`--secondary` override at `yoke init`.
 
 <a id="s2-6"></a>
 ### 2.6 Config
@@ -212,8 +214,9 @@ Type → stages routing (config `routing`, overridable per type with model/effor
 ### 2.7 Schemas (`yoke/schemas/*.json`, JSON Schema draft-07 subset)
 Validation done by a ~60-line stdlib validator in `schema.py` supporting `type, properties, required, items, enum, additionalProperties:false, minItems, minLength, pattern`. Same files are passed to `--json-schema`. Every agent result is validated again by the runner; invalid → counts as a failed call (one automatic re-ask with the validation error, then attempt failure).
 
-- **ticket**: `id` (`^T-\d{3}$`), `title`, `type` (enum above), `description`, `exit_criteria` (≥1 strings), `depends_on` (ids), `files_hint` (strings), `plan_excerpt` (string, the relevant plan section verbatim), `notes` (optional).
-- **ticket-list**: `{"tickets": [ticket...]}`; runner also checks: unique ids, deps exist, no cycles, count ≤ `max_tickets`.
+- **ticket**: `id` (`^T-\d{3}$` or `^F-\d{3}$`), `title`, `type` (enum above), `description`, `exit_criteria` (≥1 strings), `depends_on` (ids), `files_hint` (strings), `plan_excerpt` (string, the relevant plan section verbatim), `milestone` (optional, `^MS-\d{2}$`), `notes` (optional), `doc_path` (optional).
+- **ticket-list**: `{"destination"?: str, "out_of_scope"?: [str...], "milestones"?: [{"id": "^MS-\\d{2}$", "title": str, "exit_check": str|null}...], "tickets": [ticket...]}`; runner also checks: unique ids, deps exist, no cycles, count ≤ `max_tickets`, milestone validity.
+- **chart**: same schema as `ticket-list` returned by wayfinder during `yoke tickets chart`, validated against `schemas/chart.json`.
 - **plan-review**: `verdict` (`approve|changes_requested`), `findings[]` `{severity: blocker|major|minor, section, issue, suggestion}`, `summary`.
 - **code**: `status` (`done|blocked`), `summary`, `files_changed[]`, `assumptions[]`, `open_questions[]`, `notes_for_qa`, `blocked_reason` (when blocked).
 - **qa**: `status` (`pass|fail|blocked`), `test_command` (string the runner can re-run), `tests_added[]`, `commands_run[]` `{cmd, exit_code}`, `failures[]`, `summary`.
@@ -247,6 +250,12 @@ Review stage loop (`_review_loop`): Bounded review-revision loop (up to `max_rev
 Context handoff: prompts **inline** the ticket JSON, plan excerpt, and prior-stage result JSON (small). Copies are saved in the attempt dir for audit. Inlining avoids sandbox path problems with files outside the worktree.
 
 Prompt templates: `yoke/prompts/<stage>.md` using `string.Template` (`$ticket`, `$plan_excerpt`, `$prior_results`, `$feedback`, `$base_sha`, `$worktree`) — `$` avoids clashing with JSON braces. Every worker prompt states: stay inside the worktree, do not commit, do not push, do not touch git config, return only the schema object.
+
+Milestone gates and fix tickets:
+- Sequential milestone barrier: tickets belonging to milestone `MS-k` are ready only when all preceding milestones `MS-i` (`i < k`) have passed or been waived (`passed|waived`).
+- Milestone exit checks: when all tickets in milestone `MS-k` are closed or skipped, the runner evaluates its `exit_check` in integration worktree `worktrees/_integration`. If exit check passes (rc 0), milestone status becomes `passed`, logged as `milestone_passed`, and the milestone closes on GitHub.
+- If exit check fails, the runner auto-generates a fix ticket (`F-xxx`, type bugfix, exit criteria checking that the exit check command exits 0) attached to the milestone, up to `max_fix_tickets_per_milestone` (default 2). Fix tickets are executed and merged like standard tickets.
+- If fix tickets are exhausted without passing, the milestone fails and escalates. The user can unblock with `yoke unblock --milestone MS-xx [--note TEXT]` (resets fix count to retry) or `yoke unblock --milestone MS-xx --waive REASON` (records waiver reason in `map.md` decisions log and marks the milestone `waived`).
 
 <a id="s2-9"></a>
 ### 2.9 Git, worktrees, commits, merging
@@ -290,7 +299,11 @@ Prompt templates: `yoke/prompts/<stage>.md` using `string.Template` (`$ticket`, 
 <a id="s2-14"></a>
 ### 2.14 Tracker: local vs GitHub
 - `local` (default when no GitHub remote): tickets in `tickets.json` only.
-- `github`: on `approve tickets`, create one issue per ticket (`gh issue create --title "T-001: ..." --body <rendered> --label yoke`) — the approval prompt states this will happen; issue numbers saved on tickets. Comments on block/escalation; issues are closed by the PR (`Closes #n` lines). Pushing the feature branch and `gh pr create` happen **only** via `yoke pr` after `approve final`, which the user runs explicitly. Never auto-push, never merge. The PR title is derived from the plan (`prbody.title`), falling back to `yoke: <run_id>`. The PR body (`tracker.pr_body`) assembles the filled template (or built-in headings), `Closes #N` lines for tracked issues, and an unresolved review findings section (up to 20 findings not matched by `ACCEPT` lines in arbitration). PR creation never blocks on template fill errors.
+- `github`: on `approve tickets`, creates GitHub milestones and issues.
+  - When milestones exist in `tickets.json`: creates one GitHub milestone per yoke milestone (`gh api repos/{owner}/{repo}/milestones -f title=<title>`, reading `.number`; on HTTP 422, looks up existing milestones by title via `--paginate`). Numbers are saved in `gh_milestones.json` (kept separate from `tickets.json` and `issues.json`).
+  - Creates one issue per ticket (`gh issue create --title "T-001: ..." --body <rendered> --label yoke`), passing `--milestone <title>` if associated with a milestone (approval prompt states this will happen; issue numbers saved in `issues.json`).
+  - Gate hooks: when a milestone gate passes, closes the GitHub milestone (`gh api -X PATCH .../milestones/N -f state=closed`). If exit checks fail, any generated fix tickets have issues created in the same milestone. Gate-time tracker actions are guarded: failures log `tracker_error` and never raise, keeping the runner resilient.
+  - Comments on block/escalation; issues are closed by the PR (`Closes #n` lines). Pushing the feature branch and `gh pr create` happen **only** via `yoke pr` after `approve final`, which the user runs explicitly. Never auto-push, never merge. The PR title is derived from the plan (`prbody.title`), falling back to `yoke: <run_id>`. The PR body (`tracker.pr_body`) assembles the filled template (or built-in headings), `Closes #N` lines for tracked issues (reading only `issues.json`), and an unresolved review findings section (up to 20 findings not matched by `ACCEPT` lines in arbitration). PR creation never blocks on template fill errors.
 
 <a id="s2-15"></a>
 ### 2.15 Packaging
@@ -343,13 +356,15 @@ Install:
 yoke init [--repo PATH] [--primary claude] [--secondary agy] [--requirements FILE]   → prints run_id
 yoke review-plan [--run R]            # one secondary read-only review round on plan.md → result path + summary
 yoke approve plan|tickets|final [--run R]
+yoke tickets chart [--feedback TEXT] [--run R] # wayfinder maps approved plan to destination, milestones, and tickets
 yoke tickets import FILE [--run R]    # validate schema+deps, classify missing types via router, write tickets.json
-yoke tickets show [--run R]           # table: id, type, stages, deps, title
+yoke tickets show [--run R]           # table: id, type, stages, deps, title grouped by milestone
+yoke map [--run R]                    # render destination, out-of-scope, milestone gates, frontier, decisions log
 yoke run [--run R] [--parallel N] [--detach] [--resume]
 yoke wait [--run R] [--timeout S]
 yoke status [--run R] [--brief] [--active] [--json]
 yoke escalations [--run R]
-yoke unblock T-xxx --note TEXT | --skip | --reset-attempts   # user responses to escalations
+yoke unblock [T-xxx] [--note TEXT] [--skip] [--reset-attempts] | --milestone MS-xx [--note TEXT] [--waive REASON]   # user responses to escalations
 yoke stop [--run R]                   # SIGTERM runner; workers killed; resumable
 yoke pr [--run R]                     # requires approve final; push branch + gh pr create
 yoke clean [--run R]
@@ -500,6 +515,17 @@ Files: `yoke/models.py`, `yoke/config.py`, `yoke/calls.py`, `yoke/cli.py` (`mode
 - Interactive model skills: `/yoke:models` allows inspecting, configuring, or resetting models; `/yoke:grill` and `/yoke:go` prompt to confirm or update agent models before planning.
 - Notes: Built `yoke/models.py` (model listing with `agy models` CLI call and static fallback catalog), updated `config.py` for model configuration merging across scopes, implemented automatic single-retry fallback on model errors in `calls.py`, added `yoke models` subcommand in `cli.py`, created `skills/models/SKILL.md`, and integrated model selection steps into grill and go skills.
 
+<a id="m14"></a>
+### M14: Milestones, destination map, and charting (0.5.0) `[x]`
+Files: `yoke/milestones.py`, `yoke/chart.py`, `yoke/schemas/chart.json`, `yoke/prompts/chart.md`, `yoke/runcmds.py`, `yoke/scheduler.py`, `yoke/tracker.py`, `yoke/cli.py`, `skills/tickets/SKILL.md`, `skills/go/SKILL.md`, `skills/run/SKILL.md`, `skills/finish/SKILL.md`, `tests/test_milestones.py`, `tests/test_chart.py`, `README.md`, `CLAUDE.md`, `docs/PLAN.md`.
+- Milestone extraction and mapping: `milestones.py` handles destination, out-of-scope boundaries, milestone list, ticket merging with fix tickets, and milestone state persistence (`milestones.json`).
+- Wayfinder charting: `chart.py` and `yoke tickets chart [--feedback TEXT]` invoke the `wayfinder` role to map `plan.md` to destination, milestones, and tickets adhering to `schemas/chart.json`, audited under `chart/round-<n>`.
+- Implementation map and frontier: `yoke map` renders destination, out-of-scope items, per-milestone gate status, exit checks, tickets with status/blockers, execution frontier, and decisions log (`map.md`).
+- Milestone gate scheduling and fix tickets: `scheduler.py` enforces sequential milestone barriers; executes integration `exit_check` when a milestone's tickets complete; auto-generates fix tickets (`F-xxx`) on check failures up to `max_fix_tickets_per_milestone`; escalates on exhaustion.
+- Escalation and unblock: `unblock --milestone MS-xx [--note TEXT]` resets fix counts to re-test; `unblock --milestone MS-xx --waive REASON` logs waivers to `map.md` and marks the gate waived.
+- GitHub tracker integration: creates GitHub milestones upon ticket approval, associates ticket issues with milestones, creates fix ticket issues, and closes GitHub milestones when gates pass.
+- Notes: Built `yoke/milestones.py`, `yoke/chart.py`, added `yoke tickets chart` and `yoke map` commands, updated `scheduler.py` with milestone barriers and exit check runner re-testing, enhanced `tracker.py` with milestone lifecycle integration, updated all relevant skills (`tickets`, `go`, `run`, `finish`), and bumped package version to 0.5.0.
+
 ---
 
 <a id="s4"></a>
@@ -565,9 +591,11 @@ Files: `yoke/models.py`, `yoke/config.py`, `yoke/calls.py`, `yoke/cli.py` (`mode
 | `pyproject.toml` | package, `yoke` script | [2.15](#s2-15) | [M0](#m0) |
 | `yoke/cli.py` | argparse subcommands | [2.16](#s2-16) | [M0](#m0)–[M9](#m9) |
 | `yoke/config.py`, `defaults.json` | config merge, role lookup | [2.5](#s2-5), [2.6](#s2-6) | [M1](#m1) |
-| `yoke/models.py` | model discovery (`agy models`, claude static) | [2.6](#s2-6) | T-002 |
+| `yoke/models.py` | model discovery (`agy models`, claude static) | [2.6](#s2-6) | [M13](#m13) |
 | `yoke/state.py` | run dir, atomic JSON, events, status | [2.2](#s2-2) | [M1](#m1) |
 | `yoke/schema.py`, `schemas/*.json` | stdlib validator, schemas | [2.7](#s2-7) | [M1](#m1)–[M4](#m4) |
+| `yoke/milestones.py` | milestone extraction, ticket merging, fix tickets | [2.7](#s2-7) | [M14](#m14) |
+| `yoke/chart.py`, `prompts/chart.md`, `schemas/chart.json` | charting step: wayfinder maps plan to milestones/tickets | [2.16](#s2-16) | [M14](#m14) |
 | `yoke/adapters.py` | Claude / agy / Fake adapters | [2.4](#s2-4) | [M1](#m1) |
 | `yoke/calls.py` | audited call, timeout kill, re-ask | [2.12](#s2-12), [2.13](#s2-13) | [M1](#m1) |
 | `yoke/planreview.py`, `prompts/plan_review.md` | bounded plan review | [2.3](#s2-3) | [M2](#m2) |

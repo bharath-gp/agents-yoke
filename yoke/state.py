@@ -134,7 +134,8 @@ class Run:
     def status(self):
         info = self.read_json("run.json")
         counts = {}
-        tickets = self.read_json("tickets.json", {"tickets": []}).get("tickets", [])
+        from . import milestones
+        tickets = milestones.merged_tickets(self)
         for t in tickets:
             st = self.read_json("tickets/%s/state.json" % t["id"], {}).get("status", "pending")
             counts[st] = counts.get(st, 0) + 1
@@ -152,10 +153,15 @@ class Run:
         with _LOCK:
             self.write_json("status.json", s)
         by = ", ".join("%s %d" % kv for kv in sorted(s["tickets"].items())) or "none"
+        from . import milestones
+        ms_list = milestones.milestones_of(self)
+        ms_states = milestones.load_states(self)
+        ms_str = ", ".join("%s %s" % (m["id"], ms_states.get(m["id"], {}).get("status", "open")) for m in ms_list)
         return "\n".join([
             "run %s [%s]" % (s["run_id"], s["state"]),
             "repo %s  branch %s" % (s["repo"], s["branch"]),
             "agent calls %d/%s" % (s["agent_calls"], s["max_agent_calls"]),
+            "milestones %d (%s)" % (len(ms_list), ms_str),
             "tickets %d (%s)" % (s["tickets_total"], by),
             "open escalations %d" % s["escalations"],
         ])

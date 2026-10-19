@@ -47,7 +47,7 @@ During ticket execution, the `review` stage runs an iterative review loop (up to
 
 ### Model selection and tiers
 
-Models can be configured per agent across two tiers: `plan` (used for `requirements`, `planner`, `plan_review`) and `cheap` (used for all other execution stages such as `code`, `qa`, `docs`, `review`, and `validate`):
+Models can be configured per agent across two tiers: `plan` (used for `requirements`, `planner`, `plan_review`, `wayfinder`) and `cheap` (used for all other execution stages such as `code`, `qa`, `docs`, `review`, and `validate`):
 
 ```json
 "models": {
@@ -93,7 +93,7 @@ yoke provides the following skills for host agents (Claude Code and Antigravity)
 | `/yoke:setup` | Check prerequisites and configure agent roles. |
 | `/yoke:grill` | Requirements gathering interview writing `requirements.md`. |
 | `/yoke:plan [run_id]` | Implementation plan drafting, bounded secondary review rounds, arbitration, and plan approval. |
-| `/yoke:tickets [run_id]` | Split approved plan into tickets, validate dependencies, import, and ticket approval. |
+| `/yoke:tickets [run_id]` | Chart approved plan into milestones/tickets via wayfinder, inspect map, and ticket approval. |
 | `/yoke:run [run_id]` | Start the detached background runner and orchestrator wait loop. |
 | `/yoke:resume [run_id]` | Inspect active runs (`yoke runs --active`) or pick up an interrupted run with run id. |
 | `/yoke:models` | Inspect, set or reset the plan-tier and cheap-tier models per agent. |
@@ -105,18 +105,35 @@ The skills run these for you; the raw commands below are for scripting and debug
 ```bash
 yoke init --requirements req.md   # prints run_id; write plan.md into ~/.yoke/runs/<run_id>/
 yoke review-plan                  # one read-only secondary review round
-yoke approve plan                 # also: tickets (creates GitHub issues if tracker=github), final
-yoke tickets import tickets.json  # validate, classify untyped tickets; `yoke tickets show`
+yoke approve plan                 # also: tickets (creates GitHub milestones/issues if tracker=github), final
+yoke tickets chart [--feedback "note"] # map approved plan to milestones/tickets via wayfinder
+yoke tickets import tickets.json  # validate milestones/tickets and warn; `yoke tickets show` groups by milestone
+yoke map                          # render destination, out-of-scope, milestone gates, frontier, decisions log
 yoke route T-001                  # stages and agents for a ticket
 yoke run --detach --parallel 2    # background runner; always resumes from disk
 yoke wait                         # blocks until escalation, done, needs_user, stopped, died or timeout
 yoke runs [--active] [--json]     # list runs for this repo with goal and next step
-yoke status [--json|--brief]      # also: escalations, unblock T-001 [--reset-attempts], stop; --active lists active runs
+yoke status [--json|--brief]      # also: escalations, unblock [T-001|--milestone MS-01], stop; --active lists active runs
 yoke approve final && yoke pr     # push branch, open PR
 yoke clean                        # remove worktrees (keeps branches and audit)
 ```
 
 Subcommands take `--run <id>`; default is the latest run for the current repo. `yoke mcp` is a stdio MCP server exposing the router.
+
+## Implementation map & milestone gates
+
+- **Wayfinder charting (`yoke tickets chart`)**: Maps the approved `plan.md` into destination, out-of-scope boundaries, milestones with optional integration `exit_check` commands, and tickets. Pass `--feedback "<notes>"` to refine the breakdown.
+- **Implementation map (`yoke map`)**: Renders destination, out-of-scope items, per-milestone gate status, tickets with waiting/blocking reasons, execution frontier, and decisions log (`map.md`).
+- **Sequential milestone barrier**: The runner executes tickets milestone-by-milestone. Tickets belonging to later milestones do not become ready until all preceding milestones pass or are waived.
+- **Exit checks & fix tickets**: When all tickets in a milestone complete, the runner runs its `exit_check` in the integration worktree. If the check fails, the runner auto-generates fix tickets (`F-001`, `F-002` up to `max_fix_tickets_per_milestone`, default 2). If fixes are exhausted, the gate escalates.
+- **Unblocking milestones**: Answer gate escalations with `yoke unblock --milestone MS-xx [--note TEXT]` to retry the gate check or `yoke unblock --milestone MS-xx --waive REASON` to log the waiver to `map.md` and proceed.
+
+## GitHub tracker & milestones
+
+When `tracker` is `github` (or `auto` on GitHub remotes with `gh` available):
+- **Milestones on approve**: `yoke approve tickets` creates corresponding GitHub milestones for all milestones in `tickets.json` (skipping existing ones and recording milestone numbers in `gh_milestones.json`), then attaches tickets to milestones using `--milestone <title>`.
+- **Milestone gate automation**: When a milestone gate passes, `tracker.close_milestone` closes the GitHub milestone (`state=closed`). If gate exit checks fail, any generated fix tickets are created as GitHub issues in the same milestone via `tracker.create_fix_issue`.
+- **Resilient execution**: All gate-time tracker actions are guarded and log `tracker_error` events on failure without raising exceptions or interrupting the runner loop.
 
 ## Pull requests (`yoke pr`)
 

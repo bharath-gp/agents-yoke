@@ -24,6 +24,11 @@ class TestPackaging(unittest.TestCase):
     def test_manifests(self):
         p = load(".claude-plugin/plugin.json")
         self.assertEqual(p["name"], "yoke")
+        self.assertEqual(p["version"], "0.5.0")
+        with open(os.path.join(ROOT, "pyproject.toml")) as f:
+            pyproject_ver = re.search(r'version\s*=\s*"([^"]+)"', f.read()).group(1)
+        self.assertEqual(pyproject_ver, "0.5.0")
+        self.assertEqual(p["version"], pyproject_ver)
         m = load(".claude-plugin/marketplace.json")
         self.assertEqual(m["name"], "yoke")
         self.assertEqual(m["plugins"][0]["name"], "yoke")
@@ -51,7 +56,7 @@ class TestPackaging(unittest.TestCase):
             with open(os.path.join(ROOT, "skills", name, "SKILL.md")) as f:
                 subs.update(re.findall(r"`yoke ([a-z-]+)", f.read()))
         known = {"setup", "init", "review-plan", "approve", "tickets", "run", "wait", "status", "escalations",
-                 "unblock", "stop", "pr", "route", "doctor", "models", "runs"}
+                 "unblock", "stop", "pr", "route", "doctor", "models", "runs", "map"}
         self.assertFalse(subs - known, subs - known)
 
 

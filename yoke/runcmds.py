@@ -8,12 +8,14 @@ import subprocess
 import sys
 import time
 
-from . import gitops, planreview, scheduler, state
+from . import gitops, milestones, planreview, scheduler, state
 
-CMDS = ("run", "status", "escalations", "unblock", "stop", "wait", "clean", "runs")
+CMDS = ("run", "status", "escalations", "unblock", "stop", "wait", "clean", "runs", "map")
 
 
 def add_parsers(sub):
+    m = sub.add_parser("map", help="show implementation map, frontier, and decisions log")
+    m.add_argument("--run")
     r = sub.add_parser("run", help="run the ticket pipeline")
     r.add_argument("--run")
     r.add_argument("--parallel", type=int, help="tickets in flight at once (saved in the run config)")
@@ -31,7 +33,9 @@ def add_parsers(sub):
     e = sub.add_parser("escalations", help="list open escalations")
     e.add_argument("--run")
     u = sub.add_parser("unblock", help="answer an escalation")
-    u.add_argument("ticket")
+    u.add_argument("ticket", nargs="?")
+    u.add_argument("--milestone")
+    u.add_argument("--waive", metavar="REASON")
     u.add_argument("--run")
     u.add_argument("--note")
     u.add_argument("--skip", action="store_true")
@@ -235,6 +239,86 @@ def brief(run):
                       hint])
 
 
+def render_map(run):
+    """Render implementation map: destination, out-of-scope, per-milestone gate status,
+    exit_check, tickets with status and why pending wait, frontier, and decisions log."""
+    dest, _, oos_list = milestones.destination_and_scope(run)
+
+    lines = ["Destination: %s" % dest, "Out of scope:"]
+    if oos_list:
+        for item in oos_list:
+            lines.append("  - %s" % item)
+    else:
+        lines.append("  (none)")
+
+    all_milestones = milestones.milestones_of(run)
+    ms_states = milestones.load_states(run)
+    ms_idx = {m["id"]: i for i, m in enumerate(all_milestones)}
+    tickets = milestones.merged_tickets(run)
+    sts = {t["id"]: run.read_json("tickets/%s/state.json" % t["id"], {}).get("status", "pending") for t in tickets}
+
+    lines.append("\nMilestones:")
+    for m in all_milestones:
+        mid = m["id"]
+        m_title = m.get("title", "")
+        gate = ms_states.get(mid, {}).get("status", "open")
+        ec = m.get("exit_check")
+        ec_str = ec if ec else "none"
+        header = "%s: %s [gate: %s, exit_check: %s]" % (mid, m_title, gate, ec_str) if m_title else "%s [gate: %s, exit_check: %s]" % (mid, gate, ec_str)
+        lines.append(header)
+        m_tickets = [t for t in tickets if t.get("milestone", "MS-00") == mid]
+        for t in m_tickets:
+            tid = t["id"]
+            st = sts.get(tid, "pending")
+            dep_str = " (after %s)" % ", ".join(t.get("depends_on", [])) if t.get("depends_on") else ""
+            reasons = []
+            if st == "pending":
+                blocked_gates = [
+                    em["id"] for em in all_milestones[:ms_idx.get(t.get("milestone", "MS-00"), 0)]
+                    if ms_states.get(em["id"], {}).get("status") not in ("passed", "waived")
+                ]
+                if blocked_gates:
+                    reasons.append("blocked by gate %s" % ", ".join(blocked_gates))
+                unclosed = [d for d in t.get("depends_on", []) if sts.get(d) != "closed"]
+                if unclosed:
+                    reasons.append("waiting for %s" % ", ".join(unclosed))
+            wait_str = " (%s)" % "; ".join(reasons) if reasons else ""
+            lines.append("  %s [%s] %s%s%s" % (tid, st, t.get("title", ""), dep_str, wait_str))
+
+    frontier = [
+        t for t in tickets
+        if sts.get(t["id"]) in ("pending", "in_progress")
+        and all(sts.get(d) == "closed" for d in t.get("depends_on", []))
+        and all(
+            ms_states.get(em["id"], {}).get("status") in ("passed", "waived")
+            for em in all_milestones[:ms_idx.get(t.get("milestone", "MS-00"), 0)]
+        )
+    ]
+
+    lines.append("\nFrontier:")
+    if frontier:
+        for t in frontier:
+            lines.append("  %s: %s" % (t["id"], t.get("title", "")))
+    else:
+        lines.append("  (none)")
+
+    lines.append("\nDecisions log:")
+    map_path = run.path("map.md")
+    decisions = ""
+    if os.path.exists(map_path):
+        try:
+            with open(map_path) as f:
+                decisions = f.read().strip()
+        except OSError:
+            pass
+    if decisions:
+        lines.append(decisions)
+    else:
+        lines.append("  (none)")
+
+    return "\n".join(lines)
+
+
 def _active_runs():
     from . import cli
     runs = state.Run.list_for_repo(cli._git_toplevel(os.getcwd()))
@@ -332,17 +416,36 @@ def dispatch(args):
             return 1
         print("cleaned worktrees")
         return 0
+    if args.cmd == "map":
+        print(render_map(run))
+        return 0
     if args.cmd == "status":
         print(json.dumps(run.status(), indent=2) if args.json else brief(run) if args.brief else run.render_status())
     elif args.cmd == "escalations":
         for e in run.read_json("escalations.json", []):
             print("#%d %s: %s" % (e["id"], e["ticket"] or "-", e["reason"]))
     elif args.cmd == "unblock":
-        if not (args.note or args.skip or args.reset_attempts):
-            print("yoke: give --note, --skip or --reset-attempts", file=sys.stderr)
+        if not args.ticket and not args.milestone:
+            print("yoke: give ticket or --milestone", file=sys.stderr)
             return 1
-        scheduler.unblock(run, args.ticket, args.note, args.skip, args.reset_attempts)
-        print("unblocked %s" % args.ticket)
+        if args.ticket and args.milestone:
+            print("yoke: cannot pass both ticket and --milestone", file=sys.stderr)
+            return 1
+        if args.milestone:
+            if args.skip or args.reset_attempts:
+                print("yoke: --skip and --reset-attempts require ticket", file=sys.stderr)
+                return 1
+            scheduler.unblock_milestone(run, args.milestone, note=args.note, waive=args.waive)
+            print("unblocked milestone %s" % args.milestone)
+        else:
+            if args.waive:
+                print("yoke: --waive requires --milestone", file=sys.stderr)
+                return 1
+            if not (args.note or args.skip or args.reset_attempts):
+                print("yoke: give --note, --skip or --reset-attempts", file=sys.stderr)
+                return 1
+            scheduler.unblock(run, args.ticket, args.note, args.skip, args.reset_attempts)
+            print("unblocked %s" % args.ticket)
     else:
         pid = scheduler.read_lock(run)
         if not pid or not scheduler._alive(pid):

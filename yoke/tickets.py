@@ -31,23 +31,108 @@ def find_cycle(tickets):
     return None
 
 
-def check(tickets, max_tickets):
-    """Runner-level checks beyond the schema; returns error strings."""
+def check(tickets, max_tickets, milestones=None):
+    """Runner-level checks beyond the schema; returns error strings.
+
+    Validates max ticket limits, duplicate IDs, unknown dependencies, cycles,
+    and milestone rules (exit checks, valid and non-orphan milestones, and
+    dependency order across milestones).
+    """
+    if isinstance(tickets, dict):
+        doc = tickets
+        milestones = milestones if milestones is not None else doc.get("milestones")
+        tickets = doc.get("tickets", [])
+
     errs = []
-    ids = [t["id"] for t in tickets]
+    ids = [t["id"] for t in tickets if isinstance(t, dict) and "id" in t]
     if len(tickets) > max_tickets:
         errs.append("%d tickets exceeds max_tickets %d" % (len(tickets), max_tickets))
     for i in sorted({i for i in ids if ids.count(i) > 1}):
         errs.append("duplicate id %s" % i)
     for t in tickets:
-        for d in t["depends_on"]:
+        for d in t.get("depends_on", []):
             if d not in ids:
                 errs.append("%s depends on unknown %s" % (t["id"], d))
+
+    if milestones is not None:
+        ms_ids = [m["id"] for m in milestones if isinstance(m, dict) and "id" in m]
+        for mid in sorted({i for i in ms_ids if ms_ids.count(i) > 1}):
+            errs.append("duplicate milestone id %s" % mid)
+        for m in milestones:
+            if isinstance(m, dict):
+                ec = m.get("exit_check")
+                if not ec or not str(ec).strip():
+                    errs.append("milestone %s missing exit_check" % m.get("id", "?"))
+        valid_mids = set(ms_ids)
+        for t in tickets:
+            t_ms = t.get("milestone")
+            if not t_ms:
+                errs.append("ticket %s missing milestone" % t.get("id"))
+            elif t_ms not in valid_mids:
+                errs.append("ticket %s has unknown milestone %s" % (t.get("id"), t_ms))
+        ticket_mids = {t.get("milestone") for t in tickets if isinstance(t, dict)}
+        for mid in ms_ids:
+            if mid not in ticket_mids:
+                errs.append("orphan milestone %s has no tickets" % mid)
+
+        ms_order = {}
+        for idx, mid in enumerate(ms_ids):
+            if mid not in ms_order:
+                ms_order[mid] = idx
+        ticket_map = {t["id"]: t for t in tickets if isinstance(t, dict) and "id" in t}
+        for t in tickets:
+            t_ms = t.get("milestone")
+            t_order = ms_order.get(t_ms)
+            for d in t.get("depends_on", []):
+                dep_ticket = ticket_map.get(d)
+                if dep_ticket:
+                    d_ms = dep_ticket.get("milestone")
+                    d_order = ms_order.get(d_ms)
+                    if t_order is not None and d_order is not None and d_order > t_order:
+                        errs.append("%s (in %s) depends on %s in later milestone %s (backward-dependency violation)" %
+                                    (t.get("id"), t_ms, d, d_ms))
+
     if not errs:
         cyc = find_cycle(tickets)
         if cyc:
             errs.append("dependency cycle: " + " -> ".join(cyc))
     return errs
+
+
+def warnings(tickets, milestones=None):
+    """Runner-level warnings (non-fatal); returns warning strings.
+
+    Flags tickets with >6 files_hint or >6 exit_criteria, and milestones with >12 tickets.
+    """
+    if isinstance(tickets, dict):
+        doc = tickets
+        milestones = milestones if milestones is not None else doc.get("milestones")
+        tickets = doc.get("tickets", [])
+
+    warns = []
+    for t in tickets:
+        if not isinstance(t, dict):
+            continue
+        hints = t.get("files_hint", [])
+        if len(hints) > 6:
+            warns.append("ticket %s has %d files_hint (more than 6)" % (t.get("id"), len(hints)))
+        ec = t.get("exit_criteria", [])
+        if len(ec) > 6:
+            warns.append("ticket %s has %d exit_criteria (more than 6)" % (t.get("id"), len(ec)))
+
+    if milestones:
+        counts = {}
+        for t in tickets:
+            if isinstance(t, dict):
+                mid = t.get("milestone")
+                if mid:
+                    counts[mid] = counts.get(mid, 0) + 1
+        for m in milestones:
+            mid = m.get("id") if isinstance(m, dict) else m
+            if counts.get(mid, 0) > 12:
+                warns.append("milestone %s has %d tickets (more than 12)" % (mid, counts[mid]))
+
+    return warns
 
 
 def import_tickets(run, path, adapter=None):
@@ -63,7 +148,7 @@ def import_tickets(run, path, adapter=None):
             t["type"] = router.classify_ticket(run, t, adapter)["result"]["type"]
     errs = schema.validate(obj, schema.load_schema("ticket-list"))
     if not errs:
-        errs = check(obj["tickets"], run.cfg["max_tickets"])
+        errs = check(obj["tickets"], run.cfg["max_tickets"], milestones=obj.get("milestones"))
     if errs:
         return errs, None
     run.write_json("tickets.json", obj)

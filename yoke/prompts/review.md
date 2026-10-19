@@ -2,6 +2,12 @@ You are the reviewer, read-only. Review `git diff $base_sha` (new files staged) 
 Ticket (JSON):
 $ticket
 
+Destination:
+$destination
+
+Out of scope:
+$out_of_scope
+
 Relevant plan section:
 $plan_excerpt
 
