@@ -15,9 +15,9 @@ Argument: optional work description, used to seed the interview.
 1. Interview: ask ONE question at a time, proposing a default answer with each question. Stop when all open points are resolved. Write requirements to a file outside the target repo (e.g. `/tmp/requirements.md`). Then model selection: run `yoke models --list` and `yoke models --show`, and ask ONE question to confirm or pick plan-tier and cheap-tier models for the primary and secondary agents (defaults = current; accept to skip); apply changes with `yoke models --set AGENT.TIER=MODEL`. Run `yoke init --requirements /tmp/requirements.md` from the repo, capture the run id R, and state R to the user. Always create a new run; never look for an existing one. From here every yoke command carries `--run R`.
 2. Plan: write `plan.md` in `$YOKE_HOME/runs/<run_id>/` based on `requirements.md`. Run up to the configured review rounds of `yoke review-plan --run R`. For each finding in `result.json`, record accept or reject with a reason in `plan-review/arbitration.md`, and revise `plan.md` for accepted findings.
 3. Plan gate (one prompt): show the plan and every rejected finding with the reason. Ask one question: approve the plan, and what max parallel tickets N (default 3; only an upper bound)? State in that same prompt that approving also approves the tickets automatically (auto-approved tickets) and, with a GitHub remote, creates one GitHub issue per ticket (GitHub issues). On an explicit yes, run `yoke approve plan --run R`.
-4. Tickets without a gate: write `tickets.json` in the run dir per ticket rules (checkable exit criteria, verbatim `plan_excerpt`, `depends_on` only for real code dependencies, no default chain, so independent tickets run in parallel).
-   - Run `yoke tickets import --run R <file>`. Fix every reported error and re-run until clean.
-   - Run `yoke tickets show --run R` and print the table for information.
+4. Tickets without a gate: chart tickets using `yoke tickets chart --run R`.
+   - Alternatively, write `tickets.json` in the run dir and run `yoke tickets import --run R <file>`. Fix every reported error and re-run until clean.
+   - Run `yoke map --run R` (or `yoke tickets show --run R`) and print the table and frontier for information.
    - Run `yoke approve tickets --run R` without asking.
 5. Runner execution:
    - Start runner: `yoke run --run R --detach --parallel N`.
