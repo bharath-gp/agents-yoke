@@ -130,6 +130,21 @@ Subcommands take `--run <id>`; default is the latest run for the current repo. `
 - **Exit checks & fix tickets**: When all tickets in a milestone complete, the runner runs its `exit_check` in the integration worktree. If the check fails, the runner auto-generates fix tickets (`F-001`, `F-002` up to `max_fix_tickets_per_milestone`, default 2). If fixes are exhausted, the gate escalates.
 - **Unblocking milestones**: Answer gate escalations with `yoke unblock --milestone MS-xx [--note TEXT]` to retry the gate check or `yoke unblock --milestone MS-xx --waive REASON` to log the waiver to `map.md` and proceed.
 
+## Web dashboard (`yoke dashboard`)
+
+`yoke dashboard [--port N]` serves a local, read-only web interface on `127.0.0.1` (default port `8765`):
+
+- **Self-contained**: Single-file interface (`yoke/dashboard.html`) with inline CSS and JavaScript, using no CDNs or external network dependencies.
+- **Run picker**: Sidebar listing all runs with live state badges, goal descriptions, progress counters, and runner active indicators. The selected run is tracked in the URL hash (`#<run_id>`).
+- **Detail view**:
+  - **Run overview**: Displays run ID, state, feature branch, runner heartbeat, and agent calls against total budget.
+  - **Stage strip**: Visual breadcrumbs across lifecycle stages (`grill`, `plan`, `tickets`, `run`, `finish`).
+  - **Progress & Milestones**: Overall done vs remaining progress bar, plus milestone cards showing gate status, exit checks, and fix ticket counts.
+  - **Ticket table**: Real-time ticket statuses, attempt counts, active stage and agent, last update timestamps, and explicit `waiting_for` dependency reasons.
+  - **Escalations & Events**: Panel listing open escalations alongside a reverse-chronological event stream.
+  - **Decisions log**: Rendered implementation decisions and gate waivers from `map.md`.
+- **Live updates & safety**: Automatically polls `/api/runs` and `/api/runs/<id>` every 3 seconds with visible disconnected indicators and polling paused when the browser tab is hidden. All data is safely rendered using `textContent` (never `innerHTML`). Automatically adapts to dark and light modes via `prefers-color-scheme`.
+
 ## GitHub tracker & milestones
 
 When `tracker` is `github` (or `auto` on GitHub remotes with `gh` available):

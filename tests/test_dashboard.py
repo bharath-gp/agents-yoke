@@ -272,6 +272,31 @@ class TestDashboard(unittest.TestCase):
         self.assertNotRegex(code, r"\bimport\s+.*(?:adapters|calls)\b")
         self.assertNotRegex(code, r"\bfrom\s+.*(?:adapters|calls)\b")
 
+    def test_dashboard_html_safety_and_packaging(self):
+        pkg_dir = os.path.dirname(dashboard.__file__)
+        dash_html_path = os.path.join(pkg_dir, "dashboard.html")
+        self.assertTrue(os.path.isfile(dash_html_path), "yoke/dashboard.html must exist")
+
+        with open(dash_html_path, "r", encoding="utf-8") as f:
+            html = f.read()
+
+        # No external URLs or remote links/scripts
+        self.assertNotIn("http://", html)
+        self.assertNotIn("https://", html)
+        self.assertNotRegex(html, r"""<(?:script|link)[^>]*(?:src|href)=['"][^'"]*//""")
+
+        # No innerHTML, outerHTML, or insertAdjacentHTML
+        self.assertNotIn("innerHTML", html)
+        self.assertNotIn("outerHTML", html)
+        self.assertNotIn("insertAdjacentHTML", html)
+
+        # pyproject.toml package-data check
+        root_dir = os.path.dirname(pkg_dir)
+        pyproject_path = os.path.join(root_dir, "pyproject.toml")
+        with open(pyproject_path, "r", encoding="utf-8") as f:
+            pyproject_text = f.read()
+        self.assertRegex(pyproject_text, r'\[tool\.setuptools\.package-data\][\s\S]*?"dashboard\.html"')
+
     def test_shared_waiting_for_helper(self):
         all_milestones = [
             {"id": "MS-01", "title": "First", "exit_check": None},
@@ -467,6 +492,10 @@ class TestServe(unittest.TestCase):
         self.assertIn("text/html", res.getheader("Content-Type"))
         body = res.read().decode("utf-8")
         self.assertIn("yoke dashboard", body)
+        self.assertNotIn("http://", body)
+        self.assertNotIn("https://", body)
+        self.assertNotRegex(body, r"""<(?:script|link)[^>]*(?:src|href)=['"][^'"]*//""")
+        self.assertNotIn("innerHTML", body)
         conn.close()
 
         conn = http.client.HTTPConnection("127.0.0.1", self.port)
