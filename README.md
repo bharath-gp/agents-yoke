@@ -105,7 +105,7 @@ The skills run these for you; the raw commands below are for scripting and debug
 ```bash
 yoke init --requirements req.md   # prints run_id; write plan.md into ~/.yoke/runs/<run_id>/
 yoke review-plan                  # one read-only secondary review round
-yoke approve plan                 # also: tickets (creates GitHub issues if tracker=github), final
+yoke approve plan                 # also: tickets (creates GitHub milestones/issues if tracker=github), final
 yoke tickets chart [--feedback "note"] # map approved plan to milestones/tickets via wayfinder
 yoke tickets import tickets.json  # validate milestones/tickets and warn; `yoke tickets show` groups by milestone
 yoke route T-001                  # stages and agents for a ticket
@@ -118,6 +118,13 @@ yoke clean                        # remove worktrees (keeps branches and audit)
 ```
 
 Subcommands take `--run <id>`; default is the latest run for the current repo. `yoke mcp` is a stdio MCP server exposing the router.
+
+## GitHub tracker & milestones
+
+When `tracker` is `github` (or `auto` on GitHub remotes with `gh` available):
+- **Milestones on approve**: `yoke approve tickets` creates corresponding GitHub milestones for all milestones in `tickets.json` (skipping existing ones and recording milestone numbers in `gh_milestones.json`), then attaches tickets to milestones using `--milestone <title>`.
+- **Milestone gate automation**: When a milestone gate passes, `tracker.close_milestone` closes the GitHub milestone (`state=closed`). If gate exit checks fail, any generated fix tickets are created as GitHub issues in the same milestone via `tracker.create_fix_issue`.
+- **Resilient execution**: All gate-time tracker actions are guarded and log `tracker_error` events on failure without raising exceptions or interrupting the runner loop.
 
 ## Pull requests (`yoke pr`)
 

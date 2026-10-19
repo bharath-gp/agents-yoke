@@ -173,6 +173,7 @@ def _loop(run_, adapter_for, env):
                         if not exit_check:
                             ms_states.setdefault(m_id, {"id": m_id, "fix_count": 0})["status"] = "passed"
                             milestones.save_states(run_, ms_states)
+                            tracker.close_milestone(run_, m_id)
                             continue
 
                         ms_states.setdefault(m_id, {"id": m_id, "fix_count": 0})["status"] = "checking"
@@ -185,10 +186,7 @@ def _loop(run_, adapter_for, env):
                             ms_states[m_id]["status"] = "passed"
                             milestones.save_states(run_, ms_states)
                             run_.event("milestone_passed", milestone=m_id)
-                            try:
-                                tracker.close_github_milestone(run_, m_id)
-                            except Exception:
-                                pass
+                            tracker.close_milestone(run_, m_id)
                             continue
                         else:
                             fix_count = ms_states[m_id].get("fix_count", 0)
@@ -220,10 +218,7 @@ def _loop(run_, adapter_for, env):
                                 ms_states[m_id]["fix_count"] = fix_count + 1
                                 ms_states[m_id]["status"] = "open"
                                 milestones.save_states(run_, ms_states)
-                                try:
-                                    tracker.create_fix_issue(run_, fix)
-                                except Exception:
-                                    pass
+                                tracker.create_fix_issue(run_, fix)
                                 run_.event("fix_ticket_created", ticket=fix["id"], milestone=m_id)
                                 continue
                             else:
