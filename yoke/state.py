@@ -2,6 +2,7 @@
 import datetime
 import json
 import os
+import re
 import subprocess
 import threading
 
@@ -114,6 +115,21 @@ class Run:
             info.update(kv)
             self.write_json("run.json", info)
             return info
+
+    def alloc_number(self):
+        """Next number from the T/F counter shared by tickets and fix tickets, persisted in run.json.
+        Also clears anything already in tickets.json/fixes.json, so legacy runs and recovery never duplicate."""
+        with _LOCK:
+            info = self.read_json("run.json")
+            used = [info.get("id_counter", 0)]
+            docs = (self.read_json("tickets.json", {}).get("tickets", []), self.read_json("fixes.json", []))
+            for t in docs[0] + docs[1]:
+                m = re.match(r"^[TF]-(\d+)$", str(t.get("id", ""))) if isinstance(t, dict) else None
+                if m:
+                    used.append(int(m.group(1)))
+            info["id_counter"] = max(used) + 1
+            self.write_json("run.json", info)
+            return info["id_counter"]
 
     def incr_calls(self):
         """Bump the agent-call budget counter; returns the new total."""

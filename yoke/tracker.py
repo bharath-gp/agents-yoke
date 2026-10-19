@@ -7,6 +7,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 
 from . import gitops, planreview, prbody, state
 
@@ -40,6 +41,18 @@ def detect(repo, cfg):
     except TrackerError:
         return "local"
     return "github"
+
+
+def highest_number(repo):
+    """Highest issue or PR number on GitHub (they share one sequence); 0 for an empty repo. Raises TrackerError."""
+    best = 0
+    for kind in ("issue", "pr"):
+        raw = _gh(repo, kind, "list", "--state", "all", "--limit", "1000", "--json", "number")
+        try:
+            best = max([best] + [int(x["number"]) for x in json.loads(raw or "[]")])
+        except (ValueError, KeyError, TypeError) as e:
+            raise TrackerError("gh %s list: unreadable output (%s)" % (kind, e))
+    return best
 
 
 def _body(t):
@@ -128,6 +141,10 @@ def create_issues(run):
         if not m:
             raise TrackerError("could not read issue number from: %s" % url)
         issues[t["id"]] = {"number": int(m.group(1)), "url": url}
+        tm = re.match(r"^[TF]-(\d+)$", t["id"])
+        if tm and int(tm.group(1)) != issues[t["id"]]["number"]:
+            print("warning: %s became issue #%d (ids are not renumbered)" % (t["id"], issues[t["id"]]["number"]),
+                  file=sys.stderr)
         run.write_json("issues.json", issues)  # after each issue, so a failure keeps progress
         run.event("issue_created", ticket=t["id"], number=issues[t["id"]]["number"])
     return issues

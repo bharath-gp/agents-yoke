@@ -80,10 +80,10 @@ class TestGates(PipeBase):
 
         fixes = self.run_.read_json("fixes.json", [])
         self.assertEqual(len(fixes), 1)
-        self.assertEqual(fixes[0]["id"], "F-001")
+        self.assertEqual(fixes[0]["id"], "F-0002")
         self.assertEqual(fixes[0]["milestone"], "MS-01")
         self.assertEqual(self.tstate(1)["status"], "closed")
-        f_state = self.run_.read_json("tickets/F-001/state.json")
+        f_state = self.run_.read_json("tickets/F-0002/state.json")
         self.assertEqual(f_state["status"], "closed")
         ms_st = milestones.load_states(self.run_)
         self.assertEqual(ms_st["MS-01"]["status"], "passed")

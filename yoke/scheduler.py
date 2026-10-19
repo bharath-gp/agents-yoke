@@ -195,15 +195,7 @@ def _loop(run_, adapter_for, env):
                                 fixes = run_.read_json("fixes.json", [])
                                 if not isinstance(fixes, list):
                                     fixes = []
-                                max_n = 0
-                                for f in fixes:
-                                    fid = f.get("id", "")
-                                    if fid.startswith("F-"):
-                                        try:
-                                            max_n = max(max_n, int(fid[2:]))
-                                        except ValueError:
-                                            pass
-                                next_id = "F-%03d" % (max(len(fixes), max_n) + 1)
+                                next_id = "F-%04d" % run_.alloc_number()
                                 note = ms_states[m_id].pop("note", None)
                                 desc = ("%s\n\n%s" % (note, tail)).strip() if note else tail
                                 fix = milestones.make_fix_ticket(

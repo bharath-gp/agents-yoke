@@ -58,7 +58,7 @@
         "properties": {
           "id": {
             "type": "string",
-            "pattern": "^T-\\d{3}$"
+            "pattern": "^T-\\d{3,}$"
           },
           "title": {
             "type": "string",
