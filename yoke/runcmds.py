@@ -271,17 +271,7 @@ def render_map(run):
             tid = t["id"]
             st = sts.get(tid, "pending")
             dep_str = " (after %s)" % ", ".join(t.get("depends_on", [])) if t.get("depends_on") else ""
-            reasons = []
-            if st == "pending":
-                blocked_gates = [
-                    em["id"] for em in all_milestones[:ms_idx.get(t.get("milestone", "MS-00"), 0)]
-                    if ms_states.get(em["id"], {}).get("status") not in ("passed", "waived")
-                ]
-                if blocked_gates:
-                    reasons.append("blocked by gate %s" % ", ".join(blocked_gates))
-                unclosed = [d for d in t.get("depends_on", []) if sts.get(d) != "closed"]
-                if unclosed:
-                    reasons.append("waiting for %s" % ", ".join(unclosed))
+            reasons = milestones.ticket_waiting_for(t, all_milestones, ms_states, sts, ms_idx)
             wait_str = " (%s)" % "; ".join(reasons) if reasons else ""
             lines.append("  %s [%s] %s%s%s" % (tid, st, t.get("title", ""), dep_str, wait_str))
 

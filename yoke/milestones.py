@@ -194,3 +194,24 @@ def unblock_milestone(run, milestone, note=None, waive=None):
         esc = [e for e in run.read_json("escalations.json", []) if e.get("ticket") != milestone]
         run.write_json("escalations.json", esc)
     run.event("unblock", milestone=milestone, note=note, waive=waive)
+
+
+def ticket_waiting_for(ticket, all_milestones, ms_states, sts, ms_idx=None):
+    """Return list of reasons why ticket is waiting/blocked, or empty list."""
+    if ms_idx is None:
+        ms_idx = {m["id"]: i for i, m in enumerate(all_milestones)}
+    tid = ticket.get("id")
+    st = sts.get(tid, "pending")
+    reasons = []
+    if st == "pending":
+        blocked_gates = [
+            em["id"] for em in all_milestones[:ms_idx.get(ticket.get("milestone", "MS-00"), 0)]
+            if ms_states.get(em["id"], {}).get("status") not in ("passed", "waived")
+        ]
+        if blocked_gates:
+            reasons.append("blocked by gate %s" % ", ".join(blocked_gates))
+        unclosed = [d for d in ticket.get("depends_on", []) if sts.get(d) != "closed"]
+        if unclosed:
+            reasons.append("waiting for %s" % ", ".join(unclosed))
+    return reasons
+
