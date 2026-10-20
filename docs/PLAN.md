@@ -46,6 +46,7 @@ Status legend per milestone: `[ ]` todo, `[~]` in progress, `[x]` done. Update t
    | [M13](#m13) | Model selection & configuration | [2.6](#s2-6) |
    | [M14](#m14) | Milestones, destination map, and charting | [2.5](#s2-5), [2.7](#s2-7), [2.8](#s2-8), [2.14](#s2-14), [2.16](#s2-16) |
    | [M15](#m15) | Web dashboard (read-only UI & HTTP server) | [2.2](#s2-2), [2.8](#s2-8), [2.16](#s2-16) |
+   | [M16](#m16) | Per-run usage ledger and usage.json | [2.2](#s2-2), [2.8](#s2-8), [2.12](#s2-12), [2.13](#s2-13) |
 4. [Verification matrix](#s4)
 5. [Out of scope](#s5)
 - [Appendix A: Topic index](#appA)
@@ -116,6 +117,7 @@ runs/<run_id>/
   status.json           # derived summary, rewritten after every state change
   events.jsonl          # append-only event log (one JSON per line)
   escalations.json      # open escalations
+  usage.json            # per-run token usage & cost summary, written at ticket close and run end
   tickets/T-001/
     state.json          # status, attempt, current stage, session ids per role, commit sha
     attempt-1/<stage>/{prompt.md,command.json,stdout.log,stderr.log,result.json,meta.json}
@@ -538,6 +540,14 @@ Files: `yoke/dashboard.py`, `yoke/dashboard.html`, `yoke/cli.py` (`dashboard`), 
 - Plugin skill: `/yoke:dashboard [--port N]` skill for Claude and Antigravity agents.
 - Notes: Built `yoke/dashboard.py`, `yoke/dashboard.html`, added `yoke dashboard` command in `cli.py`, created `skills/dashboard/SKILL.md`, and bumped package version to 0.6.0. Deviations: (a) read-only design: mutations, approvals, and escalations must still go through CLI or skills to preserve hash-bound verification and audit trail integrity; (b) tail reading: `read_events_tail` seeks from the end of `events.jsonl` rather than loading the whole file into memory.
 
+<a id="m16"></a>
+### M16: Per-run usage ledger and usage.json `[x]`
+Files: `yoke/usage.py`, `yoke/pipeline.py`, `yoke/scheduler.py`, `tests/test_usage.py`, `docs/PLAN.md`, `README.md`.
+- Usage aggregation: `usage.summarize(run)` recursively walks all call `meta.json` files under the run directory (including `reask/`, `fallback/`, and `.interrupted` attempt directories) and aggregates token usage fields and observed costs by stage, ticket, agent, and model, along with overall totals.
+- Unreported cost handling: missing costs (such as from `agy`) are recorded as `"unreported"` (never 0). Mixed buckets record total cost and `unreported_calls`. Spenders are ranked by cost, falling back to total tokens if any ticket has unreported costs.
+- Atomic persistence: `usage.write_usage(run)` writes `usage.json` atomically via `run.write_json` at each ticket close in `pipeline.py` and at run end in `scheduler.py`.
+- Notes: Built `yoke/usage.py`, hooked into `pipeline.run_ticket` and `scheduler.run`, covered with unit and integration tests in `tests/test_usage.py`.
+
 ---
 
 <a id="s4"></a>
@@ -618,5 +628,6 @@ Files: `yoke/dashboard.py`, `yoke/dashboard.html`, `yoke/cli.py` (`dashboard`), 
 | `.claude-plugin/*`, `skills/*/SKILL.md`, `hooks/hooks.json` | plugin, skills, SessionStart hook | [2.11](#s2-11), [2.15](#s2-15) | [M7](#m7) |
 | `yoke/prbody.py` | PR template matching and body fill | [2.14](#s2-14) | [M8](#m8) |
 | `yoke/tracker.py` | local / GitHub tracker, `pr_body`, `pr` | [2.14](#s2-14) | [M8](#m8) |
+| `yoke/usage.py` | per-run token usage & cost summary (`usage.json`) | [2.2](#s2-2), [2.13](#s2-13) | [M16](#m16) |
 | `yoke/dashboard.py`, `yoke/dashboard.html` | read-only dashboard server and UI | [2.16](#s2-16) | [M15](#m15) |
 | `tests/fake_cli.py`, `tests/test_*.py`, `tests/e2e.sh` | fake CLI, unit + e2e tests | [4](#s4) | [M1](#m1)–[M9](#m9) |

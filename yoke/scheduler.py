@@ -7,7 +7,7 @@ import signal
 import threading
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
-from . import gitops, milestones, pipeline, planreview, state, tracker
+from . import gitops, milestones, pipeline, planreview, state, tracker, usage
 
 
 class LockError(Exception):
@@ -107,6 +107,10 @@ def run(run_, adapter_for=None, env=None):
     finally:
         run_.update(state=final, runner_pid=None)
         run_.event("run_" + final)
+        try:
+            usage.write_usage(run_)
+        except Exception as e:
+            run_.event("usage_error", error=str(e))
         release_lock(run_)
 
 

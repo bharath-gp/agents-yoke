@@ -7,7 +7,7 @@ import re
 import string
 import subprocess
 
-from . import adapters, calls, config, gitops, milestones, planreview, router, schema, state, tracker
+from . import adapters, calls, config, gitops, milestones, planreview, router, schema, state, tracker, usage
 
 PKG = os.path.dirname(os.path.abspath(__file__))
 
@@ -375,6 +375,10 @@ def run_ticket(run, ticket, adapter_for=None, env=None, merge_lock=None):
                 st["status"] = "closed"
                 save_state(run, tid, st)
                 gitops.remove_worktree(info["repo"], wt)
+                try:
+                    usage.write_usage(run)
+                except Exception as e:
+                    run.event("usage_error", ticket=tid, error=str(e))
                 return "closed"
             if st["attempt"] + 1 > cfg["max_attempts_per_ticket"]:
                 raise Escalate("max attempts (%d) reached; last feedback:\n%s" % (st["attempt"], fb))
