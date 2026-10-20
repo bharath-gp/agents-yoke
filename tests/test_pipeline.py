@@ -45,7 +45,7 @@ class PipeBase(GitBase):
         super().setUp()
         os.environ["YOKE_HOME"] = self.tmp
         self.addCleanup(os.environ.pop, "YOKE_HOME", None)
-        self.run_ = planreview.init_run(self.repo, None, {"max_attempts_per_ticket": 2}, home=self.tmp)
+        self.run_ = planreview.init_run(self.repo, None, {"max_attempts_per_ticket": 2, "review_lenses": []}, home=self.tmp)
         self.addCleanup(pipeline.clear_pause_state, self.run_)
         self.script = os.path.join(self.tmp, "script.json")
         self.env = {"FAKE_SCRIPT": self.script}
