@@ -74,6 +74,16 @@ def review_lenses(cfg=None):
     return list(DEFAULT_REVIEW_LENSES)
 
 
+def hypotheses_count(cfg=None):
+    """Return configured hypotheses fan-out count, defaulting to 0."""
+    if cfg is None:
+        cfg = load()
+    try:
+        return max(0, int(cfg.get("hypotheses", 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
 def agent_for(cfg, role):
     """Concrete agent name for a role; by_role values may be primary, secondary, auto (review only), or a name.
 
@@ -82,6 +92,8 @@ def agent_for(cfg, role):
     AGENTS, falls back to 'primary' when different from the code agent, else 'secondary'.
     """
     roles = cfg["roles"]
+    if role in ("primary", "secondary"):
+        return roles[role]
     who = roles["by_role"][role]
     if who == "auto" and role != "review":
         raise ValueError("role %s cannot be auto (review only)" % role)

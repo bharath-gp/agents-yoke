@@ -16,7 +16,9 @@
       "search": "primary",
       "research": "secondary",
       "factcheck": "primary",
-      "pr_body": "primary"
+      "pr_body": "primary",
+      "hypotheses": "secondary",
+      "hypotheses_rank": "primary"
     }
   },
   "models": {},
@@ -28,6 +30,7 @@
     "performance",
     "tests"
   ],
+  "hypotheses": 0,
   "max_fix_tickets_per_milestone": 2,
   "max_chart_rounds": 3,
   "max_tickets": 40,
@@ -71,7 +74,8 @@
     "router_fallback": 120,
     "pr_body": 300,
     "wayfinder": 1200,
-    "gate_hook": 300
+    "gate_hook": 300,
+    "hypotheses": 600
   },
   "kill_grace_s": 15,
   "router": {

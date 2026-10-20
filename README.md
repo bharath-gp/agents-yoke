@@ -39,7 +39,7 @@ Development: `uv tool install --editable .`, then `claude plugin marketplace add
 
 ### Role mapping and review
 
-Agent roles are configured via `yoke setup --primary <agent> --secondary <agent> --map <role>=<who>`. Supported roles include `requirements`, `planner`, `wayfinder`, `orchestrator`, `plan_review`, `code`, `review`, `qa`, `validate`, `docs`, `search`, `research`, and `factcheck`.
+Agent roles are configured via `yoke setup --primary <agent> --secondary <agent> --map <role>=<who>`. Supported roles include `requirements`, `planner`, `wayfinder`, `orchestrator`, `plan_review`, `code`, `review`, `qa`, `validate`, `docs`, `search`, `research`, `factcheck`, `pr_body`, `hypotheses`, and `hypotheses_rank`.
 
 The `review` role defaults to `auto`, resolving dynamically to the opposite of the `code` agent (`claude` <-> `agy`), ensuring code review is performed by a different agent than the implementer. For custom code agent names outside `AGENTS`, it falls back to `primary` (or `secondary` if `primary` matches `code`). `yoke setup` warns if an explicit override assigns the same agent to both code and review. Use `--map review=auto` to restore automatic resolution.
 
@@ -132,6 +132,18 @@ Gate verification commands can be configured under `gate_hooks`:
   - Other non-zero or timeout: Hook execution error (`status: gate_hook_error`).
 - **Pipeline integration**: `after_stage` hooks run following `code` and `qa` stages; `before_close` hooks run prior to commit. Failures feed output tails back to the coder as feedback, and results are recorded in attempt audit logs (`attempt-N/hooks/<stage>.log`) and `close_gate` events.
 - **Process control**: On timeout, the entire process group is terminated using SIGTERM followed by SIGKILL.
+
+### Failure hypotheses fan-out
+
+When repeated failures occur across attempts on a ticket, yoke can optionally generate competing hypotheses and rank them to provide advisory guidance:
+
+- `hypotheses`: Number of competing hypothesis calls to execute upon repeating failure on the final attempt (default: `0`, disabled).
+- **Trigger condition**: Activates on the final attempt (`attempt == max_attempts_per_ticket`, with `attempt >= 2`) when the failure evidence matches the preceding attempt (for example, identical QA test failures, matching runner test failures, or recurring validator issues). When `hypotheses` is `0`, standard router triage hint is used instead.
+- **Fan-out calls**: Runs `N` read-only calls (`hypotheses` role, default `secondary`) seeded with failure evidence and cycled round-robin across four categories: `spec gap`, `environment`, `test bug`, and `code bug`. Each candidate returns structured output (`schemas/hypotheses.json`) with `hypothesis`, `evidence`, `fix_plan`, and `confidence` (0.0 to 1.0).
+- **Primary ranking call**: Followed by a single ranking call (`hypotheses_rank` role, default `primary`) evaluating candidates against failure evidence to select the winning hypothesis and synthesized fix plan. If ranking fails, the candidate with highest confidence is selected as a fallback. If the fan-out yields no candidates or encounters an error, yoke falls back to standard router triage.
+- **Feedback integration**: The winning fix plan is appended to retry feedback as `Hypothesis fix plan (advisory only): ...` for the coder on the final attempt.
+- **Audit and Budgeting**: Fan-out calls and the ranking call are saved under the attempt audit directory (`tickets/<tid>/attempt-<N>/hypotheses-1`, `hypotheses-rank`) and counted against `max_agent_calls_total`.
+- **Pass/Fail independence**: Confidence scores are strictly advisory and never decide pass or fail; close gates strictly evaluate verified test suite execution and validator criteria.
 
 
 ## Typical flow

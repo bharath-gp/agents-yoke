@@ -404,6 +404,118 @@ class TestReviewLensPrompts(unittest.TestCase):
         self.assertTrue(schema.validate(invalid_verdict_payload, s))
 
 
+class TestHypothesesPromptsAndSchema(unittest.TestCase):
+    def test_hypotheses_prompt_renders_with_string_template(self):
+        import re
+        content = _read("hypotheses")
+        for expected in (
+            "read-only",
+            "do not edit files",
+            "do not run commands",
+            "do not commit",
+            "do not push",
+            "Return only a JSON object matching the schema",
+            "Never decide pass or fail on confidence alone",
+        ):
+            self.assertIn(expected, content)
+
+        substitutions = {
+            "base_sha": "8ec46bde240ae91c626190371f5bf3c971955af6",
+            "ticket": '{"id": "T-0073", "title": "Hypotheses fan-out"}',
+            "destination": "build hypotheses milestone",
+            "out_of_scope": "unrelated items",
+            "plan_excerpt": "hypotheses plan excerpt",
+            "prior_results": "{}",
+            "feedback": "QA failed: test_fail",
+            "worktree": "/tmp/worktree",
+            "upstream": "",
+            "category": "spec gap",
+        }
+        template = string.Template(content)
+        rendered = template.substitute(substitutions)
+        self.assertIn("spec gap", rendered)
+        self.assertIn("QA failed: test_fail", rendered)
+        leftover = re.findall(r"\$[a-zA-Z_][a-zA-Z0-9_]*", rendered)
+        self.assertEqual(leftover, [])
+
+    def test_hypotheses_rank_prompt_renders_with_string_template(self):
+        import re
+        content = _read("hypotheses_rank")
+        for expected in (
+            "primary ranking agent",
+            "read-only",
+            "do not edit files",
+            "do not run commands",
+            "do not commit",
+            "do not push",
+            "Return only a JSON object matching the schema",
+            "Never decide pass or fail on confidence alone",
+        ):
+            self.assertIn(expected, content)
+
+        substitutions = {
+            "base_sha": "8ec46bde240ae91c626190371f5bf3c971955af6",
+            "ticket": '{"id": "T-0073", "title": "Hypotheses fan-out"}',
+            "destination": "build hypotheses milestone",
+            "out_of_scope": "unrelated items",
+            "plan_excerpt": "hypotheses plan excerpt",
+            "prior_results": "{}",
+            "feedback": "QA failed: test_fail",
+            "worktree": "/tmp/worktree",
+            "upstream": "",
+            "candidates": '[{"hypothesis": "h", "evidence": "e", "fix_plan": "p", "confidence": 0.8}]',
+        }
+        template = string.Template(content)
+        rendered = template.substitute(substitutions)
+        self.assertIn("QA failed: test_fail", rendered)
+        self.assertIn("fix_plan", rendered)
+        leftover = re.findall(r"\$[a-zA-Z_][a-zA-Z0-9_]*", rendered)
+        self.assertEqual(leftover, [])
+
+    def test_hypotheses_schema_validation(self):
+        s = schema.load_schema("hypotheses")
+        self.assertEqual(s.get("type"), "object")
+        self.assertEqual(sorted(s.get("required")), ["confidence", "evidence", "fix_plan", "hypothesis"])
+        self.assertFalse(s.get("additionalProperties", True))
+
+        valid_payload = {
+            "hypothesis": "Test fails because of environment issue",
+            "evidence": "Missing environment variable in test runner",
+            "fix_plan": "Set environment variable before running tests",
+            "confidence": 0.9,
+        }
+        self.assertEqual(schema.validate(valid_payload, s), [])
+
+        missing_field = {
+            "hypothesis": "Test fails",
+            "evidence": "logs",
+            "confidence": 0.5,
+        }
+        self.assertTrue(schema.validate(missing_field, s))
+
+        extra_field = dict(valid_payload, extra="unexpected")
+        self.assertTrue(schema.validate(extra_field, s))
+
+        invalid_confidence = dict(valid_payload, confidence="very confident")
+        self.assertTrue(schema.validate(invalid_confidence, s))
+
+    def test_hypotheses_config_defaults(self):
+        with open(config.DEFAULTS_PATH) as f:
+            raw_defaults = json.load(f)
+        self.assertIn("hypotheses", raw_defaults)
+        self.assertEqual(raw_defaults["hypotheses"], 0)
+
+        cfg = config.load()
+        self.assertEqual(cfg.get("hypotheses"), 0)
+        self.assertEqual(cfg["roles"]["by_role"].get("hypotheses"), "secondary")
+        self.assertEqual(cfg["roles"]["by_role"].get("hypotheses_rank"), "primary")
+        self.assertEqual(cfg["timeouts_s"].get("hypotheses"), 600)
+        self.assertEqual(config.hypotheses_count(cfg), 0)
+        self.assertEqual(config.hypotheses_count({"hypotheses": 3}), 3)
+        self.assertEqual(config.hypotheses_count({"hypotheses": "invalid"}), 0)
+        self.assertEqual(config.hypotheses_count(None), 0)
+
+
 if __name__ == "__main__":
     unittest.main()
 

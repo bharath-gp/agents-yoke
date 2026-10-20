@@ -173,7 +173,8 @@ Default role map (config `roles`):
  "by_role": {"requirements": "primary", "planner": "primary", "wayfinder": "primary",
              "orchestrator": "primary", "plan_review": "secondary",
              "code": "secondary", "review": "auto", "qa": "secondary", "validate": "primary", "docs": "secondary",
-             "search": "primary", "research": "secondary", "factcheck": "primary", "pr_body": "primary"}}
+             "search": "primary", "research": "secondary", "factcheck": "primary", "pr_body": "primary",
+             "hypotheses": "secondary", "hypotheses_rank": "primary"}}
 ```
 `by_role` values may be `primary`, `secondary`, a concrete agent name, or `auto` (for `review` only, resolving to the opposite of `code`). `wayfinder` maps `plan.md` into destination, milestones, and tickets (`chart.py`). CLI flags `--primary`/`--secondary` override at `yoke init`.
 
@@ -189,10 +190,11 @@ Default budgets/limits:
 | `max_plan_review_rounds` | 3 |
 | `max_review_rounds` | 2 |
 | `review_lenses` | `["security", "performance", "tests"]` |
+| `hypotheses` | 0 (default 0; >0 triggers N fan-out calls and 1 ranking call on final attempt matching failure) |
 | `max_tickets` | 40 |
 | `max_agent_calls_total` | 300 |
 | `parallel` | 1 (CLI `--parallel N`) |
-| `timeouts_s` | plan_review 900, code 2400, review 1200, qa 1800, validate 1200, docs 900, router_fallback 120 |
+| `timeouts_s` | plan_review 900, code 2400, review 1200, qa 1800, validate 1200, docs 900, router_fallback 120, hypotheses 600 |
 | `kill_grace_s` | 15 |
 | `router.ollama_url` | `http://127.0.0.1:11434` |
 | `router.model` | `tev1:4b` (decision model, `/v1/systemone`; optional override `nimble-v3:9b-mxfp8`, noncommercial) |
@@ -230,6 +232,7 @@ Validation done by a ~60-line stdlib validator in `schema.py` supporting `type, 
 - **qa**: `status` (`pass|fail|blocked`), `test_command` (string the runner can re-run), `tests_added[]`, `commands_run[]` `{cmd, exit_code}`, `failures[]`, `summary`.
 - **validate**: `verdict` (`approve|reject`), `exit_criteria[]` `{criterion, met: bool, evidence}`, `issues[]` `{severity, file, description}`, `feedback_for_coder`, `summary`.
 - **docs**: `status` (`done|not_needed`), `files_changed[]`, `summary`.
+- **hypotheses**: `hypothesis` (str), `evidence` (str), `fix_plan` (str), `confidence` (number, 0.0 to 1.0). Output schema for failure hypothesis candidates and ranking result (`schemas/hypotheses.json`).
 - **router-***: `classify {type, confidence, reason}`, `triage {category: test_failure|env_problem|spec_gap|agent_error|other, retryable: bool, confidence, hint}`, `summary {text}`, `commit_message {subject, body}`, `assert {answer: bool, confidence, reason}`.
 
 <a id="s2-8"></a>
@@ -251,7 +254,9 @@ attempt > max_attempts → blocked + escalation; dependents stay pending (shown 
 ```
 Close gate (checked explicitly, logged): code `done` ∧ QA `pass` ∧ runner test rerun exit 0 ∧ validate `approve` with every `exit_criteria.met` true ∧ docs `done|not_needed` (only for stages in this ticket's route) ∧ gate hooks (`after_stage` code/qa, `before_close`) passing. Hook failures return output tail as retry feedback to the coder.
 
-Retry feedback is a file `attempt-<n>/feedback.md` built from QA failures / validator issues / router triage hint, inlined into the next code prompt, and the coder session is resumed by ID.
+Retry feedback is a file `attempt-<n>/feedback.md` built from QA failures / validator issues / router triage hint or hypotheses fix plan, inlined into the next code prompt, and the coder session is resumed by ID.
+
+Failure hypotheses fan-out: When `hypotheses > 0` in config, if a ticket failure repeats on the final attempt (`attempt == max_attempts_per_ticket`, `attempt >= 2` with matching failure evidence from the previous attempt), yoke triggers `N` read-only fan-out calls (role `hypotheses`, default `secondary`) round-robin across categories (`spec gap`, `environment`, `test bug`, `code bug`) seeded with failure evidence, followed by 1 primary ranking call (role `hypotheses_rank`, default `primary`). Each call is audited under `tickets/<tid>/attempt-<n>/hypotheses-<k>` and `hypotheses-rank`, and counted against `max_agent_calls_total`. The winning `fix_plan` is appended to retry feedback as `Hypothesis fix plan (advisory only): ...` for the coder. If the ranking call fails, the candidate with highest confidence is selected; if fan-out yields no candidates or fails, yoke falls back to the router triage hint. Confidence never decides pass or fail.
 
 Review stage loop (`_review_loop`): Bounded review-revision loop (up to `max_review_rounds` revisions, defaulting to 2). Configured review lenses (`review_lenses`, defaulting to `["security", "performance", "tests"]`) evaluate changes via dedicated lens prompts. Each lens runs one read-only call per round under audit labels `review-<lens>` and `review-<lens>-r<n>`, executing concurrently when `parallel > 1` (up to `min(len(lenses), parallel)` worker threads) and sequentially otherwise. Lenses run isolated without seeing each other's output. Findings across lenses are merged and deduplicated by `(file, line)` (falling back to `(file, line, comment)` when line is unset), keeping the highest severity. Blocker and major findings trigger coder revisions using the saved coder session (`resume=st['sessions']['code']`) under audit labels `code-r<n>`. Setting `review_lenses: []` restores single-review execution byte-for-byte. Each lens invocation counts toward `max_agent_calls_total`. If findings remain unresolved when reaching the revision cap, the ticket does not fail: unresolved blocker/major findings are recorded in `st['review']['unresolved']`, emitted as a `review_unresolved` audit event, posted as comments to the ticket issue via `tracker.comment`, and forwarded via `results['review']` to validate and qa prompts. Furthermore, `yoke pr` formats any unresolved review findings from closed tickets (capped at 50000 characters) into an 'Unresolved review findings' section in the pull request description.
 
@@ -638,7 +643,7 @@ Files: `yoke/hooks.py`, `yoke/config.py`, `yoke/defaults.json`, `yoke/pipeline.p
 | `yoke/planreview.py`, `prompts/plan_review.md` | bounded plan review | [2.3](#s2-3) | [M2](#m2) |
 | `yoke/router.py` | Ollama router + fallback | [2.10](#s2-10) | [M3](#m3) |
 | `yoke/gitops.py`, `githooks/pre-push` | worktrees, commit, merge, push block | [2.9](#s2-9) | [M4](#m4), [M5](#m5) |
-| `yoke/pipeline.py`, `prompts/{code,review,review_*,qa,validate,docs}.md` | per-ticket state machine | [2.8](#s2-8) | [M4](#m4), [M11](#m11), [M17](#m17) |
+| `yoke/pipeline.py`, `prompts/{code,review,review_*,qa,validate,docs,hypotheses,hypotheses_rank}.md` | per-ticket state machine, hypotheses fan-out & ranking | [2.8](#s2-8) | [M4](#m4), [M11](#m11), [M17](#m17) |
 | `yoke/scheduler.py` | deps, pool, budgets, resume | [2.8](#s2-8), [2.11](#s2-11), [2.12](#s2-12) | [M4](#m4), [M5](#m5), [M9](#m9) |
 | `yoke/mcp_server.py`, `.mcp.json` | stdio MCP server | [2.10](#s2-10) | [M6](#m6) |
 | `.claude-plugin/*`, `skills/*/SKILL.md`, `hooks/hooks.json` | plugin, skills, SessionStart hook | [2.11](#s2-11), [2.15](#s2-15) | [M7](#m7) |

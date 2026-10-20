@@ -69,6 +69,10 @@ class TestConfig(Tmp):
         cfg = config.load(home=self.tmp)
         self.assertEqual(config.agent_for(cfg, "code"), "agy")
         self.assertEqual(config.agent_for(cfg, "validate"), "claude")
+        self.assertEqual(config.agent_for(cfg, "primary"), "claude")
+        self.assertEqual(config.agent_for(cfg, "secondary"), "agy")
+        self.assertEqual(config.agent_for(cfg, "hypotheses"), "agy")
+        self.assertEqual(config.agent_for(cfg, "hypotheses_rank"), "claude")
         cfg = config.deep_merge(cfg, {"roles": {"by_role": {"docs": "gemini"}}})
         self.assertEqual(config.agent_for(cfg, "docs"), "gemini")
 

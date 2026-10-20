@@ -1,0 +1,24 @@
+{
+  "type": "object",
+  "required": [
+    "hypothesis",
+    "evidence",
+    "fix_plan",
+    "confidence"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "hypothesis": {
+      "type": "string"
+    },
+    "evidence": {
+      "type": "string"
+    },
+    "fix_plan": {
+      "type": "string"
+    },
+    "confidence": {
+      "type": "number"
+    }
+  }
+}
