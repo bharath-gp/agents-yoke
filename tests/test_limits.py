@@ -6,7 +6,7 @@ import unittest
 
 from tests.test_core import FAKE_CLI, SCHEMA
 from tests.test_pipeline import PipeBase, ticket, resp, CODE, REV, val
-from yoke import adapters, calls, config, limits, pipeline, scheduler, state
+from yoke import adapters, calls, config, limits, pipeline, runcmds, scheduler, state
 
 
 class LimitsTest(unittest.TestCase):
@@ -431,7 +431,46 @@ class TestRunnerLimits(PipeBase):
     def test_render_status_shows_waiting_limit(self):
         self.run_.update(waiting_limit={"resume_at": "2026-10-20T18:00:00Z", "ticket": "T-001"})
         rendered = self.run_.render_status()
-        self.assertIn("waiting for rate limit until 2026-10-20T18:00:00Z (T-001)", rendered)
+        self.assertIn("waiting for limit until 2026-10-20T18:00:00Z (T-001)", rendered)
+        self.assertIn("usage totals:", rendered)
+
+        # Fallback to (run) when ticket is absent
+        self.run_.update(waiting_limit={"resume_at": "2026-10-20T19:00:00Z"})
+        rendered_no_ticket = self.run_.render_status()
+        self.assertIn("waiting for limit until 2026-10-20T19:00:00Z (run)", rendered_no_ticket)
+
+        # Cleared waiting_limit disappears
+        self.run_.update(waiting_limit=None)
+        rendered_cleared = self.run_.render_status()
+        self.assertNotIn("waiting for limit until", rendered_cleared)
+
+    def test_brief_shows_waiting_limit_and_usage(self):
+        self.run_.update(waiting_limit={"resume_at": "2026-10-20T18:00:00Z", "ticket": "T-001"})
+        out = runcmds.brief(self.run_)
+        self.assertIn("waiting for limit until 2026-10-20T18:00:00Z (T-001)", out)
+        self.assertIn("usage totals:", out)
+
+        # Fallback to (run) when ticket is absent
+        self.run_.update(waiting_limit={"resume_at": "2026-10-20T19:00:00Z"})
+        out_no_ticket = runcmds.brief(self.run_)
+        self.assertIn("waiting for limit until 2026-10-20T19:00:00Z (run)", out_no_ticket)
+
+        # Cleared waiting_limit disappears
+        self.run_.update(waiting_limit=None)
+        out_cleared = runcmds.brief(self.run_)
+        self.assertNotIn("waiting for limit until", out_cleared)
+
+    def test_wait_for_keeps_waiting_during_waiting_limit_and_returns_on_escalation(self):
+        self.run_.update(waiting_limit={"resume_at": "2026-10-20T18:00:00Z", "ticket": "T-001"})
+        scheduler.acquire_lock(self.run_)
+        reason, msg = runcmds.wait_for(self.run_, timeout=0.05, poll=0.01)
+        self.assertEqual(reason, "timeout")
+        self.assertIn("still running", msg)
+
+        self.run_.write_json("escalations.json", [{"id": 1, "ticket": "T-001", "reason": "rate limit exceeded"}])
+        reason2, msg2 = runcmds.wait_for(self.run_, timeout=1.0, poll=0.01)
+        self.assertEqual(reason2, "escalation")
+        self.assertIn("#1 T-001: rate limit exceeded", msg2)
 
     def test_recover_resumes_in_progress_wait_and_caps_max_wait(self):
         # Set waiting_limit far in future exceeding max_wait_s (default 7200s)

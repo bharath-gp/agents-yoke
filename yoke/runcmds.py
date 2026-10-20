@@ -54,6 +54,8 @@ def add_parsers(sub):
 def wait_for(run, timeout, poll=2):
     """Block until an escalation opens, the run ends, or the runner dies. -> (reason, message).
 
+    Rate limit pauses (waiting_limit) do not cause wait_for to return; it keeps waiting until
+    an escalation opens or the run reaches a terminal state.
     When the run completes, message contains rendered status including usage totals and top spenders.
     """
     end = time.time() + timeout
@@ -199,7 +201,7 @@ def summary(run):
     s = run.status()
     pid = scheduler.read_lock(run)
     alive = bool(pid and scheduler._alive(pid))
-    return {
+    res = {
         "run_id": run.run_id,
         "state": info.get("state", s.get("state")),
         "created_at": info.get("created_at"),
@@ -210,6 +212,9 @@ def summary(run):
         "escalations": s.get("escalations", 0),
         "next": next_step(run),
     }
+    if s.get("waiting_limit"):
+        res["waiting_limit"] = s["waiting_limit"]
+    return res
 
 
 def brief(run):
@@ -239,9 +244,25 @@ def brief(run):
     if s["escalations"]:
         hint = "%d open escalation(s): `yoke escalations --run %s`; " % (s["escalations"], run.run_id) + hint
 
-    return "\n".join(["yoke run %s [%s]" % (s["run_id"], s["state"]),
-                      "tickets %d, agent calls %d/%s" % (s["tickets_total"], s["agent_calls"], s["max_agent_calls"]),
-                      hint])
+    lines = ["yoke run %s [%s]" % (s["run_id"], s["state"])]
+    if s.get("waiting_limit"):
+        wl = s["waiting_limit"]
+        lines.append("waiting for limit until %s (%s)" % (wl.get("resume_at", "?"), wl.get("ticket") or "run"))
+    lines.append("tickets %d, agent calls %d/%s" % (s["tickets_total"], s["agent_calls"], s["max_agent_calls"]))
+
+    from . import usage
+    u = s.get("usage") or {}
+    totals = u.get("totals") or {}
+    cost_disp = usage.format_cost(totals.get("cost"), totals.get("unreported_calls", 0))
+    tot_tokens = totals.get("total_tokens")
+    if not isinstance(tot_tokens, (int, float)) or isinstance(tot_tokens, bool):
+        tot_tokens = sum(v for k, v in totals.items() if "token" in k and isinstance(v, (int, float)) and not isinstance(v, bool))
+    in_tokens = totals.get("input_tokens", 0)
+    out_tokens = totals.get("output_tokens", 0)
+    lines.append("usage totals: cost %s, tokens %d (in %d, out %d)" % (cost_disp, tot_tokens, in_tokens, out_tokens))
+
+    lines.append(hint)
+    return "\n".join(lines)
 
 
 def render_map(run):

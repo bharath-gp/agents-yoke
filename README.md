@@ -102,6 +102,11 @@ On `CallResult.limit`, the runner executes a pause and retry cycle:
 5. Escalates once with the raw limit message after `limits.max_waits` consecutive waits for a single call.
 6. Resumes in-progress waits automatically on restart via `scheduler.recover`.
 
+During a rate limit wait:
+- `yoke status` and `yoke status --brief` display `waiting for limit until <resume_at> (<ticket>)` alongside usage totals.
+- `yoke wait` continues waiting (rate limit pauses do not trigger an early return, since they are not escalations).
+- The web dashboard displays a prominent banner in the run detail view and an indicator row in the run picker.
+
 
 ## Typical flow
 
@@ -139,9 +144,9 @@ yoke tickets import tickets.json  # validate milestones/tickets and warn; `yoke 
 yoke map                          # render destination, out-of-scope, milestone gates, frontier, decisions log
 yoke route T-001                  # stages and agents for a ticket
 yoke run --detach --parallel 2    # background runner; always resumes from disk
-yoke wait                         # blocks until escalation, done, needs_user, stopped, died or timeout (reports usage totals and top 3 spenders)
+yoke wait                         # blocks until escalation, done, needs_user, stopped, died or timeout (persists through waiting_limit; reports usage totals and top 3 spenders)
 yoke runs [--active] [--json]     # list runs for this repo with goal and next step
-yoke status [--json|--brief]      # also: escalations, unblock [T-001|--milestone MS-01], stop; --active lists active runs; reports usage totals and top 3 spenders
+yoke status [--json|--brief]      # also: escalations, unblock [T-001|--milestone MS-01], stop; --active lists active runs; reports usage totals, top 3 spenders, and waiting_limit
 yoke dashboard [--port N]         # serve local read-only web UI on 127.0.0.1 (default port 8765)
 yoke approve final && yoke pr     # push branch, open PR
 yoke clean                        # remove worktrees (keeps branches and audit)
@@ -164,9 +169,9 @@ Subcommands take `--run <id>`; default is the latest run for the current repo. `
 - **Skill integration**: In agent sessions, run `/yoke:dashboard [--port N]` (agy: the `dashboard` skill) to launch or inspect the dashboard server.
 
 - **Self-contained**: Single-file interface (`yoke/dashboard.html`) with inline CSS and JavaScript, using no CDNs or external network dependencies.
-- **Run picker**: Sidebar listing all runs with live state badges, goal descriptions, progress counters, and runner active indicators. The selected run is tracked in the URL hash (`#<run_id>`).
+- **Run picker**: Sidebar listing all runs with live state badges, goal descriptions, progress counters, runner active indicators, and rate limit wait notices (`waiting for limit until <time>`). The selected run is tracked in the URL hash (`#<run_id>`).
 - **Detail view**:
-  - **Run overview**: Displays run ID, state, feature branch, runner heartbeat, and agent calls against total budget.
+  - **Run overview**: Displays run ID, state, feature branch, runner heartbeat, agent calls against total budget, and an active `waiting for limit until <time>` banner during rate limit pauses.
   - **Stage strip**: Visual breadcrumbs across lifecycle stages (`grill`, `plan`, `tickets`, `run`, `finish`).
   - **Progress & Milestones**: Overall done vs remaining progress bar, plus milestone cards showing gate status, exit checks, and fix ticket counts.
   - **Usage & Cost**: Aggregated cost and token counts (total, input, output) with missing agent cost rendered as "unreported", plus a breakdown table of the top 3 spending tickets.

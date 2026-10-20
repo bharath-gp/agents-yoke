@@ -432,6 +432,41 @@ class TestDashboard(unittest.TestCase):
         self.assertEqual(detail["usage"]["totals"]["cost"], 0.0)
         self.assertEqual(detail["usage"]["top_spenders"], [])
 
+    def test_run_detail_includes_waiting_limit_and_resume_at(self):
+        run = self._create_run()
+        run.update(waiting_limit={"resume_at": "2026-10-20T18:00:00Z", "ticket": "T-001"})
+        detail = dashboard.run_detail(run)
+        self.assertIn("waiting_limit", detail)
+        self.assertEqual(detail["waiting_limit"]["resume_at"], "2026-10-20T18:00:00Z")
+        self.assertEqual(detail["status"]["waiting_limit"]["resume_at"], "2026-10-20T18:00:00Z")
+
+        # Cleared waiting_limit is None
+        run.update(waiting_limit=None)
+        detail_cleared = dashboard.run_detail(run)
+        self.assertIsNone(detail_cleared.get("waiting_limit"))
+
+    def test_dashboard_html_contains_waiting_limit(self):
+        pkg_dir = os.path.dirname(dashboard.__file__)
+        dash_html_path = os.path.join(pkg_dir, "dashboard.html")
+        with open(dash_html_path, "r", encoding="utf-8") as f:
+            html = f.read()
+        self.assertIn("detail-waiting-limit", html)
+        self.assertIn("run-item-waiting-limit", html)
+        self.assertIn("waiting for limit until", html)
+
+    def test_list_runs_includes_waiting_limit(self):
+        run = self._create_run()
+        run.update(waiting_limit={"resume_at": "2026-10-20T18:00:00Z", "ticket": "T-001"})
+        runs = dashboard.list_runs(home=self.tmp)
+        self.assertEqual(len(runs), 1)
+        self.assertIn("waiting_limit", runs[0])
+        self.assertEqual(runs[0]["waiting_limit"]["resume_at"], "2026-10-20T18:00:00Z")
+
+        # Cleared waiting_limit is not in summary
+        run.update(waiting_limit=None)
+        runs_cleared = dashboard.list_runs(home=self.tmp)
+        self.assertNotIn("waiting_limit", runs_cleared[0])
+
 
 class TestServe(unittest.TestCase):
     def setUp(self):
@@ -459,6 +494,7 @@ class TestServe(unittest.TestCase):
         self.assertEqual(self.server.server_address[0], "127.0.0.1")
 
     def test_api_runs_list(self):
+        self.run.update(waiting_limit={"resume_at": "2026-10-20T18:00:00Z", "ticket": "T-001"})
         conn = http.client.HTTPConnection("127.0.0.1", self.port)
         conn.request("GET", "/api/runs")
         res = conn.getresponse()
@@ -470,6 +506,8 @@ class TestServe(unittest.TestCase):
         self.assertIsInstance(data, list)
         self.assertEqual(len(data), 1)
         self.assertEqual(data[0]["run_id"], self.run.run_id)
+        self.assertIn("waiting_limit", data[0])
+        self.assertEqual(data[0]["waiting_limit"]["resume_at"], "2026-10-20T18:00:00Z")
 
     def test_api_run_detail_known(self):
         conn = http.client.HTTPConnection("127.0.0.1", self.port)
@@ -509,6 +547,18 @@ class TestServe(unittest.TestCase):
         self.assertEqual(data["usage"]["totals"]["total_tokens"], 1500)
         self.assertEqual(data["usage"]["top_spenders"][0]["ticket"], "T-001")
         self.assertEqual(data["usage"]["top_spenders"][0]["cost"], "unreported")
+
+    def test_api_run_detail_includes_waiting_limit(self):
+        self.run.update(waiting_limit={"resume_at": "2026-10-20T18:00:00Z", "ticket": "T-001"})
+        conn = http.client.HTTPConnection("127.0.0.1", self.port)
+        conn.request("GET", "/api/runs/%s" % self.run.run_id)
+        res = conn.getresponse()
+        self.assertEqual(res.status, 200)
+        data = json.loads(res.read().decode("utf-8"))
+        conn.close()
+        self.assertIn("waiting_limit", data)
+        self.assertEqual(data["waiting_limit"]["resume_at"], "2026-10-20T18:00:00Z")
+        self.assertEqual(data["status"]["waiting_limit"]["resume_at"], "2026-10-20T18:00:00Z")
 
     def test_api_run_detail_unknown(self):
         conn = http.client.HTTPConnection("127.0.0.1", self.port)

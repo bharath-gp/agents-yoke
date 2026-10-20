@@ -294,6 +294,28 @@
     .badge-in_progress, .badge-in-progress { background: var(--state-running-bg); color: var(--state-running); }
     .badge-failed { background: var(--state-failed-bg); color: var(--state-failed); }
 
+    .waiting-limit-banner {
+      background: var(--warn-bg);
+      color: var(--warn-text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px 14px;
+      font-weight: 600;
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .run-item-waiting-limit {
+      font-size: 11px;
+      color: var(--warn-text);
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
     .detail-header-card {
       display: flex;
       flex-direction: column;
@@ -690,6 +712,7 @@
             <span id="detail-run-id" class="detail-run-id"></span>
             <span id="detail-state-badge" class="badge"></span>
           </div>
+          <div id="detail-waiting-limit" class="waiting-limit-banner" style="display: none;"></div>
           <div class="detail-meta-row">
             <div class="detail-meta-item">
               <span id="detail-alive-dot" class="runner-dot"></span>
@@ -916,6 +939,11 @@
           item.appendChild(topRow);
           item.appendChild(goalRow);
           item.appendChild(metaRow);
+          if (r.waiting_limit && r.waiting_limit.resume_at) {
+            const wlTicket = r.waiting_limit.ticket ? ' (' + r.waiting_limit.ticket + ')' : '';
+            const wlRow = el('div', 'run-item-waiting-limit', 'waiting for limit until ' + r.waiting_limit.resume_at + wlTicket);
+            item.appendChild(wlRow);
+          }
           listContainer.appendChild(item);
         });
       }
@@ -940,6 +968,18 @@
         const runState = (d.status && d.status.state) || d.stage || 'unknown';
         stateBadge.className = 'badge badge-' + normalizeClass(runState);
         stateBadge.textContent = runState;
+
+        const wlBanner = document.getElementById('detail-waiting-limit');
+        const wl = d.waiting_limit || (d.status && d.status.waiting_limit);
+        if (wl && wl.resume_at) {
+          wlBanner.style.display = 'flex';
+          const targetTime = wl.resume_at;
+          const tickStr = wl.ticket ? ' (' + wl.ticket + ')' : '';
+          wlBanner.textContent = 'waiting for limit until ' + targetTime + tickStr;
+        } else {
+          wlBanner.style.display = 'none';
+          wlBanner.textContent = '';
+        }
 
         const branchElem = document.getElementById('detail-branch');
         branchElem.textContent = (d.status && d.status.branch) ? 'Branch: ' + d.status.branch : 'Branch: (none)';

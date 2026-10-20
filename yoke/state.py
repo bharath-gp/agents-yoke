@@ -205,7 +205,7 @@ class Run:
         ]
         if s.get("waiting_limit"):
             wl = s["waiting_limit"]
-            lines.insert(1, "waiting for rate limit until %s (%s)" % (wl.get("resume_at", "?"), wl.get("ticket") or "run"))
+            lines.insert(1, "waiting for limit until %s (%s)" % (wl.get("resume_at", "?"), wl.get("ticket") or "run"))
 
         spender_strs = []
         for sp in top_spenders[:3]:

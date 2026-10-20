@@ -240,7 +240,7 @@ def run_detail(run):
 
     All reads are tolerant: missing or half-written files give empty values or null, never an exception.
     Includes status, runner liveness, stage, milestones, tickets, progress, escalations, events,
-    decisions log, and usage totals with top spenders.
+    decisions log, usage totals with top spenders, and active waiting_limit state.
     """
     if isinstance(run, str):
         run = state.Run(run)
@@ -428,6 +428,7 @@ def run_detail(run):
         "events": events,
         "decisions": decisions,
         "usage": usage_data,
+        "waiting_limit": status_info.get("waiting_limit"),
     }
 
 

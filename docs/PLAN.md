@@ -286,7 +286,7 @@ Milestone gates and fix tickets:
 <a id="s2-11"></a>
 ### 2.11 Orchestrator handoff & compaction
 - Runner is independent of any chat session; killing the orchestrator session loses nothing.
-- `yoke wait [--run R] [--timeout 3000]` returns on: escalation opened, run finished, runner died, or timeout (prints "still running: k/n closed"). The orchestrator skill loops `wait` and, on escalation, presents it to the user.
+- `yoke wait [--run R] [--timeout 3000]` returns on: escalation opened, run finished, runner died, or timeout (prints "still running: k/n closed"). It keeps waiting through rate limit pauses (`waiting_limit`) since they are not escalations. The orchestrator skill loops `wait` and, on escalation, presents it to the user.
 - **Automatic handoff**: plugin `SessionStart` hook (matchers `startup|resume|compact`) runs `yoke status --brief --active`, injecting ≤15 lines about active runs into any new or compacted session. So compaction (Claude auto-compact) and fresh sessions both re-acquire state automatically.
 - `/yoke:resume`: `yoke status`; if runner pid dead and run not finished → `yoke run --resume --detach`; then continue the `wait` loop.
 - Runner crash recovery on `--resume`: kill recorded worker process groups still alive; for each `in_progress` ticket, restart the current stage (same attempt; the half-done call's dir is renamed `<stage>.interrupted`); worktree changes are kept. If `run.json` has `waiting_limit`, `scheduler.recover` resumes the pool wait (capped by `limits.max_wait_s`), sleeping in slices; upon wake, in-progress tickets re-run their attempt with `limit_waits` count preserved for `max_waits` escalation.
@@ -366,15 +366,15 @@ yoke tickets import FILE [--run R]    # validate schema+deps, classify missing t
 yoke tickets show [--run R]           # table: id, type, stages, deps, title grouped by milestone
 yoke map [--run R]                    # render destination, out-of-scope, milestone gates, frontier, decisions log
 yoke run [--run R] [--parallel N] [--detach] [--resume]
-yoke wait [--run R] [--timeout S]
-yoke status [--run R] [--brief] [--active] [--json]
+yoke wait [--run R] [--timeout S]     # persists through waiting_limit; returns on escalation, done, stopped, died
+yoke status [--run R] [--brief] [--active] [--json] # reports usage totals, top spenders, and waiting_limit
 yoke escalations [--run R]
 yoke unblock [T-xxx] [--note TEXT] [--skip] [--reset-attempts] | --milestone MS-xx [--note TEXT] [--waive REASON]   # user responses to escalations
 yoke stop [--run R]                   # SIGTERM runner; workers killed; resumable
 yoke pr [--run R]                     # requires approve final; push branch + gh pr create
 yoke clean [--run R]
 yoke route T-xxx [--run R]            # debug: show stages/agents/models for a ticket
-yoke dashboard [--port N]             # serve local read-only web UI on 127.0.0.1 (default port 8765)
+yoke dashboard [--port N]             # serve local read-only web UI on 127.0.0.1 (shows waiting_limit banner and status)
 yoke models [--list] [--show] [--set AGENT.TIER=MODEL] [--effort E] [--scope user|project|repo] [--reset [AGENT[.TIER]]]
 yoke mcp                              # stdio MCP server
 yoke doctor [--live]
