@@ -3,6 +3,8 @@ import json
 import sys
 from dataclasses import dataclass, field
 
+from . import limits
+
 FORBIDDEN_FLAG = "--dangerously-skip-permissions"
 CLAUDE_READ_TOOLS = "Read Grep Glob Bash(git diff:*) Bash(git log:*) Bash(git show:*)"
 CLAUDE_NO_GIT_WRITE = ["Bash(git push:*)", "Bash(git commit:*)"]
@@ -39,6 +41,7 @@ class CallResult:
     duration_s: float = None
     call_id: str = None
     audit_dir: str = None
+    limit: dict = None  # {reset_at: iso or None, raw: text}
 
     @property
     def ok(self):
@@ -62,10 +65,20 @@ def _load(stdout):
 class Adapter:
     name = None
 
+    def __init__(self, cfg=None):
+        self.cfg = cfg
+
+    def _classify_limit(self, stdout, exit_code, cfg=None, obj=None, session_id=None, observed_model=None):
+        lim = limits.classify(self.name, stdout, exit_code, cfg=self.cfg or cfg, obj=obj)
+        if lim is not None:
+            return CallResult(error="limit: %s" % lim["raw"], session_id=session_id, limit=lim,
+                              exit_code=exit_code, observed_model=observed_model)
+        return None
+
     def build_cmd(self, call):
         raise NotImplementedError
 
-    def parse(self, stdout, exit_code):
+    def parse(self, stdout, exit_code, cfg=None):
         raise NotImplementedError
 
 
@@ -92,8 +105,12 @@ class ClaudeAdapter(Adapter):
             cmd += ["--add-dir", d]
         return _guard(cmd)
 
-    def parse(self, stdout, exit_code):
+    def parse(self, stdout, exit_code, cfg=None):
         obj, err = _load(stdout)
+        session_id = obj.get("session_id") if isinstance(obj, dict) else None
+        res_limit = self._classify_limit(stdout, exit_code, cfg=cfg, obj=obj, session_id=session_id)
+        if res_limit is not None:
+            return res_limit
         if err:
             return CallResult(error=err if exit_code == 0 else "exit %s; %s" % (exit_code, err))
         res = CallResult(structured_output=obj.get("structured_output"), session_id=obj.get("session_id"),
@@ -125,8 +142,13 @@ class AgyAdapter(Adapter):
             cmd += ["--add-dir", d]
         return _guard(cmd)
 
-    def parse(self, stdout, exit_code):
+    def parse(self, stdout, exit_code, cfg=None):
         obj, err = _load(stdout)
+        session_id = obj.get("conversation_id") if isinstance(obj, dict) else None
+        res_limit = self._classify_limit(stdout, exit_code, cfg=cfg, obj=obj, session_id=session_id,
+                                         observed_model="unreported")
+        if res_limit is not None:
+            return res_limit
         if err:
             return CallResult(error=err if exit_code == 0 else "exit %s; %s" % (exit_code, err))
         res = CallResult(structured_output=obj.get("structured_output"), session_id=obj.get("conversation_id"),
@@ -148,7 +170,8 @@ class FakeAdapter(Adapter):
     """Replays tests/fake_cli.py; stage comes from YOKE_STAGE which run_call sets."""
     name = "fake"
 
-    def __init__(self, cli):
+    def __init__(self, cli, cfg=None):
+        super().__init__(cfg=cfg)
         self.cli = cli
 
     def build_cmd(self, call):
@@ -161,8 +184,13 @@ class FakeAdapter(Adapter):
             cmd += ["--effort", call.effort]
         return _guard(cmd)
 
-    def parse(self, stdout, exit_code):
+    def parse(self, stdout, exit_code, cfg=None):
         obj, err = _load(stdout)
+        session_id = obj.get("session_id") if isinstance(obj, dict) else None
+        res_limit = self._classify_limit(stdout, exit_code, cfg=cfg, obj=obj, session_id=session_id,
+                                         observed_model="fake")
+        if res_limit is not None:
+            return res_limit
         if err:
             return CallResult(error=err if exit_code == 0 else "exit %s; %s" % (exit_code, err))
         res = CallResult(structured_output=obj.get("structured_output"), session_id=obj.get("session_id"),
@@ -177,5 +205,5 @@ class FakeAdapter(Adapter):
         return res
 
 
-def get(name):
-    return {"claude": ClaudeAdapter, "agy": AgyAdapter}[name]()
+def get(name, cfg=None):
+    return {"claude": ClaudeAdapter, "agy": AgyAdapter}[name](cfg=cfg)

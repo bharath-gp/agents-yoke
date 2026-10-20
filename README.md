@@ -86,6 +86,14 @@ Run-level execution budgets can be configured in `~/.yoke/config.json` or `<repo
 
 When a budget cap is exceeded, the runner stops scheduling new work, allows in-flight calls to finish cleanly, and opens a single budget escalation. Resuming after a budget escalation does not re-escalate.
 
+Agent rate limits and quotas are configured under `limits`:
+
+- `limits.patterns`: Mapping of agent name (`claude`, `agy`) to regex patterns detecting rate limits, quota limits, or resource exhaustion in agent stdout and error messages.
+- `limits.max_wait_s`: Maximum wait time in seconds when a limit is hit (default: 7200).
+- `limits.max_waits`: Maximum consecutive wait cycles before opening an escalation (default: 3).
+
+When an agent call matches a limit pattern, the adapter classifies the output into `CallResult.limit` with the raw text and any parsed reset timestamp. Calls stopped by rate limits do not count as failed attempts or schema errors, preventing unnecessary schema re-asks.
+
 
 ## Typical flow
 

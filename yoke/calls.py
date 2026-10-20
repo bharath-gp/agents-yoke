@@ -73,16 +73,27 @@ def _exec(run, adapter, spec, rel, stage, ticket, attempt, label=None):
     if proc:
         with open(os.path.join(d, "stdout.log")) as f:
             stdout = f.read()
-        res = adapter.parse(stdout, proc.returncode)
+        import inspect
+        sig = inspect.signature(adapter.parse)
+        if "cfg" in sig.parameters or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
+            res = adapter.parse(stdout, proc.returncode, cfg=cfg)
+        else:
+            res = adapter.parse(stdout, proc.returncode)
+        if getattr(res, "limit", None) is None:
+            from . import limits
+            lim = limits.classify(getattr(adapter, "name", "unknown"), stdout, proc.returncode, cfg=getattr(adapter, "cfg", None) or cfg)
+            if lim is not None:
+                res.limit = lim
         if meta["timed_out"]:
             res.error = "timeout after %ss" % spec.timeout_s
+            res.limit = None
         meta["exit_code"] = proc.returncode
     res.exit_code = meta.get("exit_code")
     res.timed_out = meta["timed_out"]
     res.call_id, res.audit_dir = call_id, d
     res.duration_s = round(time.time() - t0, 3)
     meta.update(ended_at=state.now(), duration_s=res.duration_s, exit_code=res.exit_code,
-                schema_valid=None, error=res.error,
+                schema_valid=None, error=res.error, limit=res.limit,
                 observed={"model": res.observed_model, "session_id": res.session_id,
                           "usage": res.usage, "cost": res.cost})
     run.write_json(rel + "/meta.json", meta)
@@ -129,6 +140,8 @@ def run_call(run, adapter, spec, *, stage, ticket=None, attempt=None, label=None
     res, meta = _exec(run, adapter, spec, rel, stage, ticket, attempt, label=label)
     cli_failed = not res.ok and not res.timed_out
     errs = _check(run, res, meta, spec, rel)
+    if res.limit is not None:
+        return res
 
     if spec.model and cli_failed:
         stderr = ""

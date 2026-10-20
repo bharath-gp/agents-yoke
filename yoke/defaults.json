@@ -31,6 +31,26 @@
     "max_cost_usd": null,
     "max_tokens": null
   },
+  "limits": {
+    "patterns": {
+      "claude": [
+        "(?i)rate[ _]?limit",
+        "(?i)quota[ _]?exceeded",
+        "(?i)usage[ _]?limit",
+        "(?i)too many requests",
+        "(?i)overloaded_error",
+        "(?i)credit balance"
+      ],
+      "agy": [
+        "(?i)resource_exhausted",
+        "(?i)rate[ _]?limit",
+        "(?i)quota[ _]?exceeded",
+        "(?i)too many requests"
+      ]
+    },
+    "max_wait_s": 7200,
+    "max_waits": 3
+  },
   "parallel": 1,
   "timeouts_s": {
     "plan_review": 900,

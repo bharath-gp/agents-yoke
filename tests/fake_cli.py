@@ -6,6 +6,8 @@ FAKE_SCRIPT: JSON file {stage: [response, ...]}, responses consumed in order per
   {"sleep": 999, "child_pidfile": "path"}            optionally spawn a child, then sleep
   {"exit": 1}                                        exit with that code
   {"stderr": "text", "exit": 1}                      write text to stderr
+  {"limit": "text"}                                  print limit text and exit 1 (or exit: N)
+  {"print": "text"}                                  print text before sleep or exit
   {"raw": "text"}                                    print text verbatim
 Any response may add "write": {path: text} (files created in cwd) and "commit": true (git add -A
 and commit in cwd, simulating a misbehaving agent) before printing.
@@ -46,11 +48,22 @@ def main():
     if resp.get("commit"):
         subprocess.run(["git", "add", "-A"], check=True)
         subprocess.run(["git", "commit", "-qm", "agent commit"], check=True)
+    if "print" in resp:
+        sys.stdout.write(resp["print"] + "\n")
+        sys.stdout.flush()
     if "sleep" in resp:
         time.sleep(resp["sleep"])
     if "stderr" in resp:
         sys.stderr.write(resp["stderr"] + "\n")
         sys.stderr.flush()
+    if "limit" in resp:
+        lim = resp["limit"]
+        if isinstance(lim, dict):
+            print(json.dumps(lim))
+            sys.exit(resp.get("exit", 0 if lim.get("is_error") else 1))
+        text = lim if isinstance(lim, str) else "rate limit exceeded"
+        print(text)
+        sys.exit(resp.get("exit", 1))
     if "exit" in resp:
         sys.exit(resp["exit"])
     if "raw" in resp:
