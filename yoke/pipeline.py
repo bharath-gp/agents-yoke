@@ -76,6 +76,96 @@ def _read_feedback(run, tid, attempt):
         return ""
 
 
+def _clean_feedback(fb):
+    if not fb:
+        return ""
+    lines = []
+    for line in fb.splitlines():
+        if line.startswith("Triage hint (advisory only):"):
+            break
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
+def _extract_failure_keys(text):
+    """Extract (failure_type, set_of_keys) from feedback text."""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return None, set()
+
+    if any(line.startswith("QA failed:") for line in lines):
+        idx = next(i for i, line in enumerate(lines) if line.startswith("QA failed:"))
+        tests = set()
+        for line in lines[idx + 1:]:
+            if line.startswith("Runner re-ran") or line.startswith("QA failed:"):
+                continue
+            tests.add(line)
+        if tests:
+            return "qa", tests
+
+    if any("Runner re-ran" in line for line in lines):
+        failing_tests = set()
+        for line in lines:
+            m = re.search(r"\b(?:FAIL|ERROR):\s+([^\s(]+)", line)
+            if m:
+                failing_tests.add(m.group(1))
+            m2 = re.search(r"\bFAILED\s+([^\s]+)", line)
+            if m2 and not m2.group(1).startswith("("):
+                failing_tests.add(m2.group(1))
+        if failing_tests:
+            return "qa_rerun", failing_tests
+
+    unmet = {line for line in lines if line.startswith("Unmet criterion:")}
+    issues = set()
+    for line in lines:
+        if re.match(r"^(?:blocker|major|minor|nit)\b", line):
+            issues.add(line)
+    if unmet or issues:
+        return "validate", unmet | issues
+
+    return "generic", set(lines)
+
+
+def feedback_matches(fb1, fb2):
+    """Determine whether two attempt feedback texts match (same failing tests or validator issues)."""
+    c1 = _clean_feedback(fb1)
+    c2 = _clean_feedback(fb2)
+    if not c1 or not c2:
+        return False
+    if c1 == c2:
+        return True
+
+    t1, k1 = _extract_failure_keys(c1)
+    t2, k2 = _extract_failure_keys(c2)
+    if not t1 or not t2 or not k1 or not k2:
+        return False
+    if t1 == t2 and k1 == k2:
+        return True
+    if {t1, t2} <= {"qa", "qa_rerun"} and k1 == k2:
+        return True
+    return False
+
+
+def _maybe_triage_hint(run, adapter_for, tid, attempt, fb):
+    """If on last attempt and previous feedback matches, run triage_failure and append advisory hint."""
+    if not fb:
+        return fb
+    max_att = run.cfg.get("max_attempts_per_ticket", 3)
+    if attempt == max_att and attempt >= 2:
+        if "Triage hint (advisory only):" not in fb:
+            prev_fb = _read_feedback(run, tid, attempt - 1)
+            if feedback_matches(prev_fb, fb):
+                try:
+                    adapter = adapter_for("router") if callable(adapter_for) else None
+                    tri = router.triage_failure(run, fb, adapter=adapter)
+                    hint = router.format_triage_hint(tri)
+                    if hint:
+                        return fb.rstrip() + "\n\n" + hint
+                except Exception as e:
+                    run.event("triage_hint_error", ticket=tid, error=str(e))
+    return fb
+
+
 def doc_path_for(cfg, ticket):
     """Repo-relative path of a research ticket's document (ticket["doc_path"] overrides)."""
     if ticket.get("doc_path"):
@@ -813,6 +903,7 @@ def run_ticket(run, ticket, adapter_for=None, env=None, merge_lock=None):
             if st["attempt"] + 1 > cfg["max_attempts_per_ticket"]:
                 raise Escalate("max attempts (%d) reached; last feedback:\n%s" % (st["attempt"], fb))
             st["attempt"] += 1
+            fb = _maybe_triage_hint(run, adapter_for, tid, st["attempt"], fb)
             write_feedback(run, tid, st["attempt"], fb)
             save_state(run, tid, st)
     except Escalate as e:

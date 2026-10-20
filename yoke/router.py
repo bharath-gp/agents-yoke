@@ -113,6 +113,16 @@ def triage_failure(run, log, adapter=None):
                    {"category": "other", "retryable": True, "confidence": 0.0, "hint": "default"}, adapter)
 
 
+def format_triage_hint(triage_res):
+    """Format category and retryable as an advisory hint string."""
+    res = triage_res.get("result", {}) if isinstance(triage_res, dict) and "result" in triage_res else triage_res
+    if not isinstance(res, dict):
+        return ""
+    cat = res.get("category") or "other"
+    ret = res.get("retryable") if res.get("retryable") is not None else True
+    return "Triage hint (advisory only): category=%s, retryable=%s" % (cat, ret)
+
+
 def assert_check(run, claim, evidence, adapter=None):
     state = ("Evidence:\n%s" % evidence)[-STATE_CHARS:]
 
