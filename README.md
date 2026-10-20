@@ -43,7 +43,7 @@ Agent roles are configured via `yoke setup --primary <agent> --secondary <agent>
 
 The `review` role defaults to `auto`, resolving dynamically to the opposite of the `code` agent (`claude` <-> `agy`), ensuring code review is performed by a different agent than the implementer. For custom code agent names outside `AGENTS`, it falls back to `primary` (or `secondary` if `primary` matches `code`). `yoke setup` warns if an explicit override assigns the same agent to both code and review. Use `--map review=auto` to restore automatic resolution.
 
-During ticket execution, the `review` stage runs an iterative review loop (up to `max_review_rounds` revisions). Blocker and major findings trigger coder revisions using the resumed session. If findings remain unresolved when reaching the revision cap, the ticket proceeds without failing: unresolved findings are recorded in ticket state, posted as issue comments, and surfaced in the `yoke pr` description under "Unresolved review findings".
+During ticket execution, the `review` stage runs an iterative review loop (up to `max_review_rounds` revisions). Configured review lenses (`review_lenses`, defaulting to `["security", "performance", "tests"]`) evaluate changes through dedicated lens prompts (`review_security.md`, `review_performance.md`, `review_tests.md`), focusing on vulnerability checks, performance bottlenecks, and test coverage. Blocker and major findings trigger coder revisions using the resumed session. If findings remain unresolved when reaching the revision cap, the ticket proceeds without failing: unresolved findings are recorded in ticket state, posted as issue comments, and surfaced in the `yoke pr` description under "Unresolved review findings".
 
 ### Model selection and tiers
 

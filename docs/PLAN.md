@@ -188,6 +188,7 @@ Default budgets/limits:
 | `max_attempts_per_ticket` | 3 |
 | `max_plan_review_rounds` | 3 |
 | `max_review_rounds` | 2 |
+| `review_lenses` | `["security", "performance", "tests"]` |
 | `max_tickets` | 40 |
 | `max_agent_calls_total` | 300 |
 | `parallel` | 1 (CLI `--parallel N`) |
@@ -637,7 +638,7 @@ Files: `yoke/hooks.py`, `yoke/config.py`, `yoke/defaults.json`, `yoke/pipeline.p
 | `yoke/planreview.py`, `prompts/plan_review.md` | bounded plan review | [2.3](#s2-3) | [M2](#m2) |
 | `yoke/router.py` | Ollama router + fallback | [2.10](#s2-10) | [M3](#m3) |
 | `yoke/gitops.py`, `githooks/pre-push` | worktrees, commit, merge, push block | [2.9](#s2-9) | [M4](#m4), [M5](#m5) |
-| `yoke/pipeline.py`, `prompts/{code,qa,validate,docs}.md` | per-ticket state machine | [2.8](#s2-8) | [M4](#m4), [M17](#m17) |
+| `yoke/pipeline.py`, `prompts/{code,review,review_*,qa,validate,docs}.md` | per-ticket state machine | [2.8](#s2-8) | [M4](#m4), [M11](#m11), [M17](#m17) |
 | `yoke/scheduler.py` | deps, pool, budgets, resume | [2.8](#s2-8), [2.11](#s2-11), [2.12](#s2-12) | [M4](#m4), [M5](#m5), [M9](#m9) |
 | `yoke/mcp_server.py`, `.mcp.json` | stdio MCP server | [2.10](#s2-10) | [M6](#m6) |
 | `.claude-plugin/*`, `skills/*/SKILL.md`, `hooks/hooks.json` | plugin, skills, SessionStart hook | [2.11](#s2-11), [2.15](#s2-15) | [M7](#m7) |

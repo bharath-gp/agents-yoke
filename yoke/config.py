@@ -61,6 +61,17 @@ def load(repo=None, home=None, overrides=None):
 
 
 AGENTS = ("claude", "agy")
+DEFAULT_REVIEW_LENSES = ["security", "performance", "tests"]
+
+
+def review_lenses(cfg=None):
+    """Return configured review lenses, defaulting to ['security', 'performance', 'tests']."""
+    if cfg is None:
+        cfg = load()
+    lenses = cfg.get("review_lenses")
+    if lenses is not None:
+        return list(lenses)
+    return list(DEFAULT_REVIEW_LENSES)
 
 
 def agent_for(cfg, role):

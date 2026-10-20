@@ -300,6 +300,110 @@ class TestChartPrompt(unittest.TestCase):
             self.assertIn(rule, content)
 
 
+class TestReviewLensPrompts(unittest.TestCase):
+    LENSES = ("review_security", "review_performance", "review_tests")
+
+    def test_lens_prompts_exist_and_contain_instructions(self):
+        for lens in self.LENSES:
+            content = _read(lens)
+            for expected in (
+                "read-only",
+                "no edits",
+                "no running tests",
+                "no commits",
+                "no push",
+                "return only JSON",
+                "Verdict: changes_requested if and only if at least one blocker or major finding exists",
+            ):
+                self.assertIn(expected, content, "Missing expected instruction in %s" % lens)
+
+    def test_lens_prompts_specific_content(self):
+        security = _read("review_security")
+        self.assertIn("Security lens", security)
+        self.assertIn("Command injection", security)
+        self.assertIn("Path traversal", security)
+
+        performance = _read("review_performance")
+        self.assertIn("Performance lens", performance)
+        self.assertIn("Algorithmic efficiency", performance)
+        self.assertIn("Resource cleanup", performance)
+
+        tests = _read("review_tests")
+        self.assertIn("Tests lens", tests)
+        self.assertIn("Test coverage", tests)
+        self.assertIn("Assertion quality", tests)
+
+    def test_lens_prompts_render_with_string_template(self):
+        import re
+        substitutions = {
+            "base_sha": "8ec46bde240ae91c626190371f5bf3c971955af6",
+            "ticket": '{"id": "T-0070", "title": "Review lens prompts"}',
+            "destination": "build milestone system destination",
+            "out_of_scope": "unrelated features out of scope",
+            "plan_excerpt": "Relevant plan excerpt text",
+            "prior_results": "{}",
+            "feedback": "(none)",
+            "worktree": "/tmp/worktree",
+            "upstream": "",
+        }
+        for lens in self.LENSES:
+            content = _read(lens)
+            template = string.Template(content)
+            try:
+                rendered = template.substitute(substitutions)
+            except (KeyError, ValueError) as exc:
+                self.fail("Template substitution for %s raised %s: %s" % (lens, type(exc).__name__, exc))
+            self.assertIsInstance(rendered, str)
+            self.assertIn("build milestone system destination", rendered)
+            self.assertIn("unrelated features out of scope", rendered)
+            leftover = re.findall(r"\$[a-zA-Z_][a-zA-Z0-9_]*", rendered)
+            self.assertEqual(leftover, [], "Leftover variables in %s: %s" % (lens, leftover))
+
+    def test_review_lenses_defaults_json_raw(self):
+        with open(config.DEFAULTS_PATH) as f:
+            raw_defaults = json.load(f)
+        self.assertIn("review_lenses", raw_defaults)
+        self.assertEqual(raw_defaults["review_lenses"], ["security", "performance", "tests"])
+
+    def test_review_lenses_default_config(self):
+        cfg = config.load()
+        self.assertEqual(cfg.get("review_lenses"), ["security", "performance", "tests"])
+        self.assertEqual(config.DEFAULT_REVIEW_LENSES, ["security", "performance", "tests"])
+        self.assertEqual(config.review_lenses(cfg), ["security", "performance", "tests"])
+
+    def test_review_lenses_overrides_and_fallbacks(self):
+        cfg_custom = config.load(overrides={"review_lenses": ["security"]})
+        self.assertEqual(config.review_lenses(cfg_custom), ["security"])
+
+        self.assertEqual(config.review_lenses({}), ["security", "performance", "tests"])
+        self.assertEqual(config.review_lenses(None), ["security", "performance", "tests"])
+
+    def test_lens_review_schema_compatibility(self):
+        s = schema.load_schema("review")
+        self.assertEqual(s.get("type"), "object")
+        payload = {
+            "verdict": "approve",
+            "findings": [
+                {
+                    "file": "yoke/config.py",
+                    "line": 1,
+                    "severity": "nit",
+                    "comment": "Lens finding comment",
+                    "suggestion": "Lens suggestion",
+                }
+            ],
+            "summary": "Lens review summary approval",
+        }
+        self.assertEqual(schema.validate(payload, s), [])
+
+        invalid_verdict_payload = {
+            "verdict": "rejected",
+            "findings": [],
+            "summary": "Invalid verdict",
+        }
+        self.assertTrue(schema.validate(invalid_verdict_payload, s))
+
+
 if __name__ == "__main__":
     unittest.main()
 

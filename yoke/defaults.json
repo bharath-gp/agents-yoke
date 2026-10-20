@@ -23,6 +23,11 @@
   "max_attempts_per_ticket": 3,
   "max_plan_review_rounds": 3,
   "max_review_rounds": 2,
+  "review_lenses": [
+    "security",
+    "performance",
+    "tests"
+  ],
   "max_fix_tickets_per_milestone": 2,
   "max_chart_rounds": 3,
   "max_tickets": 40,
