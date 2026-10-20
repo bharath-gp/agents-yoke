@@ -379,6 +379,7 @@ yoke wait [--run R] [--timeout S]     # persists through waiting_limit; returns 
 yoke status [--run R] [--brief] [--active] [--json] # reports usage totals, top spenders, and waiting_limit
 yoke escalations [--run R]
 yoke unblock [T-xxx] [--note TEXT] [--skip] [--reset-attempts] | --milestone MS-xx [--note TEXT] [--waive REASON]   # user responses to escalations
+yoke nudge T-xxx --note TEXT [--run R] # append note to next attempt or review round feedback without stopping runner
 yoke stop [--run R]                   # SIGTERM runner; workers killed; resumable
 yoke pr [--run R]                     # requires approve final; push branch + gh pr create
 yoke clean [--run R]

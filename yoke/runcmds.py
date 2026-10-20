@@ -1,4 +1,4 @@
-"""CLI handlers for the runner commands: run, status, escalations, unblock, stop (PLAN 2.16)."""
+"""CLI handlers for the runner commands: run, status, escalations, unblock, nudge, stop (PLAN 2.16)."""
 import glob
 import json
 import os
@@ -8,9 +8,9 @@ import subprocess
 import sys
 import time
 
-from . import config, gitops, milestones, planreview, scheduler, state
+from . import config, gitops, milestones, pipeline, planreview, scheduler, state
 
-CMDS = ("run", "status", "escalations", "unblock", "stop", "wait", "clean", "runs", "map", "dashboard")
+CMDS = ("run", "status", "escalations", "unblock", "stop", "wait", "clean", "runs", "map", "dashboard", "nudge")
 
 
 def add_parsers(sub):
@@ -49,6 +49,10 @@ def add_parsers(sub):
     st.add_argument("--run")
     d = sub.add_parser("dashboard", help="serve local read-only web UI")
     d.add_argument("--port", type=int, default=8765, help="port to bind to (default: 8765)")
+    nu = sub.add_parser("nudge", help="send a user note to a ticket for the next attempt or review round")
+    nu.add_argument("ticket")
+    nu.add_argument("--note", required=True, help="note text to append to feedback")
+    nu.add_argument("--run")
 
 
 def wait_for(run, timeout, poll=2):
@@ -465,6 +469,14 @@ def dispatch(args):
                 return 1
             scheduler.unblock(run, args.ticket, args.note, args.skip, args.reset_attempts)
             print("unblocked %s" % args.ticket)
+    elif args.cmd == "nudge":
+        try:
+            pipeline.nudge(run, args.ticket, args.note)
+            print("nudged %s" % args.ticket)
+            return 0
+        except (ValueError, KeyError) as e:
+            print("yoke: %s" % e, file=sys.stderr)
+            return 1
     else:
         pid = scheduler.read_lock(run)
         if not pid or not scheduler._alive(pid):

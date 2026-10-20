@@ -5,7 +5,7 @@ Multi-agent loop for large work items. Claude (primary) gathers requirements, pl
 ## How it works
 
 1. Interactive: requirements, `plan.md`, one read-only secondary plan review, ticket split. You approve the plan and tickets (hash-bound).
-2. Unattended: a detached runner takes each ticket through code, review, QA, validate, docs. Failures retry with feedback up to a limit, then escalate to you. Independent tickets run in parallel, one git worktree each (`--parallel N`). When `parallel > 1`, ready tickets whose `files_hint` overlaps (exact file path or directory prefix) any currently running ticket are deferred until that ticket finishes, emitting a `ticket_deferred` audit event (tickets with empty hints never block). Upstream handoff notes (interface changes, new files, gotchas) from closed ancestor tickets are automatically stored at `tickets/<T>/handoff.json` and inlined into dependent `code`, `QA`, and `validate` prompts (`$upstream`).
+2. Unattended: a detached runner takes each ticket through code, review, QA, validate, docs. Failures retry with feedback up to a limit, then escalate to you. Independent tickets run in parallel, one git worktree each (`--parallel N`). When `parallel > 1`, ready tickets whose `files_hint` overlaps (exact file path or directory prefix) any currently running ticket are deferred until that ticket finishes, emitting a `ticket_deferred` audit event (tickets with empty hints never block). Upstream handoff notes (interface changes, new files, gotchas) from closed ancestor tickets are automatically stored at `tickets/<T>/handoff.json` and inlined into dependent `code`, `QA`, and `validate` prompts (`$upstream`). Pending or in-progress tickets can be steered with `yoke nudge T-xxx --note TEXT`, which appends user guidance to the next attempt or review round feedback without touching `tickets.json` or interrupting in-flight calls.
 3. A ticket is committed to feature branch `yoke/<run_id>` only when QA passes and the validator approves. The runner never pushes; `yoke pr` does, after `approve final`.
 4. State and audit trail (prompts, commands, outputs) live in `~/.yoke/runs/<run_id>/` (`$YOKE_HOME` overrides), outside the target repo. Any session can resume from disk. An atomic usage ledger (`usage.json`) tracks token usage and costs by stage, ticket, agent and model at each ticket close and at run end; status, wait summaries, and the dashboard surface usage totals and top spenders.
 
@@ -185,6 +185,7 @@ yoke run --detach --parallel 2    # background runner; always resumes from disk
 yoke wait                         # blocks until escalation, done, needs_user, stopped, died or timeout (persists through waiting_limit; reports usage totals and top 3 spenders)
 yoke runs [--active] [--json]     # list runs for this repo with goal and next step
 yoke status [--json|--brief]      # also: escalations, unblock [T-001|--milestone MS-01], stop; --active lists active runs; reports usage totals, top 3 spenders, and waiting_limit
+yoke nudge T-001 --note "text"    # send note to pending or in-progress ticket for next attempt/review round
 yoke dashboard [--port N]         # serve local read-only web UI on 127.0.0.1 (default port 8765)
 yoke approve final && yoke pr     # push branch, open PR
 yoke clean                        # remove worktrees (keeps branches and audit)

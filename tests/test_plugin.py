@@ -56,7 +56,7 @@ class TestPackaging(unittest.TestCase):
             with open(os.path.join(ROOT, "skills", name, "SKILL.md")) as f:
                 subs.update(re.findall(r"`yoke ([a-z-]+)", f.read()))
         known = {"setup", "init", "review-plan", "approve", "tickets", "run", "wait", "status", "escalations",
-                 "unblock", "stop", "pr", "route", "doctor", "models", "runs", "map", "dashboard"}
+                 "unblock", "stop", "pr", "route", "doctor", "models", "runs", "map", "dashboard", "nudge"}
         self.assertFalse(subs - known, subs - known)
 
 
@@ -128,6 +128,13 @@ class TestPackaging(unittest.TestCase):
         with open(os.path.join(ROOT, "skills", "setup", "SKILL.md")) as f:
             content = f.read()
         self.assertIn("/yoke:models", content)
+
+    def test_status_skill(self):
+        with open(os.path.join(ROOT, "skills", "status", "SKILL.md")) as f:
+            content = f.read()
+        self.assertIn("`yoke setup --check`", content)
+        self.assertIn("waiting_limit", content)
+        self.assertIn("`yoke nudge", content)
 
 
 class TestInstaller(unittest.TestCase):

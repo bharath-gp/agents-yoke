@@ -8,6 +8,7 @@ import re
 import string
 import subprocess
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 from . import adapters, calls, config, gitops, hooks, milestones, planreview, router, schema, state, tracker, usage
@@ -85,6 +86,8 @@ def _clean_feedback(fb):
             break
         if line.startswith("Hypothesis fix plan (advisory only):"):
             break
+        if line.startswith("User note:"):
+            continue
         lines.append(line)
     return "\n".join(lines).strip()
 
@@ -263,6 +266,57 @@ def _maybe_triage_hint(run, adapter_for, tid, attempt, fb, ticket=None, wt=None,
                 except Exception as e:
                     run.event("triage_hint_error", ticket=tid, error=str(e))
     return fb
+
+
+def nudge(run, tid, note):
+    """Store a user note for tid in the run dir and emit a nudge event.
+    Refused if the ticket is closed."""
+    text = " ".join(str(note).split()) if note is not None else ""
+    if not text:
+        raise ValueError("note cannot be empty")
+    all_tickets = milestones.merged_tickets(run)
+    if not any(t["id"] == tid for t in all_tickets):
+        raise ValueError("no such ticket %s" % tid)
+    st = ticket_state(run, tid)
+    if st.get("status") == "closed":
+        raise ValueError("ticket %s is closed" % tid)
+
+    nudge_dir = run.path("tickets/%s/nudges" % tid)
+    os.makedirs(nudge_dir, exist_ok=True)
+    fname = "%f-%d.json" % (time.time(), os.getpid())
+    entry = {"ticket": tid, "note": text, "at": state.now()}
+    state._write_atomic(os.path.join(nudge_dir, fname), json.dumps(entry, indent=2))
+    run.event("nudge", ticket=tid, note=text)
+
+
+def consume_nudges(run, tid):
+    """Retrieve and delete pending nudge files for tid. Returns list of note strings."""
+    nudge_dir = run.path("tickets/%s/nudges" % tid)
+    if not os.path.isdir(nudge_dir):
+        return []
+    notes = []
+    for fname in sorted(os.listdir(nudge_dir)):
+        if not fname.endswith(".json"):
+            continue
+        fpath = os.path.join(nudge_dir, fname)
+        try:
+            with open(fpath) as f:
+                data = json.load(f)
+            note = data.get("note") if isinstance(data, dict) else None
+            if note and isinstance(note, str) and note.strip():
+                notes.append(note.strip())
+            os.remove(fpath)
+        except OSError:
+            continue
+    return notes
+
+
+def _clean_user_notes(fb):
+    """Strip User note lines from feedback so they are not carried across review rounds."""
+    if not fb:
+        return ""
+    lines = [line for line in fb.splitlines() if not line.startswith("User note:")]
+    return "\n".join(lines).strip()
 
 
 def doc_path_for(cfg, ticket):
@@ -661,6 +715,7 @@ def _review_loop(run, adapter_for, env, ticket, st, wt, base, results, feedback)
     highest severity. When review_lenses is empty, preserves legacy single-review loop.
     """
     tid, attempt = ticket["id"], st["attempt"]
+    st.setdefault("review", {"rounds": 0, "unresolved": []})
     cfg = run.cfg
     lenses = config.review_lenses(cfg)
     max_rounds = cfg.get("max_review_rounds", 2)
@@ -742,6 +797,11 @@ def _review_loop(run, adapter_for, env, ticket, st, wt, base, results, feedback)
         suggestions = [f for f in findings if f.get("severity") in ("minor", "nit")]
         if suggestions:
             fb_parts.append(_format_findings(suggestions, "Optional suggestions:"))
+        nudges = consume_nudges(run, tid)
+        if nudges:
+            nudge_str = "\n\n".join("User note: " + nu for nu in nudges)
+            fb_parts.append(nudge_str)
+            write_feedback(run, tid, attempt, nudge_str, append=True)
         # kept out of feedback.md: that file is the previous attempt's feedback and must survive a re-run
         coder_fb = "\n\n".join(p for p in [feedback] + fb_parts if p)
         since = gitops.head_sha(wt)
@@ -752,7 +812,8 @@ def _review_loop(run, adapter_for, env, ticket, st, wt, base, results, feedback)
         results["code"] = coder_res.structured_output
         _post_code(run, ticket, st, wt, since, coder_res)
         gitops.git(wt, "add", "-A")
-        feedback = coder_fb  # the re-review sees what the coder was asked to fix
+        clean_parts = [p for p in fb_parts if not p.startswith("User note:")]
+        feedback = "\n\n".join(p for p in [feedback] + clean_parts if p)  # the re-review sees what the coder was asked to fix
 
 
 def _run_gate_hook_stage(run, wt, ticket, attempt, stage_name, hook_list, env=None):
@@ -815,13 +876,18 @@ def _attempt(run, adapter_for, env, ticket, st, wt, stages):
         st["review"] = {"rounds": 0, "unresolved": []}
         save_state(run, tid, st)
     feedback = _read_feedback(run, tid, attempt)
+    nudges = consume_nudges(run, tid)
+    if nudges:
+        nudge_str = "\n\n".join("User note: " + n for n in nudges)
+        write_feedback(run, tid, attempt, nudge_str, append=True)
+        feedback = _read_feedback(run, tid, attempt)
     since = gitops.head_sha(wt)
     results, test_cmd, rerun_rc = {}, None, None
     for stage in stages:
         if stage in ("review", "validate"):
             gitops.git(wt, "add", "-A")  # new files become visible to `git diff <base>`
         if stage == "review":
-            fb = _review_loop(run, adapter_for, env, ticket, st, wt, base, results, feedback)
+            fb = _review_loop(run, adapter_for, env, ticket, st, wt, base, results, _clean_user_notes(feedback))
             if fb:
                 return fb, results, test_cmd, rerun_rc
             continue
