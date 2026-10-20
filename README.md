@@ -43,7 +43,32 @@ Agent roles are configured via `yoke setup --primary <agent> --secondary <agent>
 
 The `review` role defaults to `auto`, resolving dynamically to the opposite of the `code` agent (`claude` <-> `agy`), ensuring code review is performed by a different agent than the implementer. For custom code agent names outside `AGENTS`, it falls back to `primary` (or `secondary` if `primary` matches `code`). `yoke setup` warns if an explicit override assigns the same agent to both code and review. Use `--map review=auto` to restore automatic resolution.
 
-During ticket execution, the `review` stage runs an iterative review loop (up to `max_review_rounds` revisions). Configured review lenses (`review_lenses`, defaulting to `["security", "performance", "tests"]`) evaluate changes through dedicated lens prompts (`review_security.md`, `review_performance.md`, `review_tests.md`), focusing on vulnerability checks, performance bottlenecks, and test coverage. Each lens runs independently in read-only mode without seeing findings from other lenses; when `parallel > 1`, lenses execute concurrently up to `min(len(lenses), parallel)` worker threads. Findings across lenses are merged and deduplicated by file and line, preserving the highest severity. Setting `review_lenses: []` restores legacy single-review execution byte-for-byte. Each lens call counts against `max_agent_calls_total`. Blocker and major findings trigger coder revisions using the resumed session. If findings remain unresolved when reaching the revision cap, the ticket proceeds without failing: unresolved findings are recorded in ticket state, posted as issue comments, and surfaced in the `yoke pr` description under "Unresolved review findings".
+### Review lenses
+
+During ticket execution, the `review` stage runs an iterative review loop (up to `max_review_rounds` revisions). Review lenses are **enabled by default** (`review_lenses` defaults to `["security", "performance", "tests"]`):
+
+```json
+{
+  "review_lenses": [
+    "security",
+    "performance",
+    "tests"
+  ]
+}
+```
+
+- **Dedicated lens prompts**: Dedicated lens prompts (`review_security.md`, `review_performance.md`, `review_tests.md`) evaluate changes focusing on vulnerability checks, performance bottlenecks, and test coverage.
+- **Concurrent read-only evaluation**: Each lens runs independently in read-only mode without seeing findings from other lenses. When `parallel > 1`, lenses execute concurrently up to `min(len(lenses), parallel)` worker threads.
+- **Deduplication**: Findings across lenses are merged and deduplicated by file and line, preserving the highest severity.
+- **Opting out**: To turn off multi-lens review and restore legacy single-review execution byte-for-byte, set `review_lenses: []` in `~/.yoke/config.json` or `<repo>/.yoke.json`:
+
+```json
+{
+  "review_lenses": []
+}
+```
+
+Each lens call counts against `max_agent_calls_total`. Blocker and major findings trigger coder revisions using the resumed session. If findings remain unresolved when reaching the revision cap, the ticket proceeds without failing: unresolved findings are recorded in ticket state, posted as issue comments, and surfaced in the `yoke pr` description under "Unresolved review findings".
 
 ### Model selection and tiers
 
@@ -76,9 +101,19 @@ yoke models --reset [AGENT[.TIER]] [--scope user|project|repo]   # remove model 
 
 In agent sessions, run `/yoke:models` (agy: the `models` skill) to interactively inspect, configure, or reset model choices. When kicking off runs with `/yoke:grill` or the end-to-end wrapper `/yoke:go`, a model selection prompt precedes `yoke init` to confirm or update agent models before planning.
 
-### Budget caps and limits
+### Budget configuration
 
-Run-level execution budgets can be configured in `~/.yoke/config.json` or `<repo>/.yoke.json`:
+Run-level execution budgets can be configured in `~/.yoke/config.json` (user-wide) or `<repo>/.yoke.json` (per-repo):
+
+```json
+{
+  "max_agent_calls_total": 300,
+  "budget": {
+    "max_cost_usd": 25.00,
+    "max_tokens": 1000000
+  }
+}
+```
 
 - `max_agent_calls_total`: Maximum total agent invocations across all tickets (default: 300).
 - `budget.max_cost_usd`: Maximum spend cap in USD (default: `null`, disabled). Checks recorded Claude cost from `usage.summarize` (falling back to total cost).
@@ -86,11 +121,41 @@ Run-level execution budgets can be configured in `~/.yoke/config.json` or `<repo
 
 When a budget cap is exceeded, the runner stops scheduling new work, allows in-flight calls to finish cleanly, and opens a single budget escalation. Resuming after a budget escalation does not re-escalate.
 
-Agent rate limits and quotas are configured under `limits`:
+### Rate limits configuration
 
-- `limits.patterns`: Mapping of agent name (`claude`, `agy`) to regex patterns detecting rate limits, quota limits, or resource exhaustion in agent stdout and error messages.
-- `limits.max_wait_s`: Maximum wait time in seconds when a limit is hit (default: 7200).
+Agent rate limits and quotas are configured under `limits` in `~/.yoke/config.json` or `<repo>/.yoke.json`:
+
+```json
+{
+  "limits": {
+    "patterns": {
+      "claude": [
+        "(?i)rate[ _]?limit",
+        "(?i)quota[ _]?exceeded",
+        "(?i)usage[ _]?limit",
+        "(?i)too many requests",
+        "(?i)overloaded_error",
+        "(?i)credit balance"
+      ],
+      "agy": [
+        "(?i)resource_exhausted",
+        "(?i)rate[ _]?limit",
+        "(?i)quota[ _]?exceeded",
+        "(?i)too many requests"
+      ]
+    },
+    "max_wait_s": 7200,
+    "max_waits": 3,
+    "backoff_s": 30
+  }
+}
+```
+
+- **Unverified patterns warning**: Default regex patterns in `limits.patterns` are unverified against live provider rate limits (verified only using synthetic CLI output fixtures). Provider error messages and status formats may change over time.
+- **Overriding limits**: You can override or extend `limits.patterns` for any agent (`claude`, `agy`) in `~/.yoke/config.json` or `<repo>/.yoke.json` to match custom or updated provider rate limit strings.
+- `limits.max_wait_s`: Maximum backoff wait time in seconds when a limit is hit (default: 7200).
 - `limits.max_waits`: Maximum consecutive wait cycles before opening an escalation (default: 3).
+- `limits.backoff_s`: Base backoff interval in seconds (default: 30).
 
 When an agent call matches a limit pattern, the adapter classifies the output into `CallResult.limit` with the raw text and any parsed reset timestamp. Calls stopped by rate limits do not count as failed attempts or schema errors, preventing unnecessary schema re-asks.
 
@@ -112,16 +177,18 @@ During a rate limit wait:
 Gate verification commands can be configured under `gate_hooks`:
 
 ```json
-"gate_hooks": {
-  "after_stage": {
-    "code": [],
-    "qa": []
-  },
-  "before_close": []
+{
+  "gate_hooks": {
+    "after_stage": {
+      "code": ["pytest tests/unit/test_quick.py"],
+      "qa": ["npm run lint"]
+    },
+    "before_close": ["git diff --check"]
+  }
 }
 ```
 
-- **User config only**: For security, `gate_hooks` is accepted exclusively from user configuration (`~/.yoke/config.json`). Any `gate_hooks` specified in repo configuration (`<repo>/.yoke.json`) is rejected with a warning log to prevent arbitrary command execution from untrusted repositories.
+- **User config only**: For security reasons, `gate_hooks` is accepted exclusively from user configuration (`~/.yoke/config.json`). Any `gate_hooks` defined in repo configuration (`<repo>/.yoke.json`) is strictly rejected with a warning log to prevent arbitrary command execution from untrusted repositories.
 - **Execution environment**: Hooks run in the ticket worktree with environment variables:
   - `YOKE_TICKET`: Ticket identifier (e.g. `T-0065`).
   - `YOKE_STAGE`: Pipeline stage name (e.g. `code`, `qa`, `before_close`).
@@ -137,6 +204,12 @@ Gate verification commands can be configured under `gate_hooks`:
 
 When repeated failures occur across attempts on a ticket, yoke can optionally generate competing hypotheses and rank them to provide advisory guidance:
 
+```json
+{
+  "hypotheses": 4
+}
+```
+
 - `hypotheses`: Number of competing hypothesis calls to execute upon repeating failure on the final attempt (default: `0`, disabled).
 - **Trigger condition**: Activates on the final attempt (`attempt == max_attempts_per_ticket`, with `attempt >= 2`) when the failure evidence matches the preceding attempt (for example, identical QA test failures, matching runner test failures, or recurring validator issues). When `hypotheses` is `0`, standard router triage hint is used instead.
 - **Fan-out calls**: Runs `N` read-only calls (`hypotheses` role, default `secondary`) seeded with failure evidence and cycled round-robin across four categories: `spec gap`, `environment`, `test bug`, and `code bug`. Each candidate returns structured output (`schemas/hypotheses.json`) with `hypothesis`, `evidence`, `fix_plan`, and `confidence` (0.0 to 1.0).
@@ -144,6 +217,18 @@ When repeated failures occur across attempts on a ticket, yoke can optionally ge
 - **Feedback integration**: The winning fix plan is appended to retry feedback as `Hypothesis fix plan (advisory only): ...` for the coder on the final attempt.
 - **Audit and Budgeting**: Fan-out calls and the ranking call are saved under the attempt audit directory (`tickets/<tid>/attempt-<N>/hypotheses-1`, `hypotheses-rank`) and counted against `max_agent_calls_total`.
 - **Pass/Fail independence**: Confidence scores are strictly advisory and never decide pass or fail; close gates strictly evaluate verified test suite execution and validator criteria.
+
+### Runtime ticket steering (`yoke nudge`)
+
+Pending or in-progress tickets can be steered dynamically without modifying `tickets.json` or interrupting in-flight calls:
+
+```bash
+yoke nudge <ticket_id> --note "<guidance text>"
+```
+
+- **Runtime injection**: Appends guidance directly to ticket runtime state without modifying `tickets.json` or aborting active agent operations.
+- **Feedback loop**: The note is injected into prompt feedback on the ticket's next attempt or review revision round.
+- **Use cases**: Guiding an agent back on track when monitoring progress, clarifying ambiguities, or suggesting alternative approaches without restarting the run.
 
 
 ## Typical flow
