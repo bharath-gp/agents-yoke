@@ -1,9 +1,11 @@
 """Config: defaults <- ~/.yoke/config.json <- <repo>/.yoke.json <- overrides (PLAN 2.6)."""
 import copy
 import json
+import logging
 import os
 
 DEFAULTS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "defaults.json")
+logger = logging.getLogger(__name__)
 
 
 def yoke_home():
@@ -37,10 +39,24 @@ def _read(path, required=False):
 
 
 def load(repo=None, home=None, overrides=None):
+    """Load configuration merged across defaults, user config, repo config, and overrides.
+
+    gate_hooks is accepted only from user config (~/.yoke/config.json). If defined in
+    repo config, it is refused and logged with a warning.
+    """
     cfg = _read(DEFAULTS_PATH, required=True)
     cfg = deep_merge(cfg, _read(os.path.join(home or yoke_home(), "config.json")))
     if repo:
-        cfg = deep_merge(cfg, _read(os.path.join(repo, ".yoke.json")))
+        repo_path = os.path.join(repo, ".yoke.json")
+        repo_cfg = _read(repo_path)
+        if "gate_hooks" in repo_cfg:
+            logger.warning(
+                "refusing gate_hooks from repo config %s: gate_hooks may only be configured in user config",
+                repo_path,
+            )
+            repo_cfg = copy.deepcopy(repo_cfg)
+            del repo_cfg["gate_hooks"]
+        cfg = deep_merge(cfg, repo_cfg)
     return deep_merge(cfg, overrides or {})
 
 

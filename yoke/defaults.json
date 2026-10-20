@@ -104,5 +104,12 @@
     "chore": {"stages": ["code", "review", "validate"]},
     "spike": {"stages": ["code", "review", "validate"]},
     "research": {"stages": ["search", "research", "factcheck"]}
+  },
+  "gate_hooks": {
+    "after_stage": {
+      "code": [],
+      "qa": []
+    },
+    "before_close": []
   }
 }

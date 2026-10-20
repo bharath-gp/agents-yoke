@@ -107,6 +107,31 @@ During a rate limit wait:
 - `yoke wait` continues waiting (rate limit pauses do not trigger an early return, since they are not escalations).
 - The web dashboard displays a prominent banner in the run detail view and an indicator row in the run picker.
 
+### Gate hooks
+
+Gate verification commands can be configured under `gate_hooks`:
+
+```json
+"gate_hooks": {
+  "after_stage": {
+    "code": [],
+    "qa": []
+  },
+  "before_close": []
+}
+```
+
+- **User config only**: For security, `gate_hooks` is accepted exclusively from user configuration (`~/.yoke/config.json`). Any `gate_hooks` specified in repo configuration (`<repo>/.yoke.json`) is rejected with a warning log to prevent arbitrary command execution from untrusted repositories.
+- **Execution environment**: Hooks run in the ticket worktree with environment variables:
+  - `YOKE_TICKET`: Ticket identifier (e.g. `T-0065`).
+  - `YOKE_STAGE`: Pipeline stage name (e.g. `code`, `qa`).
+  - `YOKE_ATTEMPT`: Attempt number.
+- **Exit codes & status**:
+  - `0`: Pass (`status: pass`).
+  - `2`: Gate check failure (`status: fail`, capturing stdout/stderr tail up to 1000 characters).
+  - Other non-zero or timeout: Hook execution error (`status: gate_hook_error`).
+- **Process control**: On timeout, the entire process group is terminated using SIGTERM followed by SIGKILL.
+
 
 ## Typical flow
 

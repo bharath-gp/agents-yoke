@@ -47,6 +47,7 @@ Status legend per milestone: `[ ]` todo, `[~]` in progress, `[x]` done. Update t
    | [M14](#m14) | Milestones, destination map, and charting | [2.5](#s2-5), [2.7](#s2-7), [2.8](#s2-8), [2.14](#s2-14), [2.16](#s2-16) |
    | [M15](#m15) | Web dashboard (read-only UI & HTTP server) | [2.2](#s2-2), [2.8](#s2-8), [2.16](#s2-16) |
    | [M16](#m16) | Per-run usage ledger and usage.json | [2.2](#s2-2), [2.8](#s2-8), [2.12](#s2-12), [2.13](#s2-13) |
+   | [M17](#m17) | Gate hooks runner & user-config loading | [2.6](#s2-6), [2.8](#s2-8) |
 4. [Verification matrix](#s4)
 5. [Out of scope](#s5)
 - [Appendix A: Topic index](#appA)
@@ -202,6 +203,7 @@ Default budgets/limits:
 | `models` | `{}` (`{<agent>: {"plan": {"model": str, "effort": str}, "cheap": {...}}}`) |
 | `budget` | `{"max_cost_usd": null, "max_tokens": null}` (optional caps, default null: disabled) |
 | `limits` | `{"max_waits": 3, "backoff_s": 30, "max_wait_s": 7200, "patterns": {...}}` (rate limit pause and same-call retry) |
+| `gate_hooks` | `{"after_stage": {"code": [], "qa": []}, "before_close": []}` (user config `~/.yoke/config.json` only; refused from repo config) |
 
 Type → stages routing (config `routing`, overridable per type with model/effort per stage):
 
@@ -551,6 +553,14 @@ Files: `yoke/usage.py`, `yoke/pipeline.py`, `yoke/scheduler.py`, `tests/test_usa
 - Status, wait summary, and dashboard UI: `render_status()` in `state.py` adds usage totals and top 3 spenders to `yoke status` and `yoke wait`; missing agy cost renders as `"unreported"`, and partial/mixed costs display `(+N unreported)`. The dashboard `/api/runs/<id>` endpoint and `dashboard.html` display totals and a top 3 spenders table.
 - Notes: Built `yoke/usage.py`, hooked into `pipeline.run_ticket` and `scheduler.run`, covered with unit and integration tests in `tests/test_usage.py`.
 
+<a id="m17"></a>
+### M17: Gate hooks runner & user-config loading `[x]`
+Files: `yoke/hooks.py`, `yoke/config.py`, `yoke/defaults.json`, `tests/test_gate_hooks.py`.
+- Hook execution runner (`yoke/hooks.py`): executes hook commands in worktrees with `YOKE_TICKET`, `YOKE_STAGE`, `YOKE_ATTEMPT` environment variables. Process group terminated on timeout via SIGTERM followed by SIGKILL. Exit 0 maps to `pass`, exit 2 maps to `fail` (capturing stdout/stderr tail up to 1000 characters), and other non-zero or timeout maps to `gate_hook_error`.
+- User-config-only gate hooks (`yoke/config.py`): `gate_hooks` loaded strictly from `~/.yoke/config.json`; definitions in repo `.yoke.json` are refused and logged with a warning.
+- Defaults (`yoke/defaults.json`): defaults to `{"after_stage": {"code": [], "qa": []}, "before_close": []}`.
+- Notes: Built `yoke/hooks.py` (`run_hook`, `run_hooks`, `HookResult`), updated `config.load` to reject repo `gate_hooks` securely, added defaults in `defaults.json`, and added full test suite in `tests/test_gate_hooks.py`.
+
 ---
 
 <a id="s4"></a>
@@ -632,5 +642,6 @@ Files: `yoke/usage.py`, `yoke/pipeline.py`, `yoke/scheduler.py`, `tests/test_usa
 | `yoke/prbody.py` | PR template matching and body fill | [2.14](#s2-14) | [M8](#m8) |
 | `yoke/tracker.py` | local / GitHub tracker, `pr_body`, `pr` | [2.14](#s2-14) | [M8](#m8) |
 | `yoke/usage.py` | per-run token usage & cost summary (`usage.json`) | [2.2](#s2-2), [2.13](#s2-13) | [M16](#m16) |
+| `yoke/hooks.py` | hook runner with process-group kill on timeout | [2.6](#s2-6), [2.8](#s2-8) | [M17](#m17) |
 | `yoke/dashboard.py`, `yoke/dashboard.html` | read-only dashboard server and UI | [2.16](#s2-16) | [M15](#m15) |
 | `tests/fake_cli.py`, `tests/test_*.py`, `tests/e2e.sh` | fake CLI, unit + e2e tests | [4](#s4) | [M1](#m1)–[M9](#m9) |
