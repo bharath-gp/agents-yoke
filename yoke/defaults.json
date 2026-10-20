@@ -27,6 +27,10 @@
   "max_chart_rounds": 3,
   "max_tickets": 40,
   "max_agent_calls_total": 300,
+  "budget": {
+    "max_cost_usd": null,
+    "max_tokens": null
+  },
   "parallel": 1,
   "timeouts_s": {
     "plan_review": 900,

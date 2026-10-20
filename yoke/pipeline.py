@@ -21,7 +21,9 @@ class Escalate(Exception):
 
 
 class BudgetExhausted(Exception):
-    pass
+    def __init__(self, reason="budget exhausted: max_agent_calls_total reached"):
+        super().__init__(reason)
+        self.reason = reason
 
 
 def default_adapter_for(cfg):
@@ -101,6 +103,9 @@ def _call(run, adapter_for, env, ticket, stage, attempt, wt, base, mode, results
     cfg = run.cfg
     if run.read_json("run.json")["agent_calls"] >= cfg["max_agent_calls_total"]:
         raise BudgetExhausted()
+    exceeded, reason = config.check_budget(run)
+    if exceeded:
+        raise BudgetExhausted(reason)
     dest, oos, _ = milestones.destination_and_scope(run, ticket)
     with open(os.path.join(PKG, "prompts", stage + ".md")) as f:
         prompt = string.Template(f.read()).safe_substitute(

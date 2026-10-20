@@ -76,6 +76,16 @@ yoke models --reset [AGENT[.TIER]] [--scope user|project|repo]   # remove model 
 
 In agent sessions, run `/yoke:models` (agy: the `models` skill) to interactively inspect, configure, or reset model choices. When kicking off runs with `/yoke:grill` or the end-to-end wrapper `/yoke:go`, a model selection prompt precedes `yoke init` to confirm or update agent models before planning.
 
+### Budget caps and limits
+
+Run-level execution budgets can be configured in `~/.yoke/config.json` or `<repo>/.yoke.json`:
+
+- `max_agent_calls_total`: Maximum total agent invocations across all tickets (default: 300).
+- `budget.max_cost_usd`: Maximum spend cap in USD (default: `null`, disabled). Checks recorded Claude cost from `usage.summarize` (falling back to total cost).
+- `budget.max_tokens`: Maximum total token usage cap across all agents (default: `null`, disabled).
+
+When a budget cap is exceeded, the runner stops scheduling new work, allows in-flight calls to finish cleanly, and opens a single budget escalation. Resuming after a budget escalation does not re-escalate.
+
 
 ## Typical flow
 

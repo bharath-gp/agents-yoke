@@ -166,6 +166,7 @@ class FakeAdapter(Adapter):
         if err:
             return CallResult(error=err if exit_code == 0 else "exit %s; %s" % (exit_code, err))
         res = CallResult(structured_output=obj.get("structured_output"), session_id=obj.get("session_id"),
+                         usage=obj.get("usage"), cost=obj.get("cost") or obj.get("total_cost_usd"),
                          observed_model="fake")
         if exit_code != 0:
             res.error = "exit %s" % exit_code

@@ -178,3 +178,76 @@ def save_models(path, sets=None, reset=None):
 
     _write_atomic(path, json.dumps(out, indent=2) + "\n")
     return out["models"]
+
+
+BUDGET_CAP_PREFIX = "budget cap exhausted:"
+
+
+def check_budget(run):
+    """Check if config budget (max_cost_usd, max_tokens) is exceeded by recorded usage.
+
+    Agents counted:
+    - max_tokens counts total tokens across all agents (totals.total_tokens).
+    - max_cost_usd checks recorded Claude cost (by_agent.claude.cost), falling back to totals.cost if claude entry is absent.
+
+    Returns (exceeded: bool, reason: str or None).
+    The budget cap is one-shot: once escalated, resume does not re-escalate for the rest of the run.
+    """
+    cfg = run.cfg
+    budget = cfg.get("budget")
+    if not isinstance(budget, dict):
+        return False, None
+
+    max_cost = budget.get("max_cost_usd")
+    max_tokens = budget.get("max_tokens")
+    if max_cost is None and max_tokens is None:
+        return False, None
+
+    try:
+        max_cost_val = float(max_cost) if max_cost is not None else None
+    except (ValueError, TypeError):
+        max_cost_val = None
+
+    try:
+        max_tokens_val = int(max_tokens) if max_tokens is not None else None
+    except (ValueError, TypeError):
+        max_tokens_val = None
+
+    if max_cost_val is None and max_tokens_val is None:
+        return False, None
+
+    # Cap is one-shot: check run.json flag and past escalations
+    info = run.read_json("run.json", {})
+    if info.get("budget_escalated"):
+        return False, None
+    for e in run.read_json("escalations.json", []):
+        if e.get("ticket") is None and str(e.get("reason", "")).startswith(BUDGET_CAP_PREFIX):
+            return False, None
+
+    from . import usage
+    summary = usage.summarize(run)
+    totals = summary.get("totals", {})
+
+    if max_tokens_val is not None:
+        tot_tokens = totals.get("total_tokens")
+        if not isinstance(tot_tokens, (int, float)) or isinstance(tot_tokens, bool):
+            tot_tokens = sum(
+                v for k, v in totals.items()
+                if "token" in k and k != "total_tokens" and isinstance(v, (int, float)) and not isinstance(v, bool)
+            )
+        if tot_tokens > 0 and tot_tokens >= max_tokens_val:
+            return True, "%s max_tokens exceeded (%d >= %d)" % (BUDGET_CAP_PREFIX, tot_tokens, max_tokens_val)
+
+    if max_cost_val is not None:
+        claude_cost = summary.get("by_agent", {}).get("claude", {}).get("cost")
+        if isinstance(claude_cost, (int, float)) and not isinstance(claude_cost, bool):
+            cost_val = float(claude_cost)
+        elif isinstance(totals.get("cost"), (int, float)) and not isinstance(totals.get("cost"), bool):
+            cost_val = float(totals["cost"])
+        else:
+            cost_val = 0.0
+
+        if cost_val > 0 and cost_val >= max_cost_val:
+            return True, "%s max_cost_usd exceeded (%.6f >= %.6f)" % (BUDGET_CAP_PREFIX, cost_val, max_cost_val)
+
+    return False, None

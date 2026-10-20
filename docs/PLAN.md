@@ -200,6 +200,7 @@ Default budgets/limits:
 | `test_command` | `null` (QA result supplies it; repo config may pin it) |
 | `tracker` | `"auto"` (`github` if `gh repo view` succeeds and remote is GitHub, else `local`) |
 | `models` | `{}` (`{<agent>: {"plan": {"model": str, "effort": str}, "cheap": {...}}}`) |
+| `budget` | `{"max_cost_usd": null, "max_tokens": null}` (optional caps, default null: disabled) |
 
 Type → stages routing (config `routing`, overridable per type with model/effort per stage):
 
@@ -293,7 +294,7 @@ Milestone gates and fix tickets:
 ### 2.12 Process control, budgets
 - Each agent call: `subprocess.Popen(cmd, cwd=..., stdout=file, stderr=file, start_new_session=True, env=...)`; `wait(timeout)`; on timeout `os.killpg(SIGTERM)`, after `kill_grace_s` `SIGKILL`; meta records `timed_out: true`. pid stored in `meta.json` while running.
 - Runner detach: `yoke run --detach` re-execs itself with `start_new_session=True`, stdout to `runner.log`, writes pid to `runner.lock`.
-- Budget counters in `run.json`: total agent calls; when `max_agent_calls_total` hit → stop scheduling, escalate "budget exhausted". No token/cost cap (record `usage`/`total_cost_usd` only).
+- Budget counters in `run.json`: total agent calls; when `max_agent_calls_total` hit or optional `budget` (`max_cost_usd`, `max_tokens`) exceeded → stop scheduling, let in-flight calls finish, escalate "budget cap exhausted". One-shot escalation: resume does not re-escalate. Agents counted: `max_tokens` checks total tokens across all agents (`totals.total_tokens`); `max_cost_usd` checks recorded Claude cost (`by_agent.claude.cost`, falling back to `totals.cost` if claude entry is absent).
 
 <a id="s2-13"></a>
 ### 2.13 Audit record (`meta.json` per call)
@@ -566,7 +567,7 @@ Files: `yoke/usage.py`, `yoke/pipeline.py`, `yoke/scheduler.py`, `tests/test_usa
 
 <a id="s5"></a>
 ## 5. Deliberately out of scope (add when needed)
-- Token/cost caps (requirements say none initially; usage is recorded).
+- Token/cost caps (previously out of scope; optional budget caps `max_cost_usd` and `max_tokens` supported as of T-0060, disabled by default).
 - Auto-merge of PRs or pushing without `yoke pr`.
 - More than two agents in one run beyond per-role overrides.
 

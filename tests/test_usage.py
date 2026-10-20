@@ -329,6 +329,62 @@ class TestUsagePersistence(UsageTestBase):
         self.assertEqual(res, disk_data)
 
 
+class TestCheckBudget(UsageTestBase):
+    def test_null_budget_returns_false(self):
+        self.run_.update(config=dict(self.run_.cfg, budget=None))
+        self.assertEqual(config.check_budget(self.run_), (False, None))
+        self.run_.update(config=dict(self.run_.cfg, budget={"max_cost_usd": None, "max_tokens": None}))
+        self.assertEqual(config.check_budget(self.run_), (False, None))
+
+    def test_max_tokens_cap_exceeded_message(self):
+        self.write_meta("tickets/T-001/attempt-1/code", {
+            "stage": "code",
+            "ticket": "T-001",
+            "agent": "claude",
+            "requested": {"model": "m1"},
+            "observed": {
+                "model": "m1",
+                "usage": {"input_tokens": 10},
+            },
+        })
+        self.run_.update(config=dict(self.run_.cfg, budget={"max_cost_usd": None, "max_tokens": 1}))
+        exceeded, reason = config.check_budget(self.run_)
+        self.assertTrue(exceeded)
+        self.assertIn("budget cap exhausted: max_tokens exceeded", reason)
+        self.assertIn("10 >= 1", reason)
+
+    def test_max_cost_usd_cap_exceeded_message(self):
+        self.write_meta("tickets/T-001/attempt-1/code", {
+            "stage": "code",
+            "ticket": "T-001",
+            "agent": "claude",
+            "requested": {"model": "m1"},
+            "observed": {
+                "model": "m1",
+                "cost": 0.05,
+            },
+        })
+        self.run_.update(config=dict(self.run_.cfg, budget={"max_cost_usd": 0.01, "max_tokens": None}))
+        exceeded, reason = config.check_budget(self.run_)
+        self.assertTrue(exceeded)
+        self.assertIn("budget cap exhausted: max_cost_usd exceeded", reason)
+
+    def test_cap_does_not_retrigger_when_already_escalated(self):
+        self.write_meta("tickets/T-001/attempt-1/code", {
+            "stage": "code",
+            "ticket": "T-001",
+            "agent": "claude",
+            "requested": {"model": "m1"},
+            "observed": {
+                "model": "m1",
+                "usage": {"input_tokens": 10},
+            },
+        })
+        self.run_.update(config=dict(self.run_.cfg, budget={"max_cost_usd": None, "max_tokens": 1}))
+        self.run_.update(budget_escalated=True)
+        self.assertEqual(config.check_budget(self.run_), (False, None))
+
+
 from tests.test_core import FAKE_CLI
 from tests.test_pipeline import PipeBase, ticket, resp, CODE, REV, val
 from yoke import adapters, gitops, pipeline
@@ -406,6 +462,66 @@ class TestUsageIntegration(PipeBase):
         with open(usage_file) as f:
             data = json.load(f)
         self.assertIn("totals", data)
+
+    def test_null_budget_leaves_behaviour_unchanged(self):
+        self.setup_tickets(
+            [ticket(1)],
+            {"code": [resp(CODE, "c1", write={"f1.txt": "x"}, usage={"input_tokens": 100})],
+             "review": [resp(REV)],
+             "validate": [resp(val())],
+             "router": [{"exit": 1}]})
+        self.assertEqual(self.run_.cfg.get("budget"), {"max_cost_usd": None, "max_tokens": None})
+        rc = self.go()
+        self.assertEqual(rc, "done")
+        self.assertEqual(self.run_.read_json("escalations.json", []), [])
+
+    def test_budget_max_tokens_escalates_once_and_resume_does_not_reescalate(self):
+        self.setup_tickets(
+            [ticket(1), ticket(2)],
+            {"code": [resp(CODE, "c1", write={"f1.txt": "x"}, usage={"input_tokens": 10}),
+                      resp(CODE, "c2", write={"f2.txt": "y"}, usage={"input_tokens": 10})],
+             "review": [resp(REV)] * 2,
+             "validate": [resp(val())] * 2,
+             "router": [{"exit": 1}]})
+        self.run_.update(config=dict(self.run_.cfg, budget={"max_cost_usd": None, "max_tokens": 1}))
+
+        # First run: ticket 1 runs, usage exceeds max_tokens=1, stops scheduling ticket 2, opens 1 escalation
+        rc = self.go()
+        self.assertEqual(rc, "needs_user")
+        esc = self.run_.read_json("escalations.json")
+        self.assertEqual(len(esc), 1)
+        self.assertIsNone(esc[0]["ticket"])
+        self.assertIn("budget", esc[0]["reason"].lower())
+        self.assertIn("max_tokens", esc[0]["reason"])
+
+        # Resume: must not re-escalate, allows remaining tickets to complete
+        rc2 = self.go()
+        self.assertEqual(rc2, "done")
+        esc2 = self.run_.read_json("escalations.json")
+        self.assertEqual(len(esc2), 1)
+        self.assertEqual(self.tstate(1)["status"], "closed")
+        self.assertEqual(self.tstate(2)["status"], "closed")
+
+    def test_budget_max_cost_usd_escalates_once(self):
+        self.setup_tickets(
+            [ticket(1), ticket(2)],
+            {"code": [resp(CODE, "c1", write={"f1.txt": "x"}, cost=0.05),
+                      resp(CODE, "c2", write={"f2.txt": "y"}, cost=0.01)],
+             "review": [resp(REV)] * 2,
+             "validate": [resp(val())] * 2,
+             "router": [{"exit": 1}]})
+        self.run_.update(config=dict(self.run_.cfg, budget={"max_cost_usd": 0.01, "max_tokens": None}))
+
+        rc = self.go()
+        self.assertEqual(rc, "needs_user")
+        esc = self.run_.read_json("escalations.json")
+        self.assertEqual(len(esc), 1)
+        self.assertIn("max_cost_usd", esc[0]["reason"])
+
+        # Resume
+        rc2 = self.go()
+        self.assertEqual(rc2, "done")
+        self.assertEqual(len(self.run_.read_json("escalations.json")), 1)
 
 
 if __name__ == "__main__":

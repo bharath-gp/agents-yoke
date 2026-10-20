@@ -7,7 +7,7 @@ import signal
 import threading
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
-from . import gitops, milestones, pipeline, planreview, state, tracker, usage
+from . import config, gitops, milestones, pipeline, planreview, state, tracker, usage
 
 
 class LockError(Exception):
@@ -147,13 +147,22 @@ def _loop(run_, adapter_for, env):
                 )
             ]
             ready.sort(key=lambda t: sts.get(t["id"]) != "in_progress")
+            if not out_of_budget:
+                exceeded, reason = config.check_budget(run_)
+                if exceeded:
+                    out_of_budget = reason
+
             while ready and len(running) < parallel and not out_of_budget:
                 t = ready.pop(0)
                 running[pool.submit(pipeline.run_ticket, run_, t, adapter_for, env, merge_lock)] = t["id"]
 
             if not running:
                 if out_of_budget:
-                    pipeline.escalate(run_, None, "budget exhausted: max_agent_calls_total reached")
+                    is_cap = isinstance(out_of_budget, str) and out_of_budget.startswith(config.BUDGET_CAP_PREFIX)
+                    reason = out_of_budget if isinstance(out_of_budget, str) else "budget exhausted: max_agent_calls_total reached"
+                    if is_cap:
+                        run_.update(budget_escalated=True)
+                    pipeline.escalate(run_, None, reason)
                     return "needs_user"
 
                 unfinished_ms = None
@@ -234,8 +243,8 @@ def _loop(run_, adapter_for, env):
                 del running[f]
                 try:
                     f.result()
-                except pipeline.BudgetExhausted:
-                    out_of_budget = True  # let in-flight tickets stop at their next call
+                except pipeline.BudgetExhausted as e:
+                    out_of_budget = str(e) or "budget exhausted: max_agent_calls_total reached"  # let in-flight tickets stop at their next call
 
 
 def unblock_milestone(run_, milestone, note=None, waive=None):
