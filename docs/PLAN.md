@@ -47,7 +47,7 @@ Status legend per milestone: `[ ]` todo, `[~]` in progress, `[x]` done. Update t
    | [M14](#m14) | Milestones, destination map, and charting | [2.5](#s2-5), [2.7](#s2-7), [2.8](#s2-8), [2.14](#s2-14), [2.16](#s2-16) |
    | [M15](#m15) | Web dashboard (read-only UI & HTTP server) | [2.2](#s2-2), [2.8](#s2-8), [2.16](#s2-16) |
    | [M16](#m16) | Per-run usage ledger and usage.json | [2.2](#s2-2), [2.8](#s2-8), [2.12](#s2-12), [2.13](#s2-13) |
-   | [M17](#m17) | Gate hooks runner & user-config loading | [2.6](#s2-6), [2.8](#s2-8) |
+   | [M17](#m17) | Gate hooks runner & pipeline close gate | [2.6](#s2-6), [2.8](#s2-8) |
 4. [Verification matrix](#s4)
 5. [Out of scope](#s5)
 - [Appendix A: Topic index](#appA)
@@ -248,7 +248,7 @@ pending → (deps closed) → in_progress
   close: all gates true → commit in ticket worktree → merge into feature branch → closed
 attempt > max_attempts → blocked + escalation; dependents stay pending (shown as "waiting on blocked T-xxx")
 ```
-Close gate (checked explicitly, logged): code `done` ∧ QA `pass` ∧ runner test rerun exit 0 ∧ validate `approve` with every `exit_criteria.met` true ∧ docs `done|not_needed` (only for stages in this ticket's route).
+Close gate (checked explicitly, logged): code `done` ∧ QA `pass` ∧ runner test rerun exit 0 ∧ validate `approve` with every `exit_criteria.met` true ∧ docs `done|not_needed` (only for stages in this ticket's route) ∧ gate hooks (`after_stage` code/qa, `before_close`) passing. Hook failures return output tail as retry feedback to the coder.
 
 Retry feedback is a file `attempt-<n>/feedback.md` built from QA failures / validator issues / router triage hint, inlined into the next code prompt, and the coder session is resumed by ID.
 
@@ -554,12 +554,13 @@ Files: `yoke/usage.py`, `yoke/pipeline.py`, `yoke/scheduler.py`, `tests/test_usa
 - Notes: Built `yoke/usage.py`, hooked into `pipeline.run_ticket` and `scheduler.run`, covered with unit and integration tests in `tests/test_usage.py`.
 
 <a id="m17"></a>
-### M17: Gate hooks runner & user-config loading `[x]`
-Files: `yoke/hooks.py`, `yoke/config.py`, `yoke/defaults.json`, `tests/test_gate_hooks.py`.
+### M17: Gate hooks runner & pipeline close gate `[x]`
+Files: `yoke/hooks.py`, `yoke/config.py`, `yoke/defaults.json`, `yoke/pipeline.py`, `tests/test_gate_hooks.py`, `README.md`, `docs/PLAN.md`.
 - Hook execution runner (`yoke/hooks.py`): executes hook commands in worktrees with `YOKE_TICKET`, `YOKE_STAGE`, `YOKE_ATTEMPT` environment variables. Process group terminated on timeout via SIGTERM followed by SIGKILL. Exit 0 maps to `pass`, exit 2 maps to `fail` (capturing stdout/stderr tail up to 1000 characters), and other non-zero or timeout maps to `gate_hook_error`.
 - User-config-only gate hooks (`yoke/config.py`): `gate_hooks` loaded strictly from `~/.yoke/config.json`; definitions in repo `.yoke.json` are refused and logged with a warning.
 - Defaults (`yoke/defaults.json`): defaults to `{"after_stage": {"code": [], "qa": []}, "before_close": []}`.
-- Notes: Built `yoke/hooks.py` (`run_hook`, `run_hooks`, `HookResult`), updated `config.load` to reject repo `gate_hooks` securely, added defaults in `defaults.json`, and added full test suite in `tests/test_gate_hooks.py`.
+- Pipeline close gate integration (`yoke/pipeline.py`): executes `after_stage` hooks following `code` and `qa` stages and `before_close` hooks prior to commit. Failing hooks prevent commit and feed stderr/stdout tails back to the coder as retry feedback; results are recorded under `gate['gate_hooks']` in `close_gate` events and hook outputs are saved under `tickets/<id>/attempt-N/hooks/<stage>.log` and `.meta.json`.
+- Notes: Built `yoke/hooks.py` (`run_hook`, `run_hooks`, `HookResult`), wired hooks into `pipeline.py` (`_run_gate_hook_stage` in attempt and close gates), updated `config.load` to reject repo `gate_hooks` securely, added defaults in `defaults.json`, documented in `README.md`, and added full test suite in `tests/test_gate_hooks.py`.
 
 ---
 
@@ -635,7 +636,7 @@ Files: `yoke/hooks.py`, `yoke/config.py`, `yoke/defaults.json`, `tests/test_gate
 | `yoke/planreview.py`, `prompts/plan_review.md` | bounded plan review | [2.3](#s2-3) | [M2](#m2) |
 | `yoke/router.py` | Ollama router + fallback | [2.10](#s2-10) | [M3](#m3) |
 | `yoke/gitops.py`, `githooks/pre-push` | worktrees, commit, merge, push block | [2.9](#s2-9) | [M4](#m4), [M5](#m5) |
-| `yoke/pipeline.py`, `prompts/{code,qa,validate,docs}.md` | per-ticket state machine | [2.8](#s2-8) | [M4](#m4) |
+| `yoke/pipeline.py`, `prompts/{code,qa,validate,docs}.md` | per-ticket state machine | [2.8](#s2-8) | [M4](#m4), [M17](#m17) |
 | `yoke/scheduler.py` | deps, pool, budgets, resume | [2.8](#s2-8), [2.11](#s2-11), [2.12](#s2-12) | [M4](#m4), [M5](#m5), [M9](#m9) |
 | `yoke/mcp_server.py`, `.mcp.json` | stdio MCP server | [2.10](#s2-10) | [M6](#m6) |
 | `.claude-plugin/*`, `skills/*/SKILL.md`, `hooks/hooks.json` | plugin, skills, SessionStart hook | [2.11](#s2-11), [2.15](#s2-15) | [M7](#m7) |

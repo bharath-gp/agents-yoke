@@ -65,7 +65,8 @@
     "factcheck": 1200,
     "router_fallback": 120,
     "pr_body": 300,
-    "wayfinder": 1200
+    "wayfinder": 1200,
+    "gate_hook": 300
   },
   "kill_grace_s": 15,
   "router": {

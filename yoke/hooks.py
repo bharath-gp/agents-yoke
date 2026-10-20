@@ -17,6 +17,7 @@ class HookResult(NamedTuple):
     tail: str = ""
     exit_code: Optional[int] = None
     timed_out: bool = False
+    output: str = ""
 
 
 def _kill_group(proc: subprocess.Popen, grace: float = 1.0) -> None:
@@ -52,6 +53,7 @@ def run_hook(
     attempt=None,
     timeout_s: float = 300,
     kill_grace_s: float = 1.0,
+    env: Optional[dict] = None,
 ) -> HookResult:
     """Run a hook command in a worktree.
 
@@ -68,6 +70,8 @@ def run_hook(
     - 'gate_hook_error' on other non-zero exit code or timeout
     """
     hook_env = dict(os.environ)
+    if env:
+        hook_env.update(env)
     if ticket is not None:
         hook_env["YOKE_TICKET"] = str(ticket)
     if stage is not None:
@@ -89,7 +93,7 @@ def run_hook(
             errors="replace",
         )
     except OSError as e:
-        return HookResult(status="gate_hook_error", tail=str(e), exit_code=127)
+        return HookResult(status="gate_hook_error", tail=str(e), exit_code=127, output=str(e))
 
     timed_out = False
     try:
@@ -121,6 +125,7 @@ def run_hook(
         tail=tail,
         exit_code=proc.returncode,
         timed_out=timed_out,
+        output=stdout or tail,
     )
 
 

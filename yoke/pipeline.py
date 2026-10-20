@@ -9,7 +9,7 @@ import string
 import subprocess
 import threading
 
-from . import adapters, calls, config, gitops, milestones, planreview, router, schema, state, tracker, usage
+from . import adapters, calls, config, gitops, hooks, milestones, planreview, router, schema, state, tracker, usage
 
 PKG = os.path.dirname(os.path.abspath(__file__))
 
@@ -398,9 +398,62 @@ def _review_loop(run, adapter_for, env, ticket, st, wt, base, results, feedback)
         feedback = coder_fb  # the re-review sees what the coder was asked to fix
 
 
+def _run_gate_hook_stage(run, wt, ticket, attempt, stage_name, hook_list, env=None):
+    """Run gate hooks for a stage or before_close. Returns (feedback_or_None, info_dict_or_None)."""
+    if not hook_list:
+        return None, None
+    if isinstance(hook_list, str):
+        hook_list = [hook_list]
+    tid = ticket["id"] if isinstance(ticket, dict) else ticket
+    cfg = run.cfg
+    timeout_s = (cfg.get("timeouts_s") or {}).get("gate_hook", 300)
+    kill_grace_s = cfg.get("kill_grace_s", 1.0)
+
+    last_res = None
+    all_outputs = []
+    for cmd in hook_list:
+        cmd_str = cmd if isinstance(cmd, str) else " ".join(str(x) for x in cmd)
+        res = hooks.run_hook(
+            cmd,
+            cwd=wt,
+            ticket=tid,
+            stage=stage_name,
+            attempt=attempt,
+            timeout_s=timeout_s,
+            kill_grace_s=kill_grace_s,
+            env=env,
+        )
+        info = {
+            "ok": res.status == "pass",
+            "status": res.status,
+            "exit_code": res.exit_code,
+            "tail": res.tail,
+            "timed_out": res.timed_out,
+        }
+        all_outputs.append(res.output or res.tail or "")
+        rel_prefix = "tickets/%s/attempt-%d/hooks/%s" % (tid, attempt, stage_name)
+        state._write_atomic(run.path(rel_prefix + ".log"), "\n".join(all_outputs))
+        run.write_json(rel_prefix + ".meta.json", dict(info, cmd=cmd_str))
+
+        run.event("gate_hook", ticket=tid, attempt=attempt, stage=stage_name,
+                  hook=cmd_str, status=res.status, exit_code=res.exit_code,
+                  tail=res.tail, ok=info["ok"])
+        last_res = (res, info)
+        if not info["ok"]:
+            prefix = "Before-close hook" if stage_name == "before_close" else ("After-stage '%s' hook" % stage_name)
+            if res.timed_out:
+                fb = "%s timed out:\n%s" % (prefix, res.tail or "(no output)")
+            else:
+                fb = "%s failed (exit %s):\n%s" % (prefix, res.exit_code, res.tail or "(no output)")
+            return fb, info
+
+    return None, (last_res[1] if last_res else None)
+
+
 def _attempt(run, adapter_for, env, ticket, st, wt, stages):
     """Run the stages once. Returns (feedback or None, results, test_cmd, qa_rc)."""
     tid, attempt, base = ticket["id"], st["attempt"], st["base_sha"]
+    st["gate_hooks"] = {}
     if "review" in stages:
         st["review"] = {"rounds": 0, "unresolved": []}
         save_state(run, tid, st)
@@ -424,6 +477,13 @@ def _attempt(run, adapter_for, env, ticket, st, wt, stages):
         out = results[stage] = res.structured_output
         if stage == "code":
             _post_code(run, ticket, st, wt, since, res)
+            # Run after_stage code hook once following initial implementation; before_close covers post-review loop revisions.
+            code_hooks = ((run.cfg.get("gate_hooks") or {}).get("after_stage") or {}).get("code") or []
+            fb, info = _run_gate_hook_stage(run, wt, ticket, attempt, "code", code_hooks, env=env)
+            if info:
+                st.setdefault("gate_hooks", {})["code"] = info
+            if fb:
+                return fb, results, test_cmd, rerun_rc
         elif stage == "qa":
             if out["status"] == "blocked":
                 raise Escalate("QA blocked: %s" % out["summary"])
@@ -434,6 +494,12 @@ def _attempt(run, adapter_for, env, ticket, st, wt, stages):
             if rerun_rc != 0:
                 return ("Runner re-ran `%s` and it exited %s (QA had reported pass):\n%s"
                         % (test_cmd, rerun_rc, tail)), results, test_cmd, rerun_rc
+            qa_hooks = ((run.cfg.get("gate_hooks") or {}).get("after_stage") or {}).get("qa") or []
+            fb, info = _run_gate_hook_stage(run, wt, ticket, attempt, "qa", qa_hooks, env=env)
+            if info:
+                st.setdefault("gate_hooks", {})["qa"] = info
+            if fb:
+                return fb, results, test_cmd, rerun_rc
         elif stage == "search":
             if out["status"] == "none" or not out["sources"]:
                 return "Search found no sources: " + out["summary"], results, test_cmd, rerun_rc
@@ -476,13 +542,33 @@ def _gate(stages, results, rerun_rc):
     return g
 
 
-def _close(run, adapter_for, ticket, st, wt, stages, results, test_cmd, rerun_rc, merge_lock):
+def _close(run, adapter_for, ticket, st, wt, stages, results, test_cmd, rerun_rc, merge_lock, env=None):
     """Gate, commit, rebase, retest if moved, ff-merge. Returns feedback on a retryable failure."""
     tid, info = ticket["id"], run.read_json("run.json")
+    cfg = run.cfg
     gate = _gate(stages, results, rerun_rc)
-    run.event("close_gate", ticket=tid, attempt=st["attempt"], gate=gate, ok=all(gate.values()))
     if not all(gate.values()):
+        run.event("close_gate", ticket=tid, attempt=st["attempt"], gate=gate, ok=False)
         return "Close gate failed: " + ", ".join(k for k, v in gate.items() if not v)
+
+    close_hooks = (cfg.get("gate_hooks") or {}).get("before_close") or []
+    fb, close_info = _run_gate_hook_stage(run, wt, ticket, st["attempt"], "before_close", close_hooks, env=env)
+    if close_info:
+        st.setdefault("gate_hooks", {})["before_close"] = close_info
+
+    hook_records = dict(st.get("gate_hooks", {}))
+    if hook_records:
+        gate["gate_hooks"] = hook_records
+        all_hooks_ok = all(h["ok"] for h in hook_records.values())
+    else:
+        all_hooks_ok = True
+
+    ok = all(v for k, v in gate.items() if k != "gate_hooks") and all_hooks_ok
+    run.event("close_gate", ticket=tid, attempt=st["attempt"], gate=gate, ok=ok)
+    if not ok:
+        if fb:
+            return fb
+        return "Close gate failed: " + ", ".join(k for k, v in gate.items() if (not v if k != "gate_hooks" else not all_hooks_ok))
     gitops.git(wt, "add", "-A")
     stat = gitops.git(wt, "diff", "--cached", "--stat").stdout
     msg = router.commit_message(run, ticket, stat, adapter_for("router"))["result"]
@@ -550,7 +636,7 @@ def run_ticket(run, ticket, adapter_for=None, env=None, merge_lock=None):
         while True:
             fb, results, test_cmd, rc = _attempt(run, adapter_for, env, ticket, st, wt, stages)
             if fb is None:
-                fb = _close(run, adapter_for, ticket, st, wt, stages, results, test_cmd, rc, merge_lock)
+                fb = _close(run, adapter_for, ticket, st, wt, stages, results, test_cmd, rc, merge_lock, env=env)
             if fb is None:
                 _append_decision(run, ticket, results)
                 st["status"] = "closed"

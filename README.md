@@ -124,12 +124,13 @@ Gate verification commands can be configured under `gate_hooks`:
 - **User config only**: For security, `gate_hooks` is accepted exclusively from user configuration (`~/.yoke/config.json`). Any `gate_hooks` specified in repo configuration (`<repo>/.yoke.json`) is rejected with a warning log to prevent arbitrary command execution from untrusted repositories.
 - **Execution environment**: Hooks run in the ticket worktree with environment variables:
   - `YOKE_TICKET`: Ticket identifier (e.g. `T-0065`).
-  - `YOKE_STAGE`: Pipeline stage name (e.g. `code`, `qa`).
+  - `YOKE_STAGE`: Pipeline stage name (e.g. `code`, `qa`, `before_close`).
   - `YOKE_ATTEMPT`: Attempt number.
 - **Exit codes & status**:
   - `0`: Pass (`status: pass`).
   - `2`: Gate check failure (`status: fail`, capturing stdout/stderr tail up to 1000 characters).
   - Other non-zero or timeout: Hook execution error (`status: gate_hook_error`).
+- **Pipeline integration**: `after_stage` hooks run following `code` and `qa` stages; `before_close` hooks run prior to commit. Failures feed output tails back to the coder as feedback, and results are recorded in attempt audit logs (`attempt-N/hooks/<stage>.log`) and `close_gate` events.
 - **Process control**: On timeout, the entire process group is terminated using SIGTERM followed by SIGKILL.
 
 
