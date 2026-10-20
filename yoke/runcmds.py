@@ -449,7 +449,6 @@ def dispatch(args):
         if not pid or not scheduler._alive(pid):
             print("no runner active")
             return 0
-        os.kill(pid, signal.SIGTERM)
-        scheduler.kill_workers(run)
+        scheduler.stop(run)
         print("stopped runner %d" % pid)
     return 0

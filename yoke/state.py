@@ -159,7 +159,7 @@ class Run:
             u = usage.summarize(self)
         except Exception:
             u = usage.empty_summary()
-        return {
+        res = {
             "run_id": self.run_id, "repo": info["repo"], "branch": info["branch"],
             "state": info["state"], "agent_calls": info["agent_calls"],
             "max_agent_calls": info["config"].get("max_agent_calls_total"),
@@ -167,6 +167,9 @@ class Run:
             "escalations": len(self.read_json("escalations.json", [])),
             "usage": u,
         }
+        if info.get("waiting_limit"):
+            res["waiting_limit"] = info["waiting_limit"]
+        return res
 
     def render_status(self):
         """Derive status.json and return a text summary including usage totals and top 3 spenders."""
@@ -200,6 +203,9 @@ class Run:
             "open escalations %d" % s["escalations"],
             "usage totals: cost %s, tokens %d (in %d, out %d)" % (cost_disp, tot_tokens, in_tokens, out_tokens),
         ]
+        if s.get("waiting_limit"):
+            wl = s["waiting_limit"]
+            lines.insert(1, "waiting for rate limit until %s (%s)" % (wl.get("resume_at", "?"), wl.get("ticket") or "run"))
 
         spender_strs = []
         for sp in top_spenders[:3]:

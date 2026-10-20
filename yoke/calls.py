@@ -36,10 +36,14 @@ def _kill_group(proc, grace):
     proc.wait()
 
 
-def _exec(run, adapter, spec, rel, stage, ticket, attempt, label=None):
+def _exec(run, adapter, spec, rel, stage, ticket, attempt, label=None, charge=True):
     """One CLI invocation into audit dir `rel`; returns CallResult (not yet schema-checked)."""
     cfg = run.cfg
-    call_id = "c%04d" % run.incr_calls()
+    if charge:
+        call_id = "c%04d" % run.incr_calls()
+    else:
+        n = run.read_json("run.json")["agent_calls"]
+        call_id = "c%04d-%s" % (n, label or "retry")
     d = run.path(rel)
     os.makedirs(d, exist_ok=True)
     with open(os.path.join(d, "prompt.md"), "w") as f:
@@ -119,7 +123,7 @@ def _check(run, res, meta, spec, rel):
     return errs
 
 
-def run_call(run, adapter, spec, *, stage, ticket=None, attempt=None, label=None):
+def run_call(run, adapter, spec, *, stage, ticket=None, attempt=None, label=None, charge=True):
     """Run one agent call.
 
     Resolves unset spec.model and spec.effort via config.model_for(cfg, adapter, stage).
@@ -136,8 +140,9 @@ def run_call(run, adapter, spec, *, stage, ticket=None, attempt=None, label=None
             effort=effort if spec.effort is None else spec.effort,
         )
 
-    rel = audit_rel(stage, ticket, attempt, "%04d" % (run.read_json("run.json")["agent_calls"] + 1), label=label)
-    res, meta = _exec(run, adapter, spec, rel, stage, ticket, attempt, label=label)
+    calls_cnt = run.read_json("run.json")["agent_calls"] + (1 if charge else 0)
+    rel = audit_rel(stage, ticket, attempt, "%04d" % calls_cnt, label=label)
+    res, meta = _exec(run, adapter, spec, rel, stage, ticket, attempt, label=label, charge=charge)
     cli_failed = not res.ok and not res.timed_out
     errs = _check(run, res, meta, spec, rel)
     if res.limit is not None:
@@ -156,7 +161,7 @@ def run_call(run, adapter, spec, *, stage, ticket=None, attempt=None, label=None
             # Drop model and effort on fallback
             fallback_spec = dataclasses.replace(spec, model=None, effort=None)
             fallback_rel = rel + "/fallback"
-            res, meta = _exec(run, adapter, fallback_spec, fallback_rel, stage, ticket, attempt, label=label)
+            res, meta = _exec(run, adapter, fallback_spec, fallback_rel, stage, ticket, attempt, label=label, charge=charge)
             errs = _check(run, res, meta, fallback_spec, fallback_rel)
             rel = fallback_rel
             spec = fallback_spec
@@ -175,6 +180,6 @@ def run_call(run, adapter, spec, *, stage, ticket=None, attempt=None, label=None
     if not res.session_id:  # cannot resume: restate the task
         ask = spec.prompt + "\n\n" + ask
     spec2 = dataclasses.replace(spec, prompt=ask, resume_session=res.session_id or spec.resume_session)
-    res2, meta2 = _exec(run, adapter, spec2, rel + "/reask", stage, ticket, attempt, label=label)
+    res2, meta2 = _exec(run, adapter, spec2, rel + "/reask", stage, ticket, attempt, label=label, charge=charge)
     _check(run, res2, meta2, spec2, rel + "/reask")
     return res2

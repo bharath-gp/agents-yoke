@@ -94,6 +94,14 @@ Agent rate limits and quotas are configured under `limits`:
 
 When an agent call matches a limit pattern, the adapter classifies the output into `CallResult.limit` with the raw text and any parsed reset timestamp. Calls stopped by rate limits do not count as failed attempts or schema errors, preventing unnecessary schema re-asks.
 
+On `CallResult.limit`, the runner executes a pause and retry cycle:
+1. Records a `limit_hit` event in the run audit log and records `waiting_limit` with `resume_at` in `run.json` (computed from the parsed reset time or exponential backoff capped by `limits.max_wait_s`).
+2. Pauses the worker pool: no new agent calls are scheduled while in-flight calls finish cleanly.
+3. Sleeps in short slices so `yoke stop` and `SIGTERM` interrupt cleanly.
+4. Re-issues the same call with the same attempt number and session ID under the `limit-retry` audit label, uncharged against `agent_calls`.
+5. Escalates once with the raw limit message after `limits.max_waits` consecutive waits for a single call.
+6. Resumes in-progress waits automatically on restart via `scheduler.recover`.
+
 
 ## Typical flow
 

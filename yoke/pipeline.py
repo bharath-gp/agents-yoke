@@ -1,11 +1,13 @@
 """Per-ticket state machine (PLAN 2.8): stages by ticket type, runner test rerun, feedback files,
 close gate, commit and merge (2.9). Sequential unless the caller passes a shared merge_lock."""
 import contextlib
+import dataclasses
 import json
 import os
 import re
 import string
 import subprocess
+import threading
 
 from . import adapters, calls, config, gitops, milestones, planreview, router, schema, state, tracker, usage
 
@@ -99,13 +101,85 @@ def factcheck_failures(out):
     return bad
 
 
+class WorkerStopped(Exception):
+    """Raised when a worker is stopped by runner shutdown/SIGTERM."""
+    pass
+
+
+class RunPauseState:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.unpaused = threading.Event()
+        self.unpaused.set()
+        self.active_waiters = 0
+        self.resume_at = None
+        self.stop_requested = False
+        self.stop_event = threading.Event()
+
+    def request_stop(self):
+        self.stop_requested = True
+        self.stop_event.set()
+        self.unpaused.set()
+
+
+_RUN_PAUSE_STATES = {}
+_PAUSE_LOCK = threading.Lock()
+
+
+def _run_key(run):
+    d = getattr(run, "dir", None)
+    if d:
+        return os.path.realpath(d)
+    return getattr(run, "run_id", str(run))
+
+
+def get_pause_state(run):
+    rid = _run_key(run)
+    with _PAUSE_LOCK:
+        if rid not in _RUN_PAUSE_STATES:
+            _RUN_PAUSE_STATES[rid] = RunPauseState()
+        return _RUN_PAUSE_STATES[rid]
+
+
+def clear_pause_state(run):
+    rid = _run_key(run)
+    with _PAUSE_LOCK:
+        _RUN_PAUSE_STATES.pop(rid, None)
+
+
+def reset_pause_state(run):
+    pause = get_pause_state(run)
+    with pause.lock:
+        pause.stop_requested = False
+        pause.stop_event.clear()
+        pause.active_waiters = 0
+        pause.resume_at = None
+        pause.unpaused.set()
+    return pause
+
+
+def _is_stopped(run):
+    pause = get_pause_state(run)
+    if pause.stop_requested or pause.stop_event.is_set():
+        return True
+    try:
+        return run.read_json("run.json", {}).get("state") == "stopped"
+    except Exception:
+        return False
+
+
+def _wait_pool(run):
+    pause = get_pause_state(run)
+    pause.unpaused.wait()
+    if _is_stopped(run):
+        raise WorkerStopped("runner stopped")
+
+
 def _call(run, adapter_for, env, ticket, stage, attempt, wt, base, mode, results, feedback, resume=None, label=None):
+    """Execute an agent call with pause/resume limit handling.
+    On CallResult.limit, pauses the pool, waits with exponential backoff or reset_at,
+    and retries with the same attempt and session id under the limit-retry label."""
     cfg = run.cfg
-    if run.read_json("run.json")["agent_calls"] >= cfg["max_agent_calls_total"]:
-        raise BudgetExhausted()
-    exceeded, reason = config.check_budget(run)
-    if exceeded:
-        raise BudgetExhausted(reason)
     dest, oos, _ = milestones.destination_and_scope(run, ticket)
     with open(os.path.join(PKG, "prompts", stage + ".md")) as f:
         prompt = string.Template(f.read()).safe_substitute(
@@ -122,7 +196,109 @@ def _call(run, adapter_for, env, ticket, stage, attempt, wt, base, mode, results
         timeout_s=cfg["timeouts_s"][stage], env=wenv,
         allowed_tools=tuple(cfg["agents"]["claude"]["write_allowed_tools"]),
         web_tools=tuple(cfg["search"]["tools"]) if stage in WEB_STAGES else ())
-    return calls.run_call(run, adapter_for(stage), spec, stage=stage, ticket=ticket["id"], attempt=attempt, label=label)
+
+    _wait_pool(run)
+    if run.read_json("run.json")["agent_calls"] >= cfg["max_agent_calls_total"]:
+        raise BudgetExhausted()
+    exceeded, reason = config.check_budget(run)
+    if exceeded:
+        raise BudgetExhausted(reason)
+
+    tid = ticket["id"] if isinstance(ticket, dict) else ticket
+    res = calls.run_call(run, adapter_for(stage), spec, stage=stage, ticket=tid, attempt=attempt, label=label)
+    if res.limit is None:
+        info = run.read_json("run.json", {})
+        lw = dict(info.get("limit_waits", {}))
+        key = "%s:%s" % (tid, stage)
+        if key in lw:
+            lw.pop(key, None)
+            run.update(limit_waits=lw)
+        return res
+
+    from . import limits
+    info = run.read_json("run.json", {})
+    key = "%s:%s" % (tid, stage)
+    lw = dict(info.get("limit_waits", {}))
+    consecutive_waits = lw.get(key, 0)
+    if not consecutive_waits:
+        wl = info.get("waiting_limit")
+        if isinstance(wl, dict) and wl.get("ticket") == tid and wl.get("stage") == stage:
+            consecutive_waits = wl.get("consecutive_waits", 0)
+
+    max_waits = run.cfg.get("limits", {}).get("max_waits", 3)
+    pause = get_pause_state(run)
+
+    while res.limit is not None:
+        if consecutive_waits >= max_waits:
+            raw_msg = res.limit.get("raw") or "rate limit exceeded"
+            info = run.read_json("run.json", {})
+            cur_lw = dict(info.get("limit_waits", {}))
+            cur_lw.pop(key, None)
+            run.update(limit_waits=cur_lw, waiting_limit=None)
+            with pause.lock:
+                pause.active_waiters = 0
+                pause.resume_at = None
+                pause.unpaused.set()
+            raise Escalate(raw_msg)
+        consecutive_waits += 1
+
+        resume_at, wait_s = limits.calculate_resume_at(res.limit, consecutive_waits, cfg=run.cfg)
+        run.event("limit_hit", ticket=tid, stage=stage, attempt=attempt,
+                  resume_at=resume_at, wait_s=round(wait_s, 3), raw=res.limit.get("raw"))
+
+        with pause.lock:
+            pause.active_waiters += 1
+            pause.unpaused.clear()
+            if pause.resume_at:
+                t1 = limits._parse_iso(resume_at)
+                t2 = limits._parse_iso(pause.resume_at)
+                if t1 and t2 and t2 > t1:
+                    resume_at = pause.resume_at
+            pause.resume_at = resume_at
+            lw[key] = consecutive_waits
+            run.update(waiting_limit={"resume_at": resume_at, "raw": res.limit.get("raw"),
+                                      "ticket": tid, "stage": stage, "attempt": attempt,
+                                      "consecutive_waits": consecutive_waits,
+                                      "session_id": res.session_id or spec.resume_session},
+                       limit_waits=lw)
+
+        normal_wake = False
+        try:
+            normal_wake = limits.sleep_until(resume_at, slice_s=0.05,
+                                             stop_check=lambda: _is_stopped(run))
+        finally:
+            with pause.lock:
+                pause.active_waiters -= 1
+                if pause.active_waiters <= 0:
+                    pause.active_waiters = 0
+                    pause.resume_at = None
+                    if normal_wake:
+                        run.update(waiting_limit=None)
+                    pause.unpaused.set()
+
+        if not normal_wake:
+            raise WorkerStopped("runner stopped during limit wait")
+
+        _wait_pool(run)
+        if run.read_json("run.json")["agent_calls"] >= cfg["max_agent_calls_total"]:
+            raise BudgetExhausted()
+        exceeded, reason = config.check_budget(run)
+        if exceeded:
+            raise BudgetExhausted(reason)
+
+        retry_spec = dataclasses.replace(spec, resume_session=res.session_id or spec.resume_session)
+        retry_label = "limit-retry" if consecutive_waits == 1 else ("limit-retry-%d" % consecutive_waits)
+        res = calls.run_call(run, adapter_for(stage), retry_spec, stage=stage, ticket=tid,
+                             attempt=attempt, label=retry_label, charge=False)
+
+    if res.ok:
+        info = run.read_json("run.json", {})
+        cur_lw = dict(info.get("limit_waits", {}))
+        if key in cur_lw:
+            cur_lw.pop(key, None)
+            run.update(limit_waits=cur_lw)
+
+    return res
 
 
 def _call_retry(run, adapter_for, env, ticket, stage, attempt, *args, **kw):

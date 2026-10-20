@@ -1,10 +1,12 @@
+import datetime
 import json
 import os
 import tempfile
 import unittest
 
 from tests.test_core import FAKE_CLI, SCHEMA
-from yoke import adapters, calls, config, limits, state
+from tests.test_pipeline import PipeBase, ticket, resp, CODE, REV, val
+from yoke import adapters, calls, config, limits, pipeline, scheduler, state
 
 
 class LimitsTest(unittest.TestCase):
@@ -16,6 +18,7 @@ class LimitsTest(unittest.TestCase):
         os.makedirs(self.repo)
         self.cfg = config.load(home=self.tmp)
         self.run_ = state.Run.create(self.repo, self.cfg, home=self.tmp)
+        self.addCleanup(pipeline.clear_pause_state, self.run_)
         self.script = os.path.join(self.tmp, "script.json")
         self.schema_path = os.path.join(self.tmp, "schema.json")
         with open(self.schema_path, "w") as f:
@@ -231,4 +234,224 @@ class LimitsTest(unittest.TestCase):
         self.assertIsNotNone(res.limit)
         self.assertLessEqual(len(res.limit["raw"]), 500)
         self.assertTrue(res.limit["raw"].endswith("..."))
+
+
+    def test_uncharged_call_id_formatting_with_complex_label(self):
+        res = self.call(
+            {"code": [{"structured_output": {"status": "done"}}]},
+            label="retry%s%d",
+            charge=False,
+        )
+        self.assertTrue(res.ok)
+        meta_path = os.path.join(self.run_.path(res.audit_dir), "meta.json")
+        with open(meta_path) as f:
+            meta = json.load(f)
+        self.assertIn("retry%s%d", meta["call_id"])
+
+
+class TestRunnerLimits(PipeBase):
+    def test_fake_cli_limit_does_not_increment_attempt_or_consume_stage_retry(self):
+        self.setup_tickets(
+            [ticket(1)],
+            {"code": [
+                {"limit": "Rate limit reached. Resets in 0s.", "session_id": "sess-init"},
+                resp(CODE, "sess-init", write={"f.txt": "1"}),
+             ],
+             "review": [resp(REV)],
+             "validate": [resp(val())],
+             "router": [{"exit": 1}]}
+        )
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["attempt"], 1)
+        self.assertEqual(self.tstate(1)["status"], "closed")
+
+        with open(self.run_.path("events.jsonl")) as f:
+            events = [json.loads(line) for line in f]
+        stage_retries = [e for e in events if e.get("kind") == "stage_retry"]
+        self.assertEqual(len(stage_retries), 0)
+        limit_hits = [e for e in events if e.get("kind") == "limit_hit"]
+        self.assertEqual(len(limit_hits), 1)
+
+        limit_retry_meta = self.run_.path("tickets/T-001/attempt-1/limit-retry/meta.json")
+        self.assertTrue(os.path.exists(limit_retry_meta))
+        with open(limit_retry_meta) as f:
+            meta = json.load(f)
+        self.assertEqual(meta["label"], "limit-retry")
+        self.assertEqual(meta["attempt"], 1)
+
+        self.assertEqual(meta["call_id"], "c0001-limit-retry")
+
+        # 4 charged calls: code (attempt 1), review, validate, router. limit-retry is uncharged.
+        self.assertEqual(self.run_.read_json("run.json")["agent_calls"], 4)
+
+    def test_same_call_reissued_after_wait_with_same_session_id(self):
+        self.setup_tickets(
+            [ticket(1)],
+            {"code": [
+                {"limit": {"is_error": True, "result": "Quota exceeded. Resets in 0s.", "session_id": "sess-limit-test"}},
+                resp(CODE, "sess-limit-test", write={"f.txt": "1"}),
+             ],
+             "review": [resp(REV)],
+             "validate": [resp(val())],
+             "router": [{"exit": 1}]}
+        )
+        self.assertEqual(self.go(), "done")
+        limit_retry_cmd = self.run_.path("tickets/T-001/attempt-1/limit-retry/command.json")
+        self.assertTrue(os.path.exists(limit_retry_cmd))
+        with open(limit_retry_cmd) as f:
+            cmd = json.load(f)
+        self.assertIn("--resume", cmd)
+        self.assertEqual(cmd[cmd.index("--resume") + 1], "sess-limit-test")
+
+    def test_kill_and_resume_runner_mid_wait_keeps_wait(self):
+        self.setup_tickets(
+            [ticket(1)],
+            {"code": [
+                {"limit": "Rate limit reached. Resets in 10s."},
+                resp(CODE, write={"f.txt": "1"}),
+             ],
+             "review": [resp(REV)],
+             "validate": [resp(val())],
+             "router": [{"exit": 1}]}
+        )
+        import threading
+        import time
+        runner_thread = threading.Thread(target=self.go)
+        runner_thread.daemon = True
+        runner_thread.start()
+
+        for _ in range(100):
+            info = self.run_.read_json("run.json")
+            if info.get("waiting_limit"):
+                break
+            time.sleep(0.01)
+
+        self.assertIsNotNone(self.run_.read_json("run.json").get("waiting_limit"))
+        scheduler.stop(self.run_)
+        runner_thread.join(timeout=5)
+        self.assertFalse(runner_thread.is_alive())
+
+        info = self.run_.read_json("run.json")
+        self.assertEqual(info.get("state"), "stopped")
+        self.assertIsNotNone(info.get("waiting_limit"))
+        self.assertEqual(info["waiting_limit"]["consecutive_waits"], 1)
+
+        # recover preserves wait
+        scheduler.recover(self.run_)
+        info_rec = self.run_.read_json("run.json")
+        self.assertIsNotNone(info_rec.get("waiting_limit"))
+
+        # Advance time: expire wait
+        past_iso = (datetime.datetime.now().astimezone() - datetime.timedelta(seconds=5)).isoformat(timespec="seconds")
+        self.run_.update(waiting_limit={"resume_at": past_iso, "raw": "limit wait done", "consecutive_waits": 1, "ticket": "T-001"})
+
+        self.assertEqual(self.go(), "done")
+        self.assertIsNone(self.run_.read_json("run.json").get("waiting_limit"))
+        self.assertEqual(self.tstate(1)["status"], "closed")
+
+    def test_fake_cli_always_reports_limit_escalates_once_after_max_waits_with_raw_text(self):
+        cfg = config.deep_merge(self.run_.cfg, {
+            "limits": {"max_waits": 2, "backoff_s": 0.01, "max_wait_s": 0.05}
+        })
+        self.run_.update(config=cfg)
+        self.setup_tickets(
+            [ticket(1)],
+            {"code": [{"limit": "Raw rate limit: please wait 1 hour"}]}
+        )
+        self.assertEqual(self.go(), "needs_user")
+        self.assertEqual(self.tstate(1)["status"], "blocked")
+        self.assertEqual(self.tstate(1)["attempt"], 1)
+
+        esc = self.run_.read_json("escalations.json")
+        self.assertEqual(len(esc), 1)
+        self.assertEqual(esc[0]["ticket"], "T-001")
+        self.assertIn("Raw rate limit: please wait 1 hour", esc[0]["reason"])
+
+    def test_yoke_stop_during_wait_works(self):
+        self.setup_tickets(
+            [ticket(1)],
+            {"code": [{"limit": "Rate limit reached. Resets in 10s."}]}
+        )
+        import threading
+        import time
+        runner_thread = threading.Thread(target=self.go)
+        runner_thread.daemon = True
+        runner_thread.start()
+
+        for _ in range(100):
+            info = self.run_.read_json("run.json")
+            if info.get("waiting_limit"):
+                break
+            time.sleep(0.01)
+
+        self.assertIsNotNone(self.run_.read_json("run.json").get("waiting_limit"))
+
+        scheduler.stop(self.run_)
+        runner_thread.join(timeout=5)
+        self.assertFalse(runner_thread.is_alive(), "runner thread did not stop within timeout")
+
+        info = self.run_.read_json("run.json")
+        self.assertEqual(info.get("state"), "stopped")
+        self.assertIsNotNone(info.get("waiting_limit"))
+
+    def test_unblock_after_max_waits_escalation_allows_new_wait_cycle(self):
+        cfg = config.deep_merge(self.run_.cfg, {
+            "limits": {"max_waits": 1, "backoff_s": 0.01, "max_wait_s": 0.05}
+        })
+        self.run_.update(config=cfg)
+        self.setup_tickets(
+            [ticket(1)],
+            {"code": [
+                {"limit": "Rate limit round 1"},
+                {"limit": "Rate limit round 1 again"},
+                {"limit": "Rate limit round 2"},
+                resp(CODE, write={"f.txt": "1"}),
+             ],
+             "review": [resp(REV)],
+             "validate": [resp(val())],
+             "router": [{"exit": 1}]}
+        )
+        # Round 1: first limit waits, second reaches max_waits (1) and escalates
+        self.assertEqual(self.go(), "needs_user")
+        self.assertEqual(self.tstate(1)["status"], "blocked")
+
+        # Unblock ticket: limit_waits must be cleared
+        scheduler.unblock(self.run_, "T-001")
+        self.assertEqual(self.tstate(1)["status"], "pending")
+
+        # Round 2: next limit hit must enter a fresh wait cycle and then succeed
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+
+        with open(self.run_.path("events.jsonl")) as f:
+            events = [json.loads(line) for line in f]
+        limit_hits = [e for e in events if e.get("kind") == "limit_hit"]
+        self.assertEqual(len(limit_hits), 2)
+
+    def test_render_status_shows_waiting_limit(self):
+        self.run_.update(waiting_limit={"resume_at": "2026-10-20T18:00:00Z", "ticket": "T-001"})
+        rendered = self.run_.render_status()
+        self.assertIn("waiting for rate limit until 2026-10-20T18:00:00Z (T-001)", rendered)
+
+    def test_recover_resumes_in_progress_wait_and_caps_max_wait(self):
+        # Set waiting_limit far in future exceeding max_wait_s (default 7200s)
+        self.addCleanup(pipeline.clear_pause_state, self.run_)
+        far_future = (datetime.datetime.now().astimezone() + datetime.timedelta(seconds=100000)).isoformat(timespec="seconds")
+        self.run_.update(waiting_limit={"resume_at": far_future, "raw": "limit hit", "consecutive_waits": 1, "ticket": "T-001"})
+        scheduler.recover(self.run_)
+        wl = self.run_.read_json("run.json")["waiting_limit"]
+        self.assertIsNotNone(wl)
+        pause = pipeline.get_pause_state(self.run_)
+        self.assertFalse(pause.unpaused.is_set())
+        self.assertEqual(pause.active_waiters, 1)
+
+        rec_dt = limits._parse_iso(wl["resume_at"])
+        now_dt = datetime.datetime.now().astimezone()
+        delta = (rec_dt - now_dt).total_seconds()
+        self.assertLessEqual(delta, 7205)
+
+
+if __name__ == "__main__":
+    unittest.main()
+
 

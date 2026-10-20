@@ -201,6 +201,7 @@ Default budgets/limits:
 | `tracker` | `"auto"` (`github` if `gh repo view` succeeds and remote is GitHub, else `local`) |
 | `models` | `{}` (`{<agent>: {"plan": {"model": str, "effort": str}, "cheap": {...}}}`) |
 | `budget` | `{"max_cost_usd": null, "max_tokens": null}` (optional caps, default null: disabled) |
+| `limits` | `{"max_waits": 3, "backoff_s": 30, "max_wait_s": 7200, "patterns": {...}}` (rate limit pause and same-call retry) |
 
 Type → stages routing (config `routing`, overridable per type with model/effort per stage):
 
@@ -288,7 +289,7 @@ Milestone gates and fix tickets:
 - `yoke wait [--run R] [--timeout 3000]` returns on: escalation opened, run finished, runner died, or timeout (prints "still running: k/n closed"). The orchestrator skill loops `wait` and, on escalation, presents it to the user.
 - **Automatic handoff**: plugin `SessionStart` hook (matchers `startup|resume|compact`) runs `yoke status --brief --active`, injecting ≤15 lines about active runs into any new or compacted session. So compaction (Claude auto-compact) and fresh sessions both re-acquire state automatically.
 - `/yoke:resume`: `yoke status`; if runner pid dead and run not finished → `yoke run --resume --detach`; then continue the `wait` loop.
-- Runner crash recovery on `--resume`: kill recorded worker process groups still alive; for each `in_progress` ticket, restart the current stage (same attempt; the half-done call's dir is renamed `<stage>.interrupted`); worktree changes are kept.
+- Runner crash recovery on `--resume`: kill recorded worker process groups still alive; for each `in_progress` ticket, restart the current stage (same attempt; the half-done call's dir is renamed `<stage>.interrupted`); worktree changes are kept. If `run.json` has `waiting_limit`, `scheduler.recover` resumes the pool wait (capped by `limits.max_wait_s`), sleeping in slices; upon wake, in-progress tickets re-run their attempt with `limit_waits` count preserved for `max_waits` escalation.
 
 <a id="s2-12"></a>
 ### 2.12 Process control, budgets

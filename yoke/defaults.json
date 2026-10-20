@@ -49,7 +49,8 @@
       ]
     },
     "max_wait_s": 7200,
-    "max_waits": 3
+    "max_waits": 3,
+    "backoff_s": 30
   },
   "parallel": 1,
   "timeouts_s": {
