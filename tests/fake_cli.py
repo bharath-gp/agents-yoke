@@ -1,7 +1,8 @@
 """Scripted stand-in for an agent CLI (used by FakeAdapter).
 
-FAKE_SCRIPT: JSON file {stage: [response, ...]}, responses consumed in order per stage
-(position kept in FAKE_SCRIPT + ".pos"). Stage comes from YOKE_STAGE. A response is either
+FAKE_SCRIPT: JSON file {stage_or_label: [response, ...]}; responses looked up by YOKE_LABEL
+first, then YOKE_STAGE, and consumed in order per key (position kept in FAKE_SCRIPT + ".pos").
+A response is either
   {"structured_output": {...}, "session_id": "s1"}   printed as JSON
   {"sleep": 999, "child_pidfile": "path"}            optionally spawn a child, then sleep
   {"exit": 1}                                        exit with that code
@@ -23,8 +24,11 @@ import time
 def main():
     script = os.environ["FAKE_SCRIPT"]
     stage = os.environ["YOKE_STAGE"]
+    label = os.environ.get("YOKE_LABEL")
     with open(script) as f:
-        responses = json.load(f)[stage]
+        data = json.load(f)
+    key = label if (label and label in data) else stage
+    responses = data[key]
     pos_file = script + ".pos"
     with open(script + ".lock", "w") as lock:  # parallel tickets consume the script concurrently
         fcntl.flock(lock, fcntl.LOCK_EX)
@@ -32,8 +36,8 @@ def main():
         if os.path.exists(pos_file):
             with open(pos_file) as f:
                 pos = json.load(f)
-        i = pos.get(stage, 0)
-        pos[stage] = i + 1
+        i = pos.get(key, 0)
+        pos[key] = i + 1
         with open(pos_file, "w") as f:
             json.dump(pos, f)
     resp = responses[min(i, len(responses) - 1)]

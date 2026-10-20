@@ -53,6 +53,7 @@ def _exec(run, adapter, spec, rel, stage, ticket, attempt, label=None, charge=Tr
     run.write_json(rel + "/command.json", shown)
     env = dict(os.environ, **spec.env)
     env["YOKE_STAGE"] = stage
+    env["YOKE_LABEL"] = label or stage
     meta = {"call_id": call_id, "stage": stage, "label": label or stage, "ticket": ticket, "attempt": attempt,
             "agent": adapter.name, "adapter": type(adapter).__name__, "cmd": shown, "cwd": spec.cwd,
             "requested": {"model": spec.model, "effort": spec.effort, "mode": spec.mode},
