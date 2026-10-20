@@ -225,7 +225,7 @@ Validation done by a ~60-line stdlib validator in `schema.py` supporting `type, 
 - **ticket-list**: `{"destination"?: str, "out_of_scope"?: [str...], "milestones"?: [{"id": "^MS-\\d{2}$", "title": str, "exit_check": str|null}...], "tickets": [ticket...]}`; runner also checks: unique ids, deps exist, no cycles, count ≤ `max_tickets`, milestone validity.
 - **chart**: same schema as `ticket-list` returned by wayfinder during `yoke tickets chart`, validated against `schemas/chart.json`.
 - **plan-review**: `verdict` (`approve|changes_requested`), `findings[]` `{severity: blocker|major|minor, section, issue, suggestion}`, `summary`.
-- **code**: `status` (`done|blocked`), `summary`, `files_changed[]`, `assumptions[]`, `open_questions[]`, `notes_for_qa`, `blocked_reason` (when blocked).
+- **code**: `status` (`done|blocked`), `summary`, `files_changed[]`, `assumptions[]`, `open_questions[]`, `notes_for_qa`, `blocked_reason` (when blocked), optional `handoff` (`{interface_changes, new_files, gotchas}`).
 - **qa**: `status` (`pass|fail|blocked`), `test_command` (string the runner can re-run), `tests_added[]`, `commands_run[]` `{cmd, exit_code}`, `failures[]`, `summary`.
 - **validate**: `verdict` (`approve|reject`), `exit_criteria[]` `{criterion, met: bool, evidence}`, `issues[]` `{severity, file, description}`, `feedback_for_coder`, `summary`.
 - **docs**: `status` (`done|not_needed`), `files_changed[]`, `summary`.
@@ -254,9 +254,9 @@ Retry feedback is a file `attempt-<n>/feedback.md` built from QA failures / vali
 
 Review stage loop (`_review_loop`): Bounded review-revision loop (up to `max_review_rounds` revisions, defaulting to 2). The runner decides blocking based on severity (blocker and major findings block; minor and nit findings do not block and are passed as optional suggestions). Blocker and major findings trigger coder revisions using the saved coder session (`resume=st['sessions']['code']`) under audit labels `review-r<n>` and `code-r<n>`. If findings remain unresolved when reaching the revision cap, the ticket does not fail: unresolved blocker/major findings are recorded in `st['review']['unresolved']`, emitted as a `review_unresolved` audit event, posted as comments to the ticket issue via `tracker.comment`, and forwarded via `results['review']` to validate and qa prompts. Furthermore, `yoke pr` formats any unresolved review findings from closed tickets (capped at 50000 characters) into an 'Unresolved review findings' section in the pull request description.
 
-Context handoff: prompts **inline** the ticket JSON, plan excerpt, and prior-stage result JSON (small). Copies are saved in the attempt dir for audit. Inlining avoids sandbox path problems with files outside the worktree.
+Context handoff: prompts **inline** the ticket JSON, plan excerpt, and prior-stage result JSON (small). Copies are saved in the attempt dir for audit. Inlining avoids sandbox path problems with files outside the worktree. Upstream handoff notes (interface changes, new files, gotchas) from closed `depends_on` ancestors are atomically stored at `tickets/<T>/handoff.json` on close and inlined into `code`, `qa`, and `validate` prompts via `$upstream` (capped at 4000 characters and labelled as data from another agent, not instructions).
 
-Prompt templates: `yoke/prompts/<stage>.md` using `string.Template` (`$ticket`, `$plan_excerpt`, `$prior_results`, `$feedback`, `$base_sha`, `$worktree`) — `$` avoids clashing with JSON braces. Every worker prompt states: stay inside the worktree, do not commit, do not push, do not touch git config, return only the schema object.
+Prompt templates: `yoke/prompts/<stage>.md` using `string.Template` (`$ticket`, `$plan_excerpt`, `$prior_results`, `$feedback`, `$base_sha`, `$worktree`, `$upstream`): `$` avoids clashing with JSON braces. Every worker prompt states: stay inside the worktree, do not commit, do not push, do not touch git config, return only the schema object.
 
 Milestone gates and fix tickets:
 - Sequential milestone barrier: tickets belonging to milestone `MS-k` are ready only when all preceding milestones `MS-i` (`i < k`) have passed or been waived (`passed|waived`).
