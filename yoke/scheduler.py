@@ -173,9 +173,14 @@ def run(run_, adapter_for=None, env=None):
 
 
 def _loop(run_, adapter_for, env):
+    """Main scheduler pool loop. Dispatches ready tickets up to parallel capacity.
+    When parallel > 1, defers ready tickets whose files_hint overlaps running tickets
+    (exact path or directory prefix match), emitting a ticket_deferred event."""
     parallel = max(1, run_.cfg.get("parallel", 1))
     merge_lock = threading.Lock()
     running, out_of_budget = {}, False  # future -> ticket id
+    running_tickets = {}  # ticket id -> ticket dict
+    deferred_reported = set()  # set of (ticket_id, running_id) already logged
     try:
         with ThreadPoolExecutor(max_workers=parallel) as pool:
             while True:
@@ -226,9 +231,29 @@ def _loop(run_, adapter_for, env):
                         else:
                             return "stopped"
 
+                deferred = []
                 while ready and len(running) < parallel and not out_of_budget and pause.unpaused.is_set():
                     t = ready.pop(0)
+                    if parallel > 1 and running_tickets:
+                        overlapping = [
+                            rt for rt in running_tickets.values()
+                            if milestones.hints_overlap(t.get("files_hint"), rt.get("files_hint"))
+                        ]
+                        if overlapping:
+                            pair = (t["id"], overlapping[0]["id"])
+                            if pair not in deferred_reported:
+                                deferred_reported.add(pair)
+                                run_.event(
+                                    "ticket_deferred",
+                                    ticket=t["id"],
+                                    running=overlapping[0]["id"],
+                                    overlaps=overlapping[0]["id"],
+                                    reason="files_hint overlaps running %s" % overlapping[0]["id"],
+                                )
+                            deferred.append(t)
+                            continue
                     running[pool.submit(pipeline.run_ticket, run_, t, adapter_for, env, merge_lock)] = t["id"]
+                    running_tickets[t["id"]] = t
 
                 if not running:
                     if out_of_budget:
@@ -314,7 +339,10 @@ def _loop(run_, adapter_for, env):
 
                 done, _ = wait(running, return_when=FIRST_COMPLETED)
                 for f in done:
-                    del running[f]
+                    tid = running.pop(f, None)
+                    if tid:
+                        running_tickets.pop(tid, None)
+                        deferred_reported = {p for p in deferred_reported if p[1] != tid}
                     try:
                         f.result()
                     except pipeline.BudgetExhausted as e:
