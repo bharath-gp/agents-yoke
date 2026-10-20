@@ -547,6 +547,7 @@ Files: `yoke/usage.py`, `yoke/pipeline.py`, `yoke/scheduler.py`, `tests/test_usa
 - Usage aggregation: `usage.summarize(run)` recursively walks all call `meta.json` files under the run directory (including `reask/`, `fallback/`, and `.interrupted` attempt directories) and aggregates token usage fields and observed costs by stage, ticket, agent, and model, along with overall totals.
 - Unreported cost handling: missing costs (such as from `agy`) are recorded as `"unreported"` (never 0). Mixed buckets record total cost and `unreported_calls`. Spenders are ranked by cost, falling back to total tokens if any ticket has unreported costs.
 - Atomic persistence: `usage.write_usage(run)` writes `usage.json` atomically via `run.write_json` at each ticket close in `pipeline.py` and at run end in `scheduler.py`.
+- Status, wait summary, and dashboard UI: `render_status()` in `state.py` adds usage totals and top 3 spenders to `yoke status` and `yoke wait`; missing agy cost renders as `"unreported"`, and partial/mixed costs display `(+N unreported)`. The dashboard `/api/runs/<id>` endpoint and `dashboard.html` display totals and a top 3 spenders table.
 - Notes: Built `yoke/usage.py`, hooked into `pipeline.run_ticket` and `scheduler.run`, covered with unit and integration tests in `tests/test_usage.py`.
 
 ---

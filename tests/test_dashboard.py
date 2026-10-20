@@ -363,6 +363,75 @@ class TestDashboard(unittest.TestCase):
         self.assertIsNotNone(t_map["T-MTIME"]["updated"])
         self.assertTrue(re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", t_map["T-MTIME"]["updated"]))
 
+    def test_run_detail_includes_usage_totals_and_spenders(self):
+        run = self._create_run()
+        meta_dir = run.path("tickets/T-001/attempt-1/code")
+        os.makedirs(meta_dir, exist_ok=True)
+        with open(os.path.join(meta_dir, "meta.json"), "w", encoding="utf-8") as f:
+            json.dump({
+                "stage": "code",
+                "ticket": "T-001",
+                "agent": "claude",
+                "observed": {
+                    "model": "claude-sonnet-5-5",
+                    "usage": {"input_tokens": 150, "output_tokens": 50, "total_tokens": 200},
+                    "cost": 0.025,
+                },
+            }, f)
+
+        detail = dashboard.run_detail(run)
+        self.assertIn("usage", detail)
+        self.assertEqual(detail["usage"]["totals"]["cost"], 0.025)
+        self.assertEqual(detail["usage"]["totals"]["total_tokens"], 200)
+        self.assertEqual(len(detail["usage"]["top_spenders"]), 1)
+        self.assertEqual(detail["usage"]["top_spenders"][0]["ticket"], "T-001")
+        self.assertEqual(detail["usage"]["top_spenders"][0]["cost"], 0.025)
+
+    def test_run_detail_agy_only_shows_unreported_cost(self):
+        run = self._create_run()
+        meta_dir = run.path("tickets/T-001/attempt-1/code")
+        os.makedirs(meta_dir, exist_ok=True)
+        with open(os.path.join(meta_dir, "meta.json"), "w", encoding="utf-8") as f:
+            json.dump({
+                "stage": "code",
+                "ticket": "T-001",
+                "agent": "agy",
+                "observed": {
+                    "model": "unreported",
+                    "usage": {"input_tokens": 500, "output_tokens": 100, "total_tokens": 600},
+                    "cost": None,
+                },
+            }, f)
+
+        detail = dashboard.run_detail(run)
+        self.assertIn("usage", detail)
+        self.assertEqual(detail["usage"]["totals"]["cost"], "unreported")
+        self.assertEqual(detail["usage"]["totals"]["total_tokens"], 600)
+        self.assertEqual(len(detail["usage"]["top_spenders"]), 1)
+        self.assertEqual(detail["usage"]["top_spenders"][0]["cost"], "unreported")
+
+    def test_dashboard_html_contains_usage_section(self):
+        pkg_dir = os.path.dirname(dashboard.__file__)
+        dash_html_path = os.path.join(pkg_dir, "dashboard.html")
+        with open(dash_html_path, "r", encoding="utf-8") as f:
+            html = f.read()
+
+        self.assertIn("usage-cost-val", html)
+        self.assertIn("usage-total-tokens-val", html)
+        self.assertIn("usage-spenders-tbody", html)
+        self.assertIn("unreported", html)
+        self.assertIn("formatCost", html)
+
+    def test_run_detail_fallback_uses_empty_summary_when_corrupt(self):
+        run = self._create_run()
+        meta_dir = run.path("tickets/T-001/attempt-1/code")
+        os.makedirs(meta_dir, exist_ok=True)
+        # Corrupt meta.json that fails or empty
+        detail = dashboard.run_detail(run)
+        self.assertIn("usage", detail)
+        self.assertEqual(detail["usage"]["totals"]["cost"], 0.0)
+        self.assertEqual(detail["usage"]["top_spenders"], [])
+
 
 class TestServe(unittest.TestCase):
     def setUp(self):
@@ -412,6 +481,34 @@ class TestServe(unittest.TestCase):
         conn.close()
         data = json.loads(body)
         self.assertEqual(data["run_id"], self.run.run_id)
+
+    def test_api_run_detail_includes_usage_and_unreported(self):
+        meta_dir = self.run.path("tickets/T-001/attempt-1/code")
+        os.makedirs(meta_dir, exist_ok=True)
+        with open(os.path.join(meta_dir, "meta.json"), "w", encoding="utf-8") as f:
+            json.dump({
+                "stage": "code",
+                "ticket": "T-001",
+                "agent": "agy",
+                "observed": {
+                    "model": "unreported",
+                    "usage": {"input_tokens": 1200, "output_tokens": 300, "total_tokens": 1500},
+                    "cost": None,
+                },
+            }, f)
+
+        conn = http.client.HTTPConnection("127.0.0.1", self.port)
+        conn.request("GET", "/api/runs/%s" % self.run.run_id)
+        res = conn.getresponse()
+        self.assertEqual(res.status, 200)
+        data = json.loads(res.read().decode("utf-8"))
+        conn.close()
+
+        self.assertIn("usage", data)
+        self.assertEqual(data["usage"]["totals"]["cost"], "unreported")
+        self.assertEqual(data["usage"]["totals"]["total_tokens"], 1500)
+        self.assertEqual(data["usage"]["top_spenders"][0]["ticket"], "T-001")
+        self.assertEqual(data["usage"]["top_spenders"][0]["cost"], "unreported")
 
     def test_api_run_detail_unknown(self):
         conn = http.client.HTTPConnection("127.0.0.1", self.port)

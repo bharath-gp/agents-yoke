@@ -52,7 +52,10 @@ def add_parsers(sub):
 
 
 def wait_for(run, timeout, poll=2):
-    """Block until an escalation opens, the run ends, or the runner dies. -> (reason, message)."""
+    """Block until an escalation opens, the run ends, or the runner dies. -> (reason, message).
+
+    When the run completes, message contains rendered status including usage totals and top spenders.
+    """
     end = time.time() + timeout
     while True:
         info = run.read_json("run.json")

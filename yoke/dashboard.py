@@ -239,6 +239,8 @@ def run_detail(run):
     """Return complete run detail dictionary from existing readers only.
 
     All reads are tolerant: missing or half-written files give empty values or null, never an exception.
+    Includes status, runner liveness, stage, milestones, tickets, progress, escalations, events,
+    decisions log, and usage totals with top spenders.
     """
     if isinstance(run, str):
         run = state.Run(run)
@@ -405,6 +407,14 @@ def run_detail(run):
     # 7. Decisions log (map.md text)
     decisions = _read_text_safe(run, "map.md")
 
+    # 8. Usage summary
+    try:
+        from . import usage
+        usage_data = usage.summarize(run)
+    except Exception:
+        from . import usage
+        usage_data = usage.empty_summary()
+
     return {
         "run_id": getattr(run, "run_id", None),
         "status": status_info,
@@ -417,6 +427,7 @@ def run_detail(run):
         "escalations": escalations,
         "events": events,
         "decisions": decisions,
+        "usage": usage_data,
     }
 
 

@@ -701,6 +701,9 @@
             <div class="detail-meta-item">
               <span id="detail-calls"></span>
             </div>
+            <div class="detail-meta-item">
+              <span id="detail-usage"></span>
+            </div>
           </div>
           <div id="detail-destination" class="detail-destination"></div>
           <div id="detail-out-of-scope" class="out-of-scope-row"></div>
@@ -718,6 +721,32 @@
           <div class="progress-labels">
             <span id="progress-text-summary"></span>
             <span id="progress-breakdown"></span>
+          </div>
+        </section>
+
+        <!-- Usage totals and top 3 spenders -->
+        <section class="card" id="detail-usage-card">
+          <div class="card-title">Usage & Cost</div>
+          <div class="usage-summary-row" id="usage-summary-row" style="display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 12px; font-size: 13px;">
+            <div><strong>Cost:</strong> <span id="usage-cost-val">-</span></div>
+            <div><strong>Total Tokens:</strong> <span id="usage-total-tokens-val">0</span></div>
+            <div><strong>Input Tokens:</strong> <span id="usage-input-tokens-val">0</span></div>
+            <div><strong>Output Tokens:</strong> <span id="usage-output-tokens-val">0</span></div>
+          </div>
+          <div style="font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: 8px;">Top 3 Spenders</div>
+          <div class="table-container">
+            <table class="ticket-table">
+              <thead>
+                <tr>
+                  <th>Ticket</th>
+                  <th>Cost</th>
+                  <th>Total Tokens</th>
+                  <th>Input Tokens</th>
+                  <th>Output Tokens</th>
+                </tr>
+              </thead>
+              <tbody id="usage-spenders-tbody"></tbody>
+            </table>
           </div>
         </section>
 
@@ -801,6 +830,23 @@
         } catch (e) {
           return isoStr;
         }
+      }
+
+      function formatCost(rawCost, unreportedCalls) {
+        let res;
+        if (rawCost === 'unreported') {
+          res = 'unreported';
+        } else if (typeof rawCost === 'number') {
+          res = '$' + rawCost.toFixed(4);
+        } else if (rawCost !== undefined && rawCost !== null) {
+          res = String(rawCost);
+        } else {
+          res = '$0.00';
+        }
+        if (unreportedCalls) {
+          res += ' (+' + unreportedCalls + ' unreported)';
+        }
+        return res;
       }
 
       function getSelectedRunId(runs) {
@@ -957,6 +1003,56 @@
         fill.style.width = pct + '%';
         document.getElementById('progress-text-summary').textContent = closed + ' of ' + total + ' tickets done (' + pct + '%), ' + remaining + ' remaining';
         document.getElementById('progress-breakdown').textContent = 'Done: ' + closed + ' | In Progress: ' + inProgress + ' | Blocked: ' + blocked + ' | Pending: ' + pending;
+
+        // Usage totals and top 3 spenders
+        const usageData = d.usage || (d.status && d.status.usage) || {};
+        const usageTotals = usageData.totals || {};
+        const costDisplay = formatCost(usageTotals.cost, usageTotals.unreported_calls);
+
+        const totalTokens = usageTotals.total_tokens !== undefined ? usageTotals.total_tokens :
+          ((usageTotals.input_tokens || 0) + (usageTotals.output_tokens || 0));
+        const inputTokens = usageTotals.input_tokens || 0;
+        const outputTokens = usageTotals.output_tokens || 0;
+
+        document.getElementById('usage-cost-val').textContent = costDisplay;
+        document.getElementById('usage-total-tokens-val').textContent = String(totalTokens);
+        document.getElementById('usage-input-tokens-val').textContent = String(inputTokens);
+        document.getElementById('usage-output-tokens-val').textContent = String(outputTokens);
+
+        const usageElem = document.getElementById('detail-usage');
+        if (usageElem) {
+          usageElem.textContent = 'Usage: ' + costDisplay + ' (' + totalTokens + ' tokens)';
+        }
+
+        const spendersTbody = document.getElementById('usage-spenders-tbody');
+        clearElement(spendersTbody);
+        const topSpenders = usageData.top_spenders || [];
+        if (topSpenders.length === 0) {
+          const tr = el('tr');
+          const td = el('td', 'empty-note', 'No ticket spenders recorded');
+          td.setAttribute('colspan', '5');
+          tr.appendChild(td);
+          spendersTbody.appendChild(tr);
+        } else {
+          topSpenders.forEach(sp => {
+            const tr = el('tr');
+            const tdTicket = el('td', 'cell-id', sp.ticket || '-');
+            const tdCost = el('td', '', formatCost(sp.cost, sp.unreported_calls));
+
+            const spTotal = sp.total_tokens !== undefined ? sp.total_tokens :
+              ((sp.input_tokens || 0) + (sp.output_tokens || 0));
+            const tdTotal = el('td', '', String(spTotal));
+            const tdIn = el('td', '', String(sp.input_tokens || 0));
+            const tdOut = el('td', '', String(sp.output_tokens || 0));
+
+            tr.appendChild(tdTicket);
+            tr.appendChild(tdCost);
+            tr.appendChild(tdTotal);
+            tr.appendChild(tdIn);
+            tr.appendChild(tdOut);
+            spendersTbody.appendChild(tr);
+          });
+        }
 
         // Milestone strip with gate chips
         const msStrip = document.getElementById('milestone-strip');

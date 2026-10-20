@@ -3,7 +3,7 @@ import os
 import tempfile
 import unittest
 
-from yoke import config, state, usage
+from yoke import config, runcmds, state, usage
 
 
 class UsageTestBase(unittest.TestCase):
@@ -522,6 +522,141 @@ class TestUsageIntegration(PipeBase):
         rc2 = self.go()
         self.assertEqual(rc2, "done")
         self.assertEqual(len(self.run_.read_json("escalations.json")), 1)
+
+
+class TestUsageStatusAndWait(UsageTestBase):
+    def test_status_and_wait_output_includes_totals_and_top_spenders(self):
+        # 1. T-001 call
+        self.write_meta("tickets/T-001/attempt-1/code", {
+            "stage": "code",
+            "ticket": "T-001",
+            "agent": "claude",
+            "requested": {"model": "m1"},
+            "observed": {
+                "model": "m1",
+                "usage": {"input_tokens": 100, "output_tokens": 50, "total_tokens": 150},
+                "cost": 0.0195,
+            },
+        })
+        # 2. T-002 call (higher cost)
+        self.write_meta("tickets/T-002/attempt-1/code", {
+            "stage": "code",
+            "ticket": "T-002",
+            "agent": "claude",
+            "requested": {"model": "m1"},
+            "observed": {
+                "model": "m1",
+                "usage": {"input_tokens": 200, "output_tokens": 100, "total_tokens": 300},
+                "cost": 0.02,
+            },
+        })
+        # 3. T-003 call
+        self.write_meta("tickets/T-003/attempt-1/code", {
+            "stage": "code",
+            "ticket": "T-003",
+            "agent": "claude",
+            "requested": {"model": "m1"},
+            "observed": {
+                "model": "m1",
+                "usage": {"input_tokens": 50, "output_tokens": 25, "total_tokens": 75},
+                "cost": 0.005,
+            },
+        })
+
+        out = self.run_.render_status()
+        self.assertIn("usage totals:", out)
+        self.assertIn("cost $0.0445", out)
+        self.assertIn("tokens 525", out)
+        self.assertIn("top 3 spenders:", out)
+        self.assertIn("T-002", out)
+        self.assertIn("T-001", out)
+        self.assertIn("T-003", out)
+
+        # yoke wait summary check
+        self.run_.update(state="done")
+        reason, wait_msg = runcmds.wait_for(self.run_, timeout=5)
+        self.assertEqual(reason, "done")
+        self.assertIn("usage totals: cost $0.0445, tokens 525", wait_msg)
+        self.assertIn("top 3 spenders:", wait_msg)
+        self.assertIn("T-002", wait_msg)
+
+    def test_status_and_wait_output_agy_only_renders_unreported_cost(self):
+        self.write_meta("tickets/T-001/attempt-1/code", {
+            "stage": "code",
+            "ticket": "T-001",
+            "agent": "agy",
+            "requested": {"model": "unreported"},
+            "observed": {
+                "model": "unreported",
+                "usage": {"input_tokens": 12000, "output_tokens": 1500, "total_tokens": 13500},
+                "cost": None,
+            },
+        })
+        self.write_meta("tickets/T-002/attempt-1/code", {
+            "stage": "code",
+            "ticket": "T-002",
+            "agent": "agy",
+            "requested": {"model": "unreported"},
+            "observed": {
+                "model": "unreported",
+                "usage": {"input_tokens": 3000, "output_tokens": 300, "total_tokens": 3300},
+                "cost": None,
+            },
+        })
+
+        out = self.run_.render_status()
+        self.assertIn("usage totals: cost unreported, tokens 16800", out)
+        self.assertIn("top 3 spenders: T-001 (cost unreported, tokens 13500), T-002 (cost unreported, tokens 3300)", out)
+
+        self.run_.update(state="done")
+        reason, wait_msg = runcmds.wait_for(self.run_, timeout=5)
+        self.assertEqual(reason, "done")
+        self.assertIn("cost unreported", wait_msg)
+        self.assertNotIn("cost $", wait_msg)
+
+    def test_status_and_wait_output_mixed_shows_unreported_count(self):
+        self.write_meta("tickets/T-001/attempt-1/code", {
+            "stage": "code",
+            "ticket": "T-001",
+            "agent": "claude",
+            "requested": {"model": "m1"},
+            "observed": {
+                "model": "m1",
+                "usage": {"input_tokens": 100, "output_tokens": 50, "total_tokens": 150},
+                "cost": 0.01,
+            },
+        })
+        self.write_meta("tickets/T-002/attempt-1/code", {
+            "stage": "code",
+            "ticket": "T-002",
+            "agent": "agy",
+            "requested": {"model": "unreported"},
+            "observed": {
+                "model": "unreported",
+                "usage": {"input_tokens": 1000, "output_tokens": 500, "total_tokens": 1500},
+                "cost": None,
+            },
+        })
+
+        out = self.run_.render_status()
+        self.assertIn("usage totals: cost $0.0100 (+1 unreported), tokens 1650", out)
+        self.assertIn("T-001 (cost $0.0100, tokens 150)", out)
+        self.assertIn("T-002 (cost unreported, tokens 1500)", out)
+
+        self.run_.update(state="done")
+        reason, wait_msg = runcmds.wait_for(self.run_, timeout=5)
+        self.assertEqual(reason, "done")
+        self.assertIn("cost $0.0100 (+1 unreported)", wait_msg)
+
+    def test_usage_helpers(self):
+        emp = usage.empty_summary()
+        self.assertEqual(emp["totals"], {"cost": 0.0})
+        self.assertEqual(emp["top_spenders"], [])
+
+        self.assertEqual(usage.format_cost("unreported"), "unreported")
+        self.assertEqual(usage.format_cost(0.05), "$0.0500")
+        self.assertEqual(usage.format_cost(0.05, unreported_calls=2), "$0.0500 (+2 unreported)")
+        self.assertEqual(usage.format_cost(None), "$0.00")
 
 
 if __name__ == "__main__":

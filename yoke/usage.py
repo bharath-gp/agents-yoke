@@ -162,6 +162,31 @@ def summarize(run):
     }
 
 
+def empty_summary():
+    """Return an empty usage summary dict."""
+    return {
+        "totals": {"cost": 0.0},
+        "top_spenders": [],
+        "by_stage": {},
+        "by_ticket": {},
+        "by_agent": {},
+        "by_model": {},
+    }
+
+
+def format_cost(cost, unreported_calls=0):
+    """Format cost value as a display string, noting unreported calls if mixed."""
+    if cost == "unreported":
+        res = "unreported"
+    elif isinstance(cost, (int, float)) and not isinstance(cost, bool):
+        res = "$%.4f" % float(cost)
+    else:
+        res = "$0.00"
+    if unreported_calls:
+        res += " (+%d unreported)" % unreported_calls
+    return res
+
+
 def write_usage(run):
     """Summarize and write usage.json atomically into run directory."""
     summary = summarize(run)

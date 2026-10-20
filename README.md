@@ -7,7 +7,7 @@ Multi-agent loop for large work items. Claude (primary) gathers requirements, pl
 1. Interactive: requirements, `plan.md`, one read-only secondary plan review, ticket split. You approve the plan and tickets (hash-bound).
 2. Unattended: a detached runner takes each ticket through code, review, QA, validate, docs. Failures retry with feedback up to a limit, then escalate to you. Independent tickets run in parallel, one git worktree each (`--parallel N`).
 3. A ticket is committed to feature branch `yoke/<run_id>` only when QA passes and the validator approves. The runner never pushes; `yoke pr` does, after `approve final`.
-4. State and audit trail (prompts, commands, outputs) live in `~/.yoke/runs/<run_id>/` (`$YOKE_HOME` overrides), outside the target repo. Any session can resume from disk. An atomic usage ledger (`usage.json`) tracks token usage and costs by stage, ticket, agent and model at each ticket close and at run end.
+4. State and audit trail (prompts, commands, outputs) live in `~/.yoke/runs/<run_id>/` (`$YOKE_HOME` overrides), outside the target repo. Any session can resume from disk. An atomic usage ledger (`usage.json`) tracks token usage and costs by stage, ticket, agent and model at each ticket close and at run end; status, wait summaries, and the dashboard surface usage totals and top spenders.
 
 A local Ollama model (`tev1:4b`) handles small routing/triage decisions; fallback is a small Claude call, so the loop never blocks.
 
@@ -123,9 +123,9 @@ yoke tickets import tickets.json  # validate milestones/tickets and warn; `yoke 
 yoke map                          # render destination, out-of-scope, milestone gates, frontier, decisions log
 yoke route T-001                  # stages and agents for a ticket
 yoke run --detach --parallel 2    # background runner; always resumes from disk
-yoke wait                         # blocks until escalation, done, needs_user, stopped, died or timeout
+yoke wait                         # blocks until escalation, done, needs_user, stopped, died or timeout (reports usage totals and top 3 spenders)
 yoke runs [--active] [--json]     # list runs for this repo with goal and next step
-yoke status [--json|--brief]      # also: escalations, unblock [T-001|--milestone MS-01], stop; --active lists active runs
+yoke status [--json|--brief]      # also: escalations, unblock [T-001|--milestone MS-01], stop; --active lists active runs; reports usage totals and top 3 spenders
 yoke dashboard [--port N]         # serve local read-only web UI on 127.0.0.1 (default port 8765)
 yoke approve final && yoke pr     # push branch, open PR
 yoke clean                        # remove worktrees (keeps branches and audit)
@@ -153,6 +153,7 @@ Subcommands take `--run <id>`; default is the latest run for the current repo. `
   - **Run overview**: Displays run ID, state, feature branch, runner heartbeat, and agent calls against total budget.
   - **Stage strip**: Visual breadcrumbs across lifecycle stages (`grill`, `plan`, `tickets`, `run`, `finish`).
   - **Progress & Milestones**: Overall done vs remaining progress bar, plus milestone cards showing gate status, exit checks, and fix ticket counts.
+  - **Usage & Cost**: Aggregated cost and token counts (total, input, output) with missing agent cost rendered as "unreported", plus a breakdown table of the top 3 spending tickets.
   - **Ticket table**: Real-time ticket statuses, attempt counts, active stage and agent, last update timestamps, and explicit `waiting_for` dependency reasons.
   - **Escalations & Events**: Panel listing open escalations alongside a reverse-chronological event stream.
   - **Decisions log**: Rendered implementation decisions and gate waivers from `map.md`.
