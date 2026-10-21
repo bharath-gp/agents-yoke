@@ -9,6 +9,15 @@
     "assumptions": {"type": "array", "items": {"type": "string"}},
     "open_questions": {"type": "array", "items": {"type": "string"}},
     "notes_for_qa": {"type": "string"},
-    "blocked_reason": {"type": "string"}
+    "blocked_reason": {"type": "string"},
+    "handoff": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "interface_changes": {"type": "string"},
+        "new_files": {"type": "string"},
+        "gotchas": {"type": "string"}
+      }
+    }
   }
 }

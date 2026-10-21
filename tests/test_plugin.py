@@ -24,10 +24,10 @@ class TestPackaging(unittest.TestCase):
     def test_manifests(self):
         p = load(".claude-plugin/plugin.json")
         self.assertEqual(p["name"], "yoke")
-        self.assertEqual(p["version"], "0.7.0")
+        self.assertEqual(p["version"], "0.8.0")
         with open(os.path.join(ROOT, "pyproject.toml")) as f:
             pyproject_ver = re.search(r'version\s*=\s*"([^"]+)"', f.read()).group(1)
-        self.assertEqual(pyproject_ver, "0.7.0")
+        self.assertEqual(pyproject_ver, "0.8.0")
         self.assertEqual(p["version"], pyproject_ver)
         m = load(".claude-plugin/marketplace.json")
         self.assertEqual(m["name"], "yoke")
@@ -56,7 +56,7 @@ class TestPackaging(unittest.TestCase):
             with open(os.path.join(ROOT, "skills", name, "SKILL.md")) as f:
                 subs.update(re.findall(r"`yoke ([a-z-]+)", f.read()))
         known = {"setup", "init", "review-plan", "approve", "tickets", "run", "wait", "status", "escalations",
-                 "unblock", "stop", "pr", "route", "doctor", "models", "runs", "map", "dashboard"}
+                 "unblock", "stop", "pr", "route", "doctor", "models", "runs", "map", "dashboard", "nudge"}
         self.assertFalse(subs - known, subs - known)
 
 
@@ -128,6 +128,13 @@ class TestPackaging(unittest.TestCase):
         with open(os.path.join(ROOT, "skills", "setup", "SKILL.md")) as f:
             content = f.read()
         self.assertIn("/yoke:models", content)
+
+    def test_status_skill(self):
+        with open(os.path.join(ROOT, "skills", "status", "SKILL.md")) as f:
+            content = f.read()
+        self.assertIn("`yoke setup --check`", content)
+        self.assertIn("waiting_limit", content)
+        self.assertIn("`yoke nudge", content)
 
 
 class TestInstaller(unittest.TestCase):

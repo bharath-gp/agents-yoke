@@ -150,34 +150,71 @@ class Run:
     def status(self):
         info = self.read_json("run.json")
         counts = {}
-        from . import milestones
+        from . import milestones, usage
         tickets = milestones.merged_tickets(self)
         for t in tickets:
             st = self.read_json("tickets/%s/state.json" % t["id"], {}).get("status", "pending")
             counts[st] = counts.get(st, 0) + 1
-        return {
+        try:
+            u = usage.summarize(self)
+        except Exception:
+            u = usage.empty_summary()
+        res = {
             "run_id": self.run_id, "repo": info["repo"], "branch": info["branch"],
             "state": info["state"], "agent_calls": info["agent_calls"],
             "max_agent_calls": info["config"].get("max_agent_calls_total"),
             "tickets_total": len(tickets), "tickets": counts,
             "escalations": len(self.read_json("escalations.json", [])),
+            "usage": u,
         }
+        if info.get("waiting_limit"):
+            res["waiting_limit"] = info["waiting_limit"]
+        return res
 
     def render_status(self):
-        """Derive status.json and return a short text summary."""
+        """Derive status.json and return a text summary including usage totals and top 3 spenders."""
         s = self.status()
         with _LOCK:
             self.write_json("status.json", s)
         by = ", ".join("%s %d" % kv for kv in sorted(s["tickets"].items())) or "none"
-        from . import milestones
+        from . import milestones, usage
         ms_list = milestones.milestones_of(self)
         ms_states = milestones.load_states(self)
         ms_str = ", ".join("%s %s" % (m["id"], ms_states.get(m["id"], {}).get("status", "open")) for m in ms_list)
-        return "\n".join([
+
+        u = s.get("usage") or {}
+        totals = u.get("totals") or {}
+        top_spenders = u.get("top_spenders") or []
+
+        cost_disp = usage.format_cost(totals.get("cost"), totals.get("unreported_calls", 0))
+
+        tot_tokens = totals.get("total_tokens")
+        if not isinstance(tot_tokens, (int, float)) or isinstance(tot_tokens, bool):
+            tot_tokens = sum(v for k, v in totals.items() if "token" in k and isinstance(v, (int, float)) and not isinstance(v, bool))
+        in_tokens = totals.get("input_tokens", 0)
+        out_tokens = totals.get("output_tokens", 0)
+
+        lines = [
             "run %s [%s]" % (s["run_id"], s["state"]),
             "repo %s  branch %s" % (s["repo"], s["branch"]),
             "agent calls %d/%s" % (s["agent_calls"], s["max_agent_calls"]),
             "milestones %d (%s)" % (len(ms_list), ms_str),
             "tickets %d (%s)" % (s["tickets_total"], by),
             "open escalations %d" % s["escalations"],
-        ])
+            "usage totals: cost %s, tokens %d (in %d, out %d)" % (cost_disp, tot_tokens, in_tokens, out_tokens),
+        ]
+        if s.get("waiting_limit"):
+            wl = s["waiting_limit"]
+            lines.insert(1, "waiting for limit until %s (%s)" % (wl.get("resume_at", "?"), wl.get("ticket") or "run"))
+
+        spender_strs = []
+        for sp in top_spenders[:3]:
+            tid = sp.get("ticket", "?")
+            c_str = usage.format_cost(sp.get("cost"), sp.get("unreported_calls", 0))
+            tok = sp.get("total_tokens")
+            if not isinstance(tok, (int, float)) or isinstance(tok, bool):
+                tok = sum(v for k, v in sp.items() if "token" in k and isinstance(v, (int, float)) and not isinstance(v, bool))
+            spender_strs.append("%s (cost %s, tokens %d)" % (tid, c_str, tok))
+
+        lines.append("top 3 spenders: %s" % (", ".join(spender_strs) if spender_strs else "none"))
+        return "\n".join(lines)

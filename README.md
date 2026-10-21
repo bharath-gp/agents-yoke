@@ -5,9 +5,9 @@ Multi-agent loop for large work items. Claude (primary) gathers requirements, pl
 ## How it works
 
 1. Interactive: requirements, `plan.md`, one read-only secondary plan review, ticket split. You approve the plan and tickets (hash-bound).
-2. Unattended: a detached runner takes each ticket through code, review, QA, validate, docs. Failures retry with feedback up to a limit, then escalate to you. Independent tickets run in parallel, one git worktree each (`--parallel N`).
+2. Unattended: a detached runner takes each ticket through code, review, QA, validate, docs. Failures retry with feedback up to a limit, then escalate to you. Independent tickets run in parallel, one git worktree each (`--parallel N`). When `parallel > 1`, ready tickets whose `files_hint` overlaps (exact file path or directory prefix) any currently running ticket are deferred until that ticket finishes, emitting a `ticket_deferred` audit event (tickets with empty hints never block). Upstream handoff notes (interface changes, new files, gotchas) from closed ancestor tickets are automatically stored at `tickets/<T>/handoff.json` and inlined into dependent `code`, `QA`, and `validate` prompts (`$upstream`). Pending or in-progress tickets can be steered with `yoke nudge T-xxx --note TEXT`, which appends user guidance to the next attempt or review round feedback without touching `tickets.json` or interrupting in-flight calls.
 3. A ticket is committed to feature branch `yoke/<run_id>` only when QA passes and the validator approves. The runner never pushes; `yoke pr` does, after `approve final`.
-4. State and audit trail (prompts, commands, outputs) live in `~/.yoke/runs/<run_id>/` (`$YOKE_HOME` overrides), outside the target repo. Any session can resume from disk.
+4. State and audit trail (prompts, commands, outputs) live in `~/.yoke/runs/<run_id>/` (`$YOKE_HOME` overrides), outside the target repo. Any session can resume from disk. An atomic usage ledger (`usage.json`) tracks token usage and costs by stage, ticket, agent and model at each ticket close and at run end; status, wait summaries, and the dashboard surface usage totals and top spenders.
 
 A local Ollama model (`tev1:4b`) handles small routing/triage decisions; fallback is a small Claude call, so the loop never blocks.
 
@@ -39,11 +39,36 @@ Development: `uv tool install --editable .`, then `claude plugin marketplace add
 
 ### Role mapping and review
 
-Agent roles are configured via `yoke setup --primary <agent> --secondary <agent> --map <role>=<who>`. Supported roles include `requirements`, `planner`, `wayfinder`, `orchestrator`, `plan_review`, `code`, `review`, `qa`, `validate`, `docs`, `search`, `research`, and `factcheck`.
+Agent roles are configured via `yoke setup --primary <agent> --secondary <agent> --map <role>=<who>`. Supported roles include `requirements`, `planner`, `wayfinder`, `orchestrator`, `plan_review`, `code`, `review`, `qa`, `validate`, `docs`, `search`, `research`, `factcheck`, `pr_body`, `hypotheses`, and `hypotheses_rank`.
 
 The `review` role defaults to `auto`, resolving dynamically to the opposite of the `code` agent (`claude` <-> `agy`), ensuring code review is performed by a different agent than the implementer. For custom code agent names outside `AGENTS`, it falls back to `primary` (or `secondary` if `primary` matches `code`). `yoke setup` warns if an explicit override assigns the same agent to both code and review. Use `--map review=auto` to restore automatic resolution.
 
-During ticket execution, the `review` stage runs an iterative review loop (up to `max_review_rounds` revisions). Blocker and major findings trigger coder revisions using the resumed session. If findings remain unresolved when reaching the revision cap, the ticket proceeds without failing: unresolved findings are recorded in ticket state, posted as issue comments, and surfaced in the `yoke pr` description under "Unresolved review findings".
+### Review lenses
+
+During ticket execution, the `review` stage runs an iterative review loop (up to `max_review_rounds` revisions). Review lenses are **enabled by default** (`review_lenses` defaults to `["security", "performance", "tests"]`):
+
+```json
+{
+  "review_lenses": [
+    "security",
+    "performance",
+    "tests"
+  ]
+}
+```
+
+- **Dedicated lens prompts**: Dedicated lens prompts (`review_security.md`, `review_performance.md`, `review_tests.md`) evaluate changes focusing on vulnerability checks, performance bottlenecks, and test coverage.
+- **Concurrent read-only evaluation**: Each lens runs independently in read-only mode without seeing findings from other lenses. When `parallel > 1`, lenses execute concurrently up to `min(len(lenses), parallel)` worker threads.
+- **Deduplication**: Findings across lenses are merged and deduplicated by file and line, preserving the highest severity.
+- **Opting out**: To turn off multi-lens review and restore legacy single-review execution byte-for-byte, set `review_lenses: []` in `~/.yoke/config.json` or `<repo>/.yoke.json`:
+
+```json
+{
+  "review_lenses": []
+}
+```
+
+Each lens call counts against `max_agent_calls_total`. Blocker and major findings trigger coder revisions using the resumed session. If findings remain unresolved when reaching the revision cap, the ticket proceeds without failing: unresolved findings are recorded in ticket state, posted as issue comments, and surfaced in the `yoke pr` description under "Unresolved review findings".
 
 ### Model selection and tiers
 
@@ -75,6 +100,135 @@ yoke models --reset [AGENT[.TIER]] [--scope user|project|repo]   # remove model 
 - `--reset`: clears model settings for an agent, tier, or all entries.
 
 In agent sessions, run `/yoke:models` (agy: the `models` skill) to interactively inspect, configure, or reset model choices. When kicking off runs with `/yoke:grill` or the end-to-end wrapper `/yoke:go`, a model selection prompt precedes `yoke init` to confirm or update agent models before planning.
+
+### Budget configuration
+
+Run-level execution budgets can be configured in `~/.yoke/config.json` (user-wide) or `<repo>/.yoke.json` (per-repo):
+
+```json
+{
+  "max_agent_calls_total": 300,
+  "budget": {
+    "max_cost_usd": 25.00,
+    "max_tokens": 1000000
+  }
+}
+```
+
+- `max_agent_calls_total`: Maximum total agent invocations across all tickets (default: 300).
+- `budget.max_cost_usd`: Maximum spend cap in USD (default: `null`, disabled). Checks recorded Claude cost from `usage.summarize` (falling back to total cost).
+- `budget.max_tokens`: Maximum total token usage cap across all agents (default: `null`, disabled).
+
+When a budget cap is exceeded, the runner stops scheduling new work, allows in-flight calls to finish cleanly, and opens a single budget escalation. Resuming after a budget escalation does not re-escalate.
+
+### Rate limits configuration
+
+Agent rate limits and quotas are configured under `limits` in `~/.yoke/config.json` or `<repo>/.yoke.json`:
+
+```json
+{
+  "limits": {
+    "patterns": {
+      "claude": [
+        "(?i)rate[ _]?limit",
+        "(?i)quota[ _]?exceeded",
+        "(?i)usage[ _]?limit",
+        "(?i)too many requests",
+        "(?i)overloaded_error",
+        "(?i)credit balance"
+      ],
+      "agy": [
+        "(?i)resource_exhausted",
+        "(?i)rate[ _]?limit",
+        "(?i)quota[ _]?exceeded",
+        "(?i)too many requests"
+      ]
+    },
+    "max_wait_s": 7200,
+    "max_waits": 3,
+    "backoff_s": 30
+  }
+}
+```
+
+- **Unverified patterns warning**: Default regex patterns in `limits.patterns` are unverified against live provider rate limits (verified only using synthetic CLI output fixtures). Provider error messages and status formats may change over time.
+- **Overriding limits**: You can override or extend `limits.patterns` for any agent (`claude`, `agy`) in `~/.yoke/config.json` or `<repo>/.yoke.json` to match custom or updated provider rate limit strings.
+- `limits.max_wait_s`: Maximum backoff wait time in seconds when a limit is hit (default: 7200).
+- `limits.max_waits`: Maximum consecutive wait cycles before opening an escalation (default: 3).
+- `limits.backoff_s`: Base backoff interval in seconds (default: 30).
+
+When an agent call matches a limit pattern, the adapter classifies the output into `CallResult.limit` with the raw text and any parsed reset timestamp. Calls stopped by rate limits do not count as failed attempts or schema errors, preventing unnecessary schema re-asks.
+
+On `CallResult.limit`, the runner executes a pause and retry cycle:
+1. Records a `limit_hit` event in the run audit log and records `waiting_limit` with `resume_at` in `run.json` (computed from the parsed reset time or exponential backoff capped by `limits.max_wait_s`).
+2. Pauses the worker pool: no new agent calls are scheduled while in-flight calls finish cleanly.
+3. Sleeps in short slices so `yoke stop` and `SIGTERM` interrupt cleanly.
+4. Re-issues the same call with the same attempt number and session ID under the `limit-retry` audit label, uncharged against `agent_calls`.
+5. Escalates once with the raw limit message after `limits.max_waits` consecutive waits for a single call.
+6. Resumes in-progress waits automatically on restart via `scheduler.recover`.
+
+During a rate limit wait:
+- `yoke status` and `yoke status --brief` display `waiting for limit until <resume_at> (<ticket>)` alongside usage totals.
+- `yoke wait` continues waiting (rate limit pauses do not trigger an early return, since they are not escalations).
+- The web dashboard displays a prominent banner in the run detail view and an indicator row in the run picker.
+
+### Gate hooks
+
+Gate verification commands can be configured under `gate_hooks`:
+
+```json
+{
+  "gate_hooks": {
+    "after_stage": {
+      "code": ["pytest tests/unit/test_quick.py"],
+      "qa": ["npm run lint"]
+    },
+    "before_close": ["git diff --check"]
+  }
+}
+```
+
+- **User config only**: For security reasons, `gate_hooks` is accepted exclusively from user configuration (`~/.yoke/config.json`). Any `gate_hooks` defined in repo configuration (`<repo>/.yoke.json`) is strictly rejected with a warning log to prevent arbitrary command execution from untrusted repositories.
+- **Execution environment**: Hooks run in the ticket worktree with environment variables:
+  - `YOKE_TICKET`: Ticket identifier (e.g. `T-0065`).
+  - `YOKE_STAGE`: Pipeline stage name (e.g. `code`, `qa`, `before_close`).
+  - `YOKE_ATTEMPT`: Attempt number.
+- **Exit codes & status**:
+  - `0`: Pass (`status: pass`).
+  - `2`: Gate check failure (`status: fail`, capturing stdout/stderr tail up to 1000 characters).
+  - Other non-zero or timeout: Hook execution error (`status: gate_hook_error`).
+- **Pipeline integration**: `after_stage` hooks run following `code` and `qa` stages; `before_close` hooks run prior to commit. Failures feed output tails back to the coder as feedback, and results are recorded in attempt audit logs (`attempt-N/hooks/<stage>.log`) and `close_gate` events.
+- **Process control**: On timeout, the entire process group is terminated using SIGTERM followed by SIGKILL.
+
+### Failure hypotheses fan-out
+
+When repeated failures occur across attempts on a ticket, yoke can optionally generate competing hypotheses and rank them to provide advisory guidance:
+
+```json
+{
+  "hypotheses": 4
+}
+```
+
+- `hypotheses`: Number of competing hypothesis calls to execute upon repeating failure on the final attempt (default: `0`, disabled).
+- **Trigger condition**: Activates on the final attempt (`attempt == max_attempts_per_ticket`, with `attempt >= 2`) when the failure evidence matches the preceding attempt (for example, identical QA test failures, matching runner test failures, or recurring validator issues). When `hypotheses` is `0`, standard router triage hint is used instead.
+- **Fan-out calls**: Runs `N` read-only calls (`hypotheses` role, default `secondary`) seeded with failure evidence and cycled round-robin across four categories: `spec gap`, `environment`, `test bug`, and `code bug`. Each candidate returns structured output (`schemas/hypotheses.json`) with `hypothesis`, `evidence`, `fix_plan`, and `confidence` (0.0 to 1.0).
+- **Primary ranking call**: Followed by a single ranking call (`hypotheses_rank` role, default `primary`) evaluating candidates against failure evidence to select the winning hypothesis and synthesized fix plan. If ranking fails, the candidate with highest confidence is selected as a fallback. If the fan-out yields no candidates or encounters an error, yoke falls back to standard router triage.
+- **Feedback integration**: The winning fix plan is appended to retry feedback as `Hypothesis fix plan (advisory only): ...` for the coder on the final attempt.
+- **Audit and Budgeting**: Fan-out calls and the ranking call are saved under the attempt audit directory (`tickets/<tid>/attempt-<N>/hypotheses-1`, `hypotheses-rank`) and counted against `max_agent_calls_total`.
+- **Pass/Fail independence**: Confidence scores are strictly advisory and never decide pass or fail; close gates strictly evaluate verified test suite execution and validator criteria.
+
+### Runtime ticket steering (`yoke nudge`)
+
+Pending or in-progress tickets can be steered dynamically without modifying `tickets.json` or interrupting in-flight calls:
+
+```bash
+yoke nudge <ticket_id> --note "<guidance text>"
+```
+
+- **Runtime injection**: Appends guidance directly to ticket runtime state without modifying `tickets.json` or aborting active agent operations.
+- **Feedback loop**: The note is injected into prompt feedback on the ticket's next attempt or review revision round.
+- **Use cases**: Guiding an agent back on track when monitoring progress, clarifying ambiguities, or suggesting alternative approaches without restarting the run.
 
 
 ## Typical flow
@@ -113,9 +267,10 @@ yoke tickets import tickets.json  # validate milestones/tickets and warn; `yoke 
 yoke map                          # render destination, out-of-scope, milestone gates, frontier, decisions log
 yoke route T-001                  # stages and agents for a ticket
 yoke run --detach --parallel 2    # background runner; always resumes from disk
-yoke wait                         # blocks until escalation, done, needs_user, stopped, died or timeout
+yoke wait                         # blocks until escalation, done, needs_user, stopped, died or timeout (persists through waiting_limit; reports usage totals and top 3 spenders)
 yoke runs [--active] [--json]     # list runs for this repo with goal and next step
-yoke status [--json|--brief]      # also: escalations, unblock [T-001|--milestone MS-01], stop; --active lists active runs
+yoke status [--json|--brief]      # also: escalations, unblock [T-001|--milestone MS-01], stop; --active lists active runs; reports usage totals, top 3 spenders, and waiting_limit
+yoke nudge T-001 --note "text"    # send note to pending or in-progress ticket for next attempt/review round
 yoke dashboard [--port N]         # serve local read-only web UI on 127.0.0.1 (default port 8765)
 yoke approve final && yoke pr     # push branch, open PR
 yoke clean                        # remove worktrees (keeps branches and audit)
@@ -138,11 +293,12 @@ Subcommands take `--run <id>`; default is the latest run for the current repo. `
 - **Skill integration**: In agent sessions, run `/yoke:dashboard [--port N]` (agy: the `dashboard` skill) to launch or inspect the dashboard server.
 
 - **Self-contained**: Single-file interface (`yoke/dashboard.html`) with inline CSS and JavaScript, using no CDNs or external network dependencies.
-- **Run picker**: Sidebar listing all runs with live state badges, goal descriptions, progress counters, and runner active indicators. The selected run is tracked in the URL hash (`#<run_id>`).
+- **Run picker**: Sidebar listing all runs with live state badges, goal descriptions, progress counters, runner active indicators, and rate limit wait notices (`waiting for limit until <time>`). The selected run is tracked in the URL hash (`#<run_id>`).
 - **Detail view**:
-  - **Run overview**: Displays run ID, state, feature branch, runner heartbeat, and agent calls against total budget.
+  - **Run overview**: Displays run ID, state, feature branch, runner heartbeat, agent calls against total budget, and an active `waiting for limit until <time>` banner during rate limit pauses.
   - **Stage strip**: Visual breadcrumbs across lifecycle stages (`grill`, `plan`, `tickets`, `run`, `finish`).
   - **Progress & Milestones**: Overall done vs remaining progress bar, plus milestone cards showing gate status, exit checks, and fix ticket counts.
+  - **Usage & Cost**: Aggregated cost and token counts (total, input, output) with missing agent cost rendered as "unreported", plus a breakdown table of the top 3 spending tickets.
   - **Ticket table**: Real-time ticket statuses, attempt counts, active stage and agent, last update timestamps, and explicit `waiting_for` dependency reasons.
   - **Escalations & Events**: Panel listing open escalations alongside a reverse-chronological event stream.
   - **Decisions log**: Rendered implementation decisions and gate waivers from `map.md`.

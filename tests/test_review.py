@@ -4,7 +4,7 @@ import unittest
 from unittest import mock
 
 from tests.test_gitops import git
-from tests.test_pipeline import CODE, DOCS, PipeBase, resp, ticket, val
+from tests.test_pipeline import CODE, DOCS, PipeBase, qa, resp, ticket, val
 from yoke import tracker
 
 REV_APPROVE = {"verdict": "approve", "findings": [], "summary": "looks good"}
@@ -270,6 +270,220 @@ class TestReviewStage(PipeBase):
         self.assertIn("Unresolved review findings", body_unresolved)
         self.assertIn("unhandled null pointer", body_unresolved)
         self.assertIn("check None before access", body_unresolved)
+
+
+class TestMultiLensReview(PipeBase):
+    def test_two_lenses_producing_same_finding_yield_one_feedback_item(self):
+        self.run_.update(config=dict(self.run_.cfg, review_lenses=["security", "performance"]))
+        dup_finding = finding(severity="blocker", file="f.py", line=10, comment="dup issue", suggestion="fix dup")
+        self.setup_tickets(
+            [ticket(1)],
+            {"code": [resp(CODE, "c1", write={"f1.txt": "1"}), resp(CODE, "c1", write={"f1.txt": "2"})],
+             "review-security": [resp(rev_changes([dup_finding]))],
+             "review-security-r1": [resp(REV_APPROVE)],
+             "review-performance": [resp(rev_changes([dup_finding]))],
+             "review-performance-r1": [resp(REV_APPROVE)],
+             "validate": [resp(val())],
+             "router": [{"exit": 1}]})
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+        cmd_r1 = self.run_.path("tickets/T-001/attempt-1/code-r1/prompt.md")
+        with open(cmd_r1) as f:
+            prompt_r1 = f.read()
+        self.assertEqual(prompt_r1.count("[blocker] f.py:10: dup issue"), 1)
+
+    def test_blocker_from_any_lens_triggers_coder_revision(self):
+        self.run_.update(config=dict(self.run_.cfg, review_lenses=["security", "performance"]))
+        sec_blocker = finding(severity="blocker", file="f.py", line=10, comment="security hole")
+        perf_ok = REV_APPROVE
+        self.setup_tickets(
+            [ticket(1)],
+            {"code": [resp(CODE, "c1", write={"f1.txt": "1"}), resp(CODE, "c1", write={"f1.txt": "2"})],
+             "review-security": [resp(rev_changes([sec_blocker]))],
+             "review-security-r1": [resp(REV_APPROVE)],
+             "review-performance": [resp(perf_ok)],
+             "review-performance-r1": [resp(REV_APPROVE)],
+             "validate": [resp(val())],
+             "router": [{"exit": 1}]})
+        self.assertEqual(self.go(), "done")
+        attempt_dir = self.run_.path("tickets/T-001/attempt-1")
+        self.assertTrue(os.path.isdir(os.path.join(attempt_dir, "code-r1")))
+        self.assertTrue(os.path.isdir(os.path.join(attempt_dir, "review-security")))
+        self.assertTrue(os.path.isfile(os.path.join(attempt_dir, "review-security/meta.json")))
+        self.assertTrue(os.path.isdir(os.path.join(attempt_dir, "review-security-r1")))
+        self.assertTrue(os.path.isfile(os.path.join(attempt_dir, "review-security-r1/meta.json")))
+        self.assertTrue(os.path.isdir(os.path.join(attempt_dir, "review-performance")))
+        self.assertTrue(os.path.isfile(os.path.join(attempt_dir, "review-performance/meta.json")))
+        self.assertTrue(os.path.isdir(os.path.join(attempt_dir, "review-performance-r1")))
+        self.assertTrue(os.path.isfile(os.path.join(attempt_dir, "review-performance-r1/meta.json")))
+        self.assertEqual(self.tstate(1)["review"]["rounds"], 1)
+
+    def test_unresolved_findings_flow_to_validate_and_pr(self):
+        comments = []
+        rem_finding = finding(severity="blocker", file="f.py", line=10, comment="unresolved flaw")
+        with mock.patch("yoke.tracker.comment", side_effect=lambda r, tid, text: comments.append((tid, text))):
+            self.run_.update(config=dict(self.run_.cfg, review_lenses=["security", "tests"], max_review_rounds=1))
+            self.setup_tickets(
+                [ticket(1, "feature")],
+                {"code": [resp(CODE, "c1", write={"f1.txt": "1"}), resp(CODE, "c1", write={"f1.txt": "2"})],
+                 "review-security": [resp(rev_changes([rem_finding]))],
+                 "review-security-r1": [resp(rev_changes([rem_finding]))],
+                 "review-tests": [resp(REV_APPROVE)],
+                 "review-tests-r1": [resp(REV_APPROVE)],
+                 "qa": [resp(qa("true"))],
+                 "validate": [resp(val())],
+                 "docs": [resp(DOCS)],
+                 "router": [{"exit": 1}]})
+            self.assertEqual(self.go(), "done")
+        st = self.tstate(1)
+        self.assertEqual(len(st["review"]["unresolved"]), 1)
+        self.assertEqual(st["review"]["unresolved"][0]["comment"], "unresolved flaw")
+        with open(self.run_.path("tickets/T-001/attempt-1/qa/prompt.md")) as f:
+            qa_prompt = f.read()
+        self.assertIn("unresolved flaw", qa_prompt)
+        with open(self.run_.path("tickets/T-001/attempt-1/validate/prompt.md")) as f:
+            val_prompt = f.read()
+        self.assertIn("unresolved flaw", val_prompt)
+        pr_text = tracker.pr_body(self.run_)
+        self.assertIn("unresolved flaw", pr_text)
+        self.assertTrue(any("unresolved flaw" in c[1] for c in comments))
+
+    def test_call_count_equals_rounds_times_lenses_and_counts_against_max_agent_calls_total(self):
+        self.run_.update(config=dict(self.run_.cfg, review_lenses=["security", "performance", "tests"]))
+        b = finding(severity="blocker", file="f.py", line=10, comment="round 0 blocker")
+        self.setup_tickets(
+            [ticket(1)],
+            {"code": [resp(CODE, "c1", write={"f1.txt": "1"}), resp(CODE, "c1", write={"f1.txt": "2"})],
+             "review-security": [resp(rev_changes([b]))],
+             "review-security-r1": [resp(REV_APPROVE)],
+             "review-performance": [resp(REV_APPROVE)],
+             "review-performance-r1": [resp(REV_APPROVE)],
+             "review-tests": [resp(REV_APPROVE)],
+             "review-tests-r1": [resp(REV_APPROVE)],
+             "validate": [resp(val())],
+             "router": [{"exit": 1}]})
+        self.assertEqual(self.go(), "done")
+        with open(self.run_.path("events.jsonl")) as f:
+            rev_calls = [json.loads(l) for l in f
+                         if json.loads(l).get("kind") == "call_start" and json.loads(l).get("stage") == "review"]
+        # 2 rounds * 3 lenses = 6 review calls
+        self.assertEqual(len(rev_calls), 6)
+
+    def test_multi_lens_respects_max_agent_calls_total_exhaustion(self):
+        self.run_.update(config=dict(self.run_.cfg, review_lenses=["security", "performance", "tests"], max_agent_calls_total=2))
+        self.setup_tickets(
+            [ticket(1)],
+            {"code": [resp(CODE, "c1", write={"f1.txt": "1"})],
+             "review-security": [resp(REV_APPROVE)],
+             "review-performance": [resp(REV_APPROVE)],
+             "review-tests": [resp(REV_APPROVE)],
+             "validate": [resp(val())],
+             "router": [{"exit": 1}]})
+        self.assertEqual(self.go(), "needs_user")
+        esc = self.run_.read_json("escalations.json")
+        self.assertIn("budget", esc[0]["reason"])
+
+    def test_multi_lens_parallel_respects_max_agent_calls_total_exhaustion(self):
+        self.run_.update(config=dict(self.run_.cfg, review_lenses=["security", "performance", "tests"], parallel=3, max_agent_calls_total=2))
+        self.setup_tickets(
+            [ticket(1)],
+            {"code": [resp(CODE, "c1", write={"f1.txt": "1"})],
+             "review-security": [resp(REV_APPROVE)],
+             "review-performance": [resp(REV_APPROVE)],
+             "review-tests": [resp(REV_APPROVE)],
+             "validate": [resp(val())],
+             "router": [{"exit": 1}]})
+        self.assertEqual(self.go(), "needs_user")
+        esc = self.run_.read_json("escalations.json")
+        self.assertIn("budget", esc[0]["reason"])
+
+    def test_parallel_execution_when_parallel_greater_than_one(self):
+        self.run_.update(config=dict(self.run_.cfg, review_lenses=["security", "performance"], parallel=2))
+        self.setup_tickets(
+            [ticket(1)],
+            {"code": [resp(CODE, "c1", write={"f1.txt": "1"})],
+             "review-security": [resp(REV_APPROVE)],
+             "review-performance": [resp(REV_APPROVE)],
+             "validate": [resp(val())],
+             "router": [{"exit": 1}]})
+        self.assertEqual(self.go(), "done")
+        attempt_dir = self.run_.path("tickets/T-001/attempt-1")
+        self.assertTrue(os.path.isdir(os.path.join(attempt_dir, "review-security")))
+        self.assertTrue(os.path.isdir(os.path.join(attempt_dir, "review-performance")))
+
+    def test_unknown_lens_falls_back_to_generic_review_prompt(self):
+        self.run_.update(config=dict(self.run_.cfg, review_lenses=["customlens"]))
+        self.setup_tickets(
+            [ticket(1)],
+            {"code": [resp(CODE, "c1", write={"f1.txt": "1"})],
+             "review-customlens": [resp(REV_APPROVE)],
+             "validate": [resp(val())],
+             "router": [{"exit": 1}]})
+        self.assertEqual(self.go(), "done")
+        prompt_path = self.run_.path("tickets/T-001/attempt-1/review-customlens/prompt.md")
+        with open(prompt_path) as f:
+            content = f.read()
+        self.assertIn("You are the reviewer, read-only.", content)
+
+    def test_empty_review_lenses_restores_single_review_byte_for_byte(self):
+        self.run_.update(config=dict(self.run_.cfg, review_lenses=[]))
+        self.setup_tickets(
+            [ticket(1)],
+            {"code": [resp(CODE, "c1", write={"f1.txt": "1"})],
+             "review": [resp(REV_APPROVE)],
+             "validate": [resp(val())],
+             "router": [{"exit": 1}]})
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+        attempt_dir = self.run_.path("tickets/T-001/attempt-1")
+        self.assertTrue(os.path.isdir(os.path.join(attempt_dir, "review")))
+        self.assertFalse(os.path.exists(os.path.join(attempt_dir, "review-security")))
+        self.assertFalse(os.path.exists(os.path.join(attempt_dir, "review-r1")))
+        with open(self.run_.path("events.jsonl")) as f:
+            rev_calls = [json.loads(l) for l in f
+                         if json.loads(l).get("kind") == "call_start" and json.loads(l).get("stage") == "review"]
+        self.assertEqual(len(rev_calls), 1)
+
+    def test_dedupe_keeps_highest_severity_when_lenses_report_different_severities(self):
+        self.run_.update(config=dict(self.run_.cfg, review_lenses=["security", "performance"]))
+        sec_blocker = finding(severity="blocker", file="f.py", line=10, comment="security issue")
+        perf_minor = finding(severity="minor", file="f.py", line=10, comment="minor issue")
+        self.setup_tickets(
+            [ticket(1)],
+            {"code": [resp(CODE, "c1", write={"f1.txt": "1"}), resp(CODE, "c1", write={"f1.txt": "2"})],
+             "review-security": [resp(rev_changes([sec_blocker]))],
+             "review-security-r1": [resp(REV_APPROVE)],
+             "review-performance": [resp(rev_changes([perf_minor]))],
+             "review-performance-r1": [resp(REV_APPROVE)],
+             "validate": [resp(val())],
+             "router": [{"exit": 1}]})
+        self.assertEqual(self.go(), "done")
+        cmd_r1 = self.run_.path("tickets/T-001/attempt-1/code-r1/prompt.md")
+        with open(cmd_r1) as f:
+            prompt_r1 = f.read()
+        self.assertEqual(prompt_r1.count("f.py:10"), 1)
+        self.assertIn("[blocker] f.py:10", prompt_r1)
+
+    def test_lenses_never_see_each_others_output(self):
+        self.run_.update(config=dict(self.run_.cfg, review_lenses=["security", "performance"]))
+        sec_finding = finding(severity="blocker", file="sec.py", line=1, comment="secret_token_leaked")
+        self.setup_tickets(
+            [ticket(1)],
+            {"code": [resp(CODE, "c1", write={"f1.txt": "1"}), resp(CODE, "c1", write={"f1.txt": "2"})],
+             "review-security": [resp(rev_changes([sec_finding]))],
+             "review-security-r1": [resp(REV_APPROVE)],
+             "review-performance": [resp(REV_APPROVE)],
+             "review-performance-r1": [resp(REV_APPROVE)],
+             "validate": [resp(val())],
+             "router": [{"exit": 1}]})
+        self.assertEqual(self.go(), "done")
+        with open(self.run_.path("tickets/T-001/attempt-1/review-performance/prompt.md")) as f:
+            perf_prompt_r0 = f.read()
+        self.assertNotIn("secret_token_leaked", perf_prompt_r0)
+        self.assertNotIn("review-security", perf_prompt_r0)
+        with open(self.run_.path("tickets/T-001/attempt-1/review-performance-r1/prompt.md")) as f:
+            perf_prompt_r1 = f.read()
+        self.assertNotIn("review-security", perf_prompt_r1)
 
 
 if __name__ == "__main__":

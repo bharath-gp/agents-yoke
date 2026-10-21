@@ -17,4 +17,5 @@ $prior_results
 Feedback from the previous attempt (empty on the first attempt):
 $feedback
 
+$upstream
 Rules: do not edit files, do not commit, do not push. Working directory $worktree. Return only a JSON object matching the schema.

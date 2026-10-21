@@ -61,6 +61,157 @@ class TestParallel(PipeBase):
         self.assertEqual(git(self.repo, "show", branch + ":a.txt"), "merged")
         self.assertEqual(git(self.repo, "rev-list", "--merges", "--count", branch), "0")
 
+    def test_overlapping_tickets_never_run_concurrently_with_parallel_2(self):
+        self.cfg(2)
+        t1 = ticket(1)
+        t1["files_hint"] = ["yoke/scheduler.py"]
+        t2 = ticket(2)
+        t2["files_hint"] = ["yoke/scheduler.py"]
+        self.setup_tickets(
+            [t1, t2],
+            {"code": [resp(CODE, "c1", write={"f1.txt": "x"}, sleep=1),
+                      resp(CODE, "c2", write={"f2.txt": "x"}, sleep=1)],
+             "review": [resp(REV)] * 2,
+             "validate": [resp(val())], "router": [{"exit": 1}]})
+        t0 = time.time()
+        self.assertEqual(self.go(), "done")
+        self.assertGreaterEqual(time.time() - t0, 1.8)
+        with open(self.run_.path("events.jsonl")) as f:
+            events = [json.loads(l) for l in f if l.strip()]
+        deferred = [e for e in events if e.get("kind") == "ticket_deferred"]
+        self.assertEqual(len(deferred), 1)
+        self.assertEqual(deferred[0]["ticket"], "T-002")
+        self.assertEqual(deferred[0]["running"], "T-001")
+        self.assertEqual(deferred[0]["overlaps"], "T-001")
+        t1_close = [i for i, e in enumerate(events) if e.get("ticket") == "T-001" and e.get("kind") == "close_gate"]
+        t2_start = [i for i, e in enumerate(events) if e.get("ticket") == "T-002" and e.get("kind") == "call_start"]
+        self.assertTrue(t1_close and t2_start)
+        self.assertLess(t1_close[0], t2_start[0])
+        for n in (1, 2):
+            self.assertEqual(self.tstate(n)["status"], "closed")
+
+    def test_directory_prefix_overlapping_tickets_deferred(self):
+        self.cfg(2)
+        t1 = ticket(1)
+        t1["files_hint"] = ["yoke"]
+        t2 = ticket(2)
+        t2["files_hint"] = ["yoke/scheduler.py"]
+        self.setup_tickets(
+            [t1, t2],
+            {"code": [resp(CODE, "c1", write={"f1.txt": "x"}, sleep=1),
+                      resp(CODE, "c2", write={"f2.txt": "x"}, sleep=1)],
+             "review": [resp(REV)] * 2,
+             "validate": [resp(val())], "router": [{"exit": 1}]})
+        t0 = time.time()
+        self.assertEqual(self.go(), "done")
+        self.assertGreaterEqual(time.time() - t0, 1.8)
+        with open(self.run_.path("events.jsonl")) as f:
+            events = [json.loads(l) for l in f if l.strip()]
+        deferred = [e for e in events if e.get("kind") == "ticket_deferred"]
+        self.assertEqual(len(deferred), 1)
+        self.assertEqual(deferred[0]["ticket"], "T-002")
+        self.assertEqual(deferred[0]["running"], "T-001")
+        t1_close = [i for i, e in enumerate(events) if e.get("ticket") == "T-001" and e.get("kind") == "close_gate"]
+        t2_start = [i for i, e in enumerate(events) if e.get("ticket") == "T-002" and e.get("kind") == "call_start"]
+        self.assertTrue(t1_close and t2_start)
+        self.assertLess(t1_close[0], t2_start[0])
+        for n in (1, 2):
+            self.assertEqual(self.tstate(n)["status"], "closed")
+
+    def test_disjoint_tickets_run_concurrently(self):
+        self.cfg(2)
+        t1 = ticket(1)
+        t1["files_hint"] = ["yoke/scheduler.py"]
+        t2 = ticket(2)
+        t2["files_hint"] = ["yoke/pipeline.py"]
+        self.setup_tickets(
+            [t1, t2],
+            {"code": [resp(CODE, "c1", write={"f1.txt": "x"}, sleep=1),
+                      resp(CODE, "c2", write={"f2.txt": "x"}, sleep=1)],
+             "review": [resp(REV)] * 2,
+             "validate": [resp(val())], "router": [{"exit": 1}]})
+        t0 = time.time()
+        self.assertEqual(self.go(), "done")
+        self.assertLess(time.time() - t0, 3.5)
+        with open(self.run_.path("events.jsonl")) as f:
+            events = [json.loads(l) for l in f if l.strip()]
+        deferred = [e for e in events if e.get("kind") == "ticket_deferred"]
+        self.assertEqual(len(deferred), 0)
+        t1_start = [i for i, e in enumerate(events) if e.get("ticket") == "T-001" and e.get("kind") == "call_start"]
+        t2_start = [i for i, e in enumerate(events) if e.get("ticket") == "T-002" and e.get("kind") == "call_start"]
+        t1_end = [i for i, e in enumerate(events) if e.get("ticket") == "T-001" and e.get("kind") == "call_end"]
+        self.assertTrue(t1_start and t2_start and t1_end)
+        self.assertLess(t2_start[0], t1_end[0])
+        for n in (1, 2):
+            self.assertEqual(self.tstate(n)["status"], "closed")
+
+    def test_empty_files_hint_never_blocks(self):
+        self.cfg(2)
+        t1 = ticket(1)
+        t1["files_hint"] = []
+        t2 = ticket(2)
+        t2["files_hint"] = []
+        self.setup_tickets(
+            [t1, t2],
+            {"code": [resp(CODE, "c1", write={"f1.txt": "x"}, sleep=1),
+                      resp(CODE, "c2", write={"f2.txt": "x"}, sleep=1)],
+             "review": [resp(REV)] * 2,
+             "validate": [resp(val())], "router": [{"exit": 1}]})
+        t0 = time.time()
+        self.assertEqual(self.go(), "done")
+        self.assertLess(time.time() - t0, 3.5)
+        with open(self.run_.path("events.jsonl")) as f:
+            events = [json.loads(l) for l in f if l.strip()]
+        deferred = [e for e in events if e.get("kind") == "ticket_deferred"]
+        self.assertEqual(len(deferred), 0)
+        t1_start = [i for i, e in enumerate(events) if e.get("ticket") == "T-001" and e.get("kind") == "call_start"]
+        t2_start = [i for i, e in enumerate(events) if e.get("ticket") == "T-002" and e.get("kind") == "call_start"]
+        t1_end = [i for i, e in enumerate(events) if e.get("ticket") == "T-001" and e.get("kind") == "call_end"]
+        self.assertTrue(t1_start and t2_start and t1_end)
+        self.assertLess(t2_start[0], t1_end[0])
+        for n in (1, 2):
+            self.assertEqual(self.tstate(n)["status"], "closed")
+
+    def test_parallel_1_never_defers_even_with_overlap(self):
+        self.cfg(1)
+        t1 = ticket(1)
+        t1["files_hint"] = ["yoke/scheduler.py"]
+        t2 = ticket(2)
+        t2["files_hint"] = ["yoke/scheduler.py"]
+        self.setup_tickets(
+            [t1, t2],
+            {"code": [resp(CODE, "c1", write={"f1.txt": "x"}),
+                      resp(CODE, "c2", write={"f2.txt": "x"})],
+             "review": [resp(REV)] * 2,
+             "validate": [resp(val())], "router": [{"exit": 1}]})
+        self.assertEqual(self.go(), "done")
+        with open(self.run_.path("events.jsonl")) as f:
+            events = [json.loads(l) for l in f if l.strip()]
+        deferred = [e for e in events if e.get("kind") == "ticket_deferred"]
+        self.assertEqual(len(deferred), 0)
+        for n in (1, 2):
+            self.assertEqual(self.tstate(n)["status"], "closed")
+
+
+class TestHintsOverlap(PipeBase):
+    def test_hints_overlap_logic(self):
+        from yoke import milestones
+        self.assertTrue(milestones.hints_overlap(["a.py"], ["a.py"]))
+        self.assertTrue(milestones.hints_overlap(["yoke/scheduler.py"], ["yoke"]))
+        self.assertTrue(milestones.hints_overlap(["yoke"], ["yoke/scheduler.py"]))
+        self.assertTrue(milestones.hints_overlap(["yoke/"], ["yoke/scheduler.py"]))
+        self.assertTrue(milestones.hints_overlap(["yoke/scheduler.py"], ["yoke/"]))
+        self.assertTrue(milestones.hints_overlap(["yoke\\scheduler.py"], ["yoke/scheduler.py"]))
+        self.assertFalse(milestones.hints_overlap(["yoke"], ["yoke_foo.py"]))
+        self.assertFalse(milestones.hints_overlap(["yoke/scheduler.py"], ["yoke/pipeline.py"]))
+        self.assertFalse(milestones.hints_overlap([], []))
+        self.assertFalse(milestones.hints_overlap(["a.py"], []))
+        self.assertFalse(milestones.hints_overlap([], ["a.py"]))
+        self.assertFalse(milestones.hints_overlap([""], ["a.py"]))
+        self.assertFalse(milestones.hints_overlap(["."], ["a.py"]))
+        self.assertFalse(milestones.hints_overlap(None, ["a.py"]))
+        self.assertFalse(milestones.hints_overlap(["a.py"], None))
+
 
 class TestGitopsConflict(PipeBase):
     def test_reapply_leaves_markers_on_tip(self):

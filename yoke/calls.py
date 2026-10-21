@@ -36,10 +36,14 @@ def _kill_group(proc, grace):
     proc.wait()
 
 
-def _exec(run, adapter, spec, rel, stage, ticket, attempt, label=None):
+def _exec(run, adapter, spec, rel, stage, ticket, attempt, label=None, charge=True):
     """One CLI invocation into audit dir `rel`; returns CallResult (not yet schema-checked)."""
     cfg = run.cfg
-    call_id = "c%04d" % run.incr_calls()
+    if charge:
+        call_id = "c%04d" % run.incr_calls()
+    else:
+        n = run.read_json("run.json")["agent_calls"]
+        call_id = "c%04d-%s" % (n, label or "retry")
     d = run.path(rel)
     os.makedirs(d, exist_ok=True)
     with open(os.path.join(d, "prompt.md"), "w") as f:
@@ -49,6 +53,7 @@ def _exec(run, adapter, spec, rel, stage, ticket, attempt, label=None):
     run.write_json(rel + "/command.json", shown)
     env = dict(os.environ, **spec.env)
     env["YOKE_STAGE"] = stage
+    env["YOKE_LABEL"] = label or stage
     meta = {"call_id": call_id, "stage": stage, "label": label or stage, "ticket": ticket, "attempt": attempt,
             "agent": adapter.name, "adapter": type(adapter).__name__, "cmd": shown, "cwd": spec.cwd,
             "requested": {"model": spec.model, "effort": spec.effort, "mode": spec.mode},
@@ -73,16 +78,27 @@ def _exec(run, adapter, spec, rel, stage, ticket, attempt, label=None):
     if proc:
         with open(os.path.join(d, "stdout.log")) as f:
             stdout = f.read()
-        res = adapter.parse(stdout, proc.returncode)
+        import inspect
+        sig = inspect.signature(adapter.parse)
+        if "cfg" in sig.parameters or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
+            res = adapter.parse(stdout, proc.returncode, cfg=cfg)
+        else:
+            res = adapter.parse(stdout, proc.returncode)
+        if getattr(res, "limit", None) is None:
+            from . import limits
+            lim = limits.classify(getattr(adapter, "name", "unknown"), stdout, proc.returncode, cfg=getattr(adapter, "cfg", None) or cfg)
+            if lim is not None:
+                res.limit = lim
         if meta["timed_out"]:
             res.error = "timeout after %ss" % spec.timeout_s
+            res.limit = None
         meta["exit_code"] = proc.returncode
     res.exit_code = meta.get("exit_code")
     res.timed_out = meta["timed_out"]
     res.call_id, res.audit_dir = call_id, d
     res.duration_s = round(time.time() - t0, 3)
     meta.update(ended_at=state.now(), duration_s=res.duration_s, exit_code=res.exit_code,
-                schema_valid=None, error=res.error,
+                schema_valid=None, error=res.error, limit=res.limit,
                 observed={"model": res.observed_model, "session_id": res.session_id,
                           "usage": res.usage, "cost": res.cost})
     run.write_json(rel + "/meta.json", meta)
@@ -108,7 +124,7 @@ def _check(run, res, meta, spec, rel):
     return errs
 
 
-def run_call(run, adapter, spec, *, stage, ticket=None, attempt=None, label=None):
+def run_call(run, adapter, spec, *, stage, ticket=None, attempt=None, label=None, charge=True):
     """Run one agent call.
 
     Resolves unset spec.model and spec.effort via config.model_for(cfg, adapter, stage).
@@ -125,10 +141,13 @@ def run_call(run, adapter, spec, *, stage, ticket=None, attempt=None, label=None
             effort=effort if spec.effort is None else spec.effort,
         )
 
-    rel = audit_rel(stage, ticket, attempt, "%04d" % (run.read_json("run.json")["agent_calls"] + 1), label=label)
-    res, meta = _exec(run, adapter, spec, rel, stage, ticket, attempt, label=label)
+    calls_cnt = run.read_json("run.json")["agent_calls"] + (1 if charge else 0)
+    rel = audit_rel(stage, ticket, attempt, "%04d" % calls_cnt, label=label)
+    res, meta = _exec(run, adapter, spec, rel, stage, ticket, attempt, label=label, charge=charge)
     cli_failed = not res.ok and not res.timed_out
     errs = _check(run, res, meta, spec, rel)
+    if res.limit is not None:
+        return res
 
     if spec.model and cli_failed:
         stderr = ""
@@ -143,7 +162,7 @@ def run_call(run, adapter, spec, *, stage, ticket=None, attempt=None, label=None
             # Drop model and effort on fallback
             fallback_spec = dataclasses.replace(spec, model=None, effort=None)
             fallback_rel = rel + "/fallback"
-            res, meta = _exec(run, adapter, fallback_spec, fallback_rel, stage, ticket, attempt, label=label)
+            res, meta = _exec(run, adapter, fallback_spec, fallback_rel, stage, ticket, attempt, label=label, charge=charge)
             errs = _check(run, res, meta, fallback_spec, fallback_rel)
             rel = fallback_rel
             spec = fallback_spec
@@ -162,6 +181,6 @@ def run_call(run, adapter, spec, *, stage, ticket=None, attempt=None, label=None
     if not res.session_id:  # cannot resume: restate the task
         ask = spec.prompt + "\n\n" + ask
     spec2 = dataclasses.replace(spec, prompt=ask, resume_session=res.session_id or spec.resume_session)
-    res2, meta2 = _exec(run, adapter, spec2, rel + "/reask", stage, ticket, attempt, label=label)
+    res2, meta2 = _exec(run, adapter, spec2, rel + "/reask", stage, ticket, attempt, label=label, charge=charge)
     _check(run, res2, meta2, spec2, rel + "/reask")
     return res2

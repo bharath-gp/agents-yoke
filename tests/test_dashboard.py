@@ -363,6 +363,110 @@ class TestDashboard(unittest.TestCase):
         self.assertIsNotNone(t_map["T-MTIME"]["updated"])
         self.assertTrue(re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", t_map["T-MTIME"]["updated"]))
 
+    def test_run_detail_includes_usage_totals_and_spenders(self):
+        run = self._create_run()
+        meta_dir = run.path("tickets/T-001/attempt-1/code")
+        os.makedirs(meta_dir, exist_ok=True)
+        with open(os.path.join(meta_dir, "meta.json"), "w", encoding="utf-8") as f:
+            json.dump({
+                "stage": "code",
+                "ticket": "T-001",
+                "agent": "claude",
+                "observed": {
+                    "model": "claude-sonnet-5-5",
+                    "usage": {"input_tokens": 150, "output_tokens": 50, "total_tokens": 200},
+                    "cost": 0.025,
+                },
+            }, f)
+
+        detail = dashboard.run_detail(run)
+        self.assertIn("usage", detail)
+        self.assertEqual(detail["usage"]["totals"]["cost"], 0.025)
+        self.assertEqual(detail["usage"]["totals"]["total_tokens"], 200)
+        self.assertEqual(len(detail["usage"]["top_spenders"]), 1)
+        self.assertEqual(detail["usage"]["top_spenders"][0]["ticket"], "T-001")
+        self.assertEqual(detail["usage"]["top_spenders"][0]["cost"], 0.025)
+
+    def test_run_detail_agy_only_shows_unreported_cost(self):
+        run = self._create_run()
+        meta_dir = run.path("tickets/T-001/attempt-1/code")
+        os.makedirs(meta_dir, exist_ok=True)
+        with open(os.path.join(meta_dir, "meta.json"), "w", encoding="utf-8") as f:
+            json.dump({
+                "stage": "code",
+                "ticket": "T-001",
+                "agent": "agy",
+                "observed": {
+                    "model": "unreported",
+                    "usage": {"input_tokens": 500, "output_tokens": 100, "total_tokens": 600},
+                    "cost": None,
+                },
+            }, f)
+
+        detail = dashboard.run_detail(run)
+        self.assertIn("usage", detail)
+        self.assertEqual(detail["usage"]["totals"]["cost"], "unreported")
+        self.assertEqual(detail["usage"]["totals"]["total_tokens"], 600)
+        self.assertEqual(len(detail["usage"]["top_spenders"]), 1)
+        self.assertEqual(detail["usage"]["top_spenders"][0]["cost"], "unreported")
+
+    def test_dashboard_html_contains_usage_section(self):
+        pkg_dir = os.path.dirname(dashboard.__file__)
+        dash_html_path = os.path.join(pkg_dir, "dashboard.html")
+        with open(dash_html_path, "r", encoding="utf-8") as f:
+            html = f.read()
+
+        self.assertIn("usage-cost-val", html)
+        self.assertIn("usage-total-tokens-val", html)
+        self.assertIn("usage-spenders-tbody", html)
+        self.assertIn("unreported", html)
+        self.assertIn("formatCost", html)
+
+    def test_run_detail_fallback_uses_empty_summary_when_corrupt(self):
+        run = self._create_run()
+        meta_dir = run.path("tickets/T-001/attempt-1/code")
+        os.makedirs(meta_dir, exist_ok=True)
+        # Corrupt meta.json that fails or empty
+        detail = dashboard.run_detail(run)
+        self.assertIn("usage", detail)
+        self.assertEqual(detail["usage"]["totals"]["cost"], 0.0)
+        self.assertEqual(detail["usage"]["top_spenders"], [])
+
+    def test_run_detail_includes_waiting_limit_and_resume_at(self):
+        run = self._create_run()
+        run.update(waiting_limit={"resume_at": "2026-10-20T18:00:00Z", "ticket": "T-001"})
+        detail = dashboard.run_detail(run)
+        self.assertIn("waiting_limit", detail)
+        self.assertEqual(detail["waiting_limit"]["resume_at"], "2026-10-20T18:00:00Z")
+        self.assertEqual(detail["status"]["waiting_limit"]["resume_at"], "2026-10-20T18:00:00Z")
+
+        # Cleared waiting_limit is None
+        run.update(waiting_limit=None)
+        detail_cleared = dashboard.run_detail(run)
+        self.assertIsNone(detail_cleared.get("waiting_limit"))
+
+    def test_dashboard_html_contains_waiting_limit(self):
+        pkg_dir = os.path.dirname(dashboard.__file__)
+        dash_html_path = os.path.join(pkg_dir, "dashboard.html")
+        with open(dash_html_path, "r", encoding="utf-8") as f:
+            html = f.read()
+        self.assertIn("detail-waiting-limit", html)
+        self.assertIn("run-item-waiting-limit", html)
+        self.assertIn("waiting for limit until", html)
+
+    def test_list_runs_includes_waiting_limit(self):
+        run = self._create_run()
+        run.update(waiting_limit={"resume_at": "2026-10-20T18:00:00Z", "ticket": "T-001"})
+        runs = dashboard.list_runs(home=self.tmp)
+        self.assertEqual(len(runs), 1)
+        self.assertIn("waiting_limit", runs[0])
+        self.assertEqual(runs[0]["waiting_limit"]["resume_at"], "2026-10-20T18:00:00Z")
+
+        # Cleared waiting_limit is not in summary
+        run.update(waiting_limit=None)
+        runs_cleared = dashboard.list_runs(home=self.tmp)
+        self.assertNotIn("waiting_limit", runs_cleared[0])
+
 
 class TestServe(unittest.TestCase):
     def setUp(self):
@@ -390,6 +494,7 @@ class TestServe(unittest.TestCase):
         self.assertEqual(self.server.server_address[0], "127.0.0.1")
 
     def test_api_runs_list(self):
+        self.run.update(waiting_limit={"resume_at": "2026-10-20T18:00:00Z", "ticket": "T-001"})
         conn = http.client.HTTPConnection("127.0.0.1", self.port)
         conn.request("GET", "/api/runs")
         res = conn.getresponse()
@@ -401,6 +506,8 @@ class TestServe(unittest.TestCase):
         self.assertIsInstance(data, list)
         self.assertEqual(len(data), 1)
         self.assertEqual(data[0]["run_id"], self.run.run_id)
+        self.assertIn("waiting_limit", data[0])
+        self.assertEqual(data[0]["waiting_limit"]["resume_at"], "2026-10-20T18:00:00Z")
 
     def test_api_run_detail_known(self):
         conn = http.client.HTTPConnection("127.0.0.1", self.port)
@@ -412,6 +519,46 @@ class TestServe(unittest.TestCase):
         conn.close()
         data = json.loads(body)
         self.assertEqual(data["run_id"], self.run.run_id)
+
+    def test_api_run_detail_includes_usage_and_unreported(self):
+        meta_dir = self.run.path("tickets/T-001/attempt-1/code")
+        os.makedirs(meta_dir, exist_ok=True)
+        with open(os.path.join(meta_dir, "meta.json"), "w", encoding="utf-8") as f:
+            json.dump({
+                "stage": "code",
+                "ticket": "T-001",
+                "agent": "agy",
+                "observed": {
+                    "model": "unreported",
+                    "usage": {"input_tokens": 1200, "output_tokens": 300, "total_tokens": 1500},
+                    "cost": None,
+                },
+            }, f)
+
+        conn = http.client.HTTPConnection("127.0.0.1", self.port)
+        conn.request("GET", "/api/runs/%s" % self.run.run_id)
+        res = conn.getresponse()
+        self.assertEqual(res.status, 200)
+        data = json.loads(res.read().decode("utf-8"))
+        conn.close()
+
+        self.assertIn("usage", data)
+        self.assertEqual(data["usage"]["totals"]["cost"], "unreported")
+        self.assertEqual(data["usage"]["totals"]["total_tokens"], 1500)
+        self.assertEqual(data["usage"]["top_spenders"][0]["ticket"], "T-001")
+        self.assertEqual(data["usage"]["top_spenders"][0]["cost"], "unreported")
+
+    def test_api_run_detail_includes_waiting_limit(self):
+        self.run.update(waiting_limit={"resume_at": "2026-10-20T18:00:00Z", "ticket": "T-001"})
+        conn = http.client.HTTPConnection("127.0.0.1", self.port)
+        conn.request("GET", "/api/runs/%s" % self.run.run_id)
+        res = conn.getresponse()
+        self.assertEqual(res.status, 200)
+        data = json.loads(res.read().decode("utf-8"))
+        conn.close()
+        self.assertIn("waiting_limit", data)
+        self.assertEqual(data["waiting_limit"]["resume_at"], "2026-10-20T18:00:00Z")
+        self.assertEqual(data["status"]["waiting_limit"]["resume_at"], "2026-10-20T18:00:00Z")
 
     def test_api_run_detail_unknown(self):
         conn = http.client.HTTPConnection("127.0.0.1", self.port)

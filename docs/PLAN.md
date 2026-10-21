@@ -46,6 +46,13 @@ Status legend per milestone: `[ ]` todo, `[~]` in progress, `[x]` done. Update t
    | [M13](#m13) | Model selection & configuration | [2.6](#s2-6) |
    | [M14](#m14) | Milestones, destination map, and charting | [2.5](#s2-5), [2.7](#s2-7), [2.8](#s2-8), [2.14](#s2-14), [2.16](#s2-16) |
    | [M15](#m15) | Web dashboard (read-only UI & HTTP server) | [2.2](#s2-2), [2.8](#s2-8), [2.16](#s2-16) |
+   | [M16](#m16) | Per-run usage ledger and usage.json | [2.2](#s2-2), [2.8](#s2-8), [2.12](#s2-12), [2.13](#s2-13) |
+   | [M17](#m17) | Gate hooks runner & pipeline close gate | [2.6](#s2-6), [2.8](#s2-8) |
+   | [M18](#m18) | Multi-lens code review & lenses | [2.6](#s2-6), [2.8](#s2-8), [2.14](#s2-14) |
+   | [M19](#m19) | Upstream context handoff & hints overlap deferral | [2.7](#s2-7), [2.8](#s2-8), [2.9](#s2-9) |
+   | [M20](#m20) | Runtime ticket steering & nudge CLI | [2.8](#s2-8), [2.16](#s2-16) |
+   | [M21](#m21) | Failure hypotheses fan-out & ranking | [2.5](#s2-5), [2.6](#s2-6), [2.7](#s2-7), [2.8](#s2-8) |
+   | [M22](#m22) | Rate limit detection, pause, and retry | [2.6](#s2-6), [2.8](#s2-8), [2.11](#s2-11), [2.12](#s2-12) |
 4. [Verification matrix](#s4)
 5. [Out of scope](#s5)
 - [Appendix A: Topic index](#appA)
@@ -116,6 +123,7 @@ runs/<run_id>/
   status.json           # derived summary, rewritten after every state change
   events.jsonl          # append-only event log (one JSON per line)
   escalations.json      # open escalations
+  usage.json            # per-run token usage & cost summary, written at ticket close and run end
   tickets/T-001/
     state.json          # status, attempt, current stage, session ids per role, commit sha
     attempt-1/<stage>/{prompt.md,command.json,stdout.log,stderr.log,result.json,meta.json}
@@ -170,7 +178,8 @@ Default role map (config `roles`):
  "by_role": {"requirements": "primary", "planner": "primary", "wayfinder": "primary",
              "orchestrator": "primary", "plan_review": "secondary",
              "code": "secondary", "review": "auto", "qa": "secondary", "validate": "primary", "docs": "secondary",
-             "search": "primary", "research": "secondary", "factcheck": "primary", "pr_body": "primary"}}
+             "search": "primary", "research": "secondary", "factcheck": "primary", "pr_body": "primary",
+             "hypotheses": "secondary", "hypotheses_rank": "primary"}}
 ```
 `by_role` values may be `primary`, `secondary`, a concrete agent name, or `auto` (for `review` only, resolving to the opposite of `code`). `wayfinder` maps `plan.md` into destination, milestones, and tickets (`chart.py`). CLI flags `--primary`/`--secondary` override at `yoke init`.
 
@@ -185,10 +194,12 @@ Default budgets/limits:
 | `max_attempts_per_ticket` | 3 |
 | `max_plan_review_rounds` | 3 |
 | `max_review_rounds` | 2 |
+| `review_lenses` | `["security", "performance", "tests"]` |
+| `hypotheses` | 0 (default 0; >0 triggers N fan-out calls and 1 ranking call on final attempt matching failure) |
 | `max_tickets` | 40 |
 | `max_agent_calls_total` | 300 |
 | `parallel` | 1 (CLI `--parallel N`) |
-| `timeouts_s` | plan_review 900, code 2400, review 1200, qa 1800, validate 1200, docs 900, router_fallback 120 |
+| `timeouts_s` | plan_review 900, code 2400, review 1200, qa 1800, validate 1200, docs 900, search 600, research 1800, factcheck 1200, router_fallback 120, pr_body 300, wayfinder 1200, gate_hook 300, hypotheses 600 |
 | `kill_grace_s` | 15 |
 | `router.ollama_url` | `http://127.0.0.1:11434` |
 | `router.model` | `tev1:4b` (decision model, `/v1/systemone`; optional override `nimble-v3:9b-mxfp8`, noncommercial) |
@@ -198,6 +209,15 @@ Default budgets/limits:
 | `test_command` | `null` (QA result supplies it; repo config may pin it) |
 | `tracker` | `"auto"` (`github` if `gh repo view` succeeds and remote is GitHub, else `local`) |
 | `models` | `{}` (`{<agent>: {"plan": {"model": str, "effort": str}, "cheap": {...}}}`) |
+| `budget` | `{"max_cost_usd": null, "max_tokens": null}` (optional caps, default null: disabled) |
+| `limits` | `{"max_waits": 3, "backoff_s": 30, "max_wait_s": 7200, "patterns": {...}}` (rate limit pause and same-call retry) |
+| `gate_hooks` | `{"after_stage": {"code": [], "qa": []}, "before_close": []}` (user config `~/.yoke/config.json` only; refused from repo config) |
+
+Config scoping and security rules:
+- `review_lenses` is default on (`["security", "performance", "tests"]`); setting `review_lenses: []` restores legacy single-review execution.
+- `gate_hooks` is loaded exclusively from user config (`~/.yoke/config.json`); any definition in repo `.yoke.json` is refused with a warning log to prevent arbitrary command execution from untrusted checkouts.
+- `budget` optional caps (`max_cost_usd`, `max_tokens`) are disabled by default (`null`).
+- `limits` configures rate limit pattern matching, exponential backoff, and pause-retry cycles.
 
 Type → stages routing (config `routing`, overridable per type with model/effort per stage):
 
@@ -219,10 +239,11 @@ Validation done by a ~60-line stdlib validator in `schema.py` supporting `type, 
 - **ticket-list**: `{"destination"?: str, "out_of_scope"?: [str...], "milestones"?: [{"id": "^MS-\\d{2}$", "title": str, "exit_check": str|null}...], "tickets": [ticket...]}`; runner also checks: unique ids, deps exist, no cycles, count ≤ `max_tickets`, milestone validity.
 - **chart**: same schema as `ticket-list` returned by wayfinder during `yoke tickets chart`, validated against `schemas/chart.json`.
 - **plan-review**: `verdict` (`approve|changes_requested`), `findings[]` `{severity: blocker|major|minor, section, issue, suggestion}`, `summary`.
-- **code**: `status` (`done|blocked`), `summary`, `files_changed[]`, `assumptions[]`, `open_questions[]`, `notes_for_qa`, `blocked_reason` (when blocked).
+- **code**: `status` (`done|blocked`), `summary`, `files_changed[]`, `assumptions[]`, `open_questions[]`, `notes_for_qa`, `blocked_reason` (when blocked), optional `handoff` (`{interface_changes, new_files, gotchas}`).
 - **qa**: `status` (`pass|fail|blocked`), `test_command` (string the runner can re-run), `tests_added[]`, `commands_run[]` `{cmd, exit_code}`, `failures[]`, `summary`.
 - **validate**: `verdict` (`approve|reject`), `exit_criteria[]` `{criterion, met: bool, evidence}`, `issues[]` `{severity, file, description}`, `feedback_for_coder`, `summary`.
 - **docs**: `status` (`done|not_needed`), `files_changed[]`, `summary`.
+- **hypotheses**: `hypothesis` (str), `evidence` (str), `fix_plan` (str), `confidence` (number, 0.0 to 1.0). Output schema for failure hypothesis candidates and ranking result (`schemas/hypotheses.json`).
 - **router-***: `classify {type, confidence, reason}`, `triage {category: test_failure|env_problem|spec_gap|agent_error|other, retryable: bool, confidence, hint}`, `summary {text}`, `commit_message {subject, body}`, `assert {answer: bool, confidence, reason}`.
 
 <a id="s2-8"></a>
@@ -242,15 +263,17 @@ pending → (deps closed) → in_progress
   close: all gates true → commit in ticket worktree → merge into feature branch → closed
 attempt > max_attempts → blocked + escalation; dependents stay pending (shown as "waiting on blocked T-xxx")
 ```
-Close gate (checked explicitly, logged): code `done` ∧ QA `pass` ∧ runner test rerun exit 0 ∧ validate `approve` with every `exit_criteria.met` true ∧ docs `done|not_needed` (only for stages in this ticket's route).
+Close gate (checked explicitly, logged): code `done` ∧ QA `pass` ∧ runner test rerun exit 0 ∧ validate `approve` with every `exit_criteria.met` true ∧ docs `done|not_needed` (only for stages in this ticket's route) ∧ gate hooks (`after_stage` code/qa, `before_close`) passing. Hook failures return output tail as retry feedback to the coder.
 
-Retry feedback is a file `attempt-<n>/feedback.md` built from QA failures / validator issues / router triage hint, inlined into the next code prompt, and the coder session is resumed by ID.
+Retry feedback is a file `attempt-<n>/feedback.md` built from QA failures / validator issues / router triage hint or hypotheses fix plan, inlined into the next code prompt, and the coder session is resumed by ID.
 
-Review stage loop (`_review_loop`): Bounded review-revision loop (up to `max_review_rounds` revisions, defaulting to 2). The runner decides blocking based on severity (blocker and major findings block; minor and nit findings do not block and are passed as optional suggestions). Blocker and major findings trigger coder revisions using the saved coder session (`resume=st['sessions']['code']`) under audit labels `review-r<n>` and `code-r<n>`. If findings remain unresolved when reaching the revision cap, the ticket does not fail: unresolved blocker/major findings are recorded in `st['review']['unresolved']`, emitted as a `review_unresolved` audit event, posted as comments to the ticket issue via `tracker.comment`, and forwarded via `results['review']` to validate and qa prompts. Furthermore, `yoke pr` formats any unresolved review findings from closed tickets (capped at 50000 characters) into an 'Unresolved review findings' section in the pull request description.
+Failure hypotheses fan-out: When `hypotheses > 0` in config, if a ticket failure repeats on the final attempt (`attempt == max_attempts_per_ticket`, `attempt >= 2` with matching failure evidence from the previous attempt), yoke triggers `N` read-only fan-out calls (role `hypotheses`, default `secondary`) round-robin across categories (`spec gap`, `environment`, `test bug`, `code bug`) seeded with failure evidence, followed by 1 primary ranking call (role `hypotheses_rank`, default `primary`). Each call is audited under `tickets/<tid>/attempt-<n>/hypotheses-<k>` and `hypotheses-rank`, and counted against `max_agent_calls_total`. The winning `fix_plan` is appended to retry feedback as `Hypothesis fix plan (advisory only): ...` for the coder. If the ranking call fails, the candidate with highest confidence is selected; if fan-out yields no candidates or fails, yoke falls back to the router triage hint. Confidence never decides pass or fail.
 
-Context handoff: prompts **inline** the ticket JSON, plan excerpt, and prior-stage result JSON (small). Copies are saved in the attempt dir for audit. Inlining avoids sandbox path problems with files outside the worktree.
+Review stage loop (`_review_loop`): Bounded review-revision loop (up to `max_review_rounds` revisions, defaulting to 2). Configured review lenses (`review_lenses`, defaulting to `["security", "performance", "tests"]`) evaluate changes via dedicated lens prompts. Each lens runs one read-only call per round under audit labels `review-<lens>` and `review-<lens>-r<n>`, executing concurrently when `parallel > 1` (up to `min(len(lenses), parallel)` worker threads) and sequentially otherwise. Lenses run isolated without seeing each other's output. Findings across lenses are merged and deduplicated by `(file, line)` (falling back to `(file, line, comment)` when line is unset), keeping the highest severity. Blocker and major findings trigger coder revisions using the saved coder session (`resume=st['sessions']['code']`) under audit labels `code-r<n>`. Setting `review_lenses: []` restores single-review execution byte-for-byte. Each lens invocation counts toward `max_agent_calls_total`. If findings remain unresolved when reaching the revision cap, the ticket does not fail: unresolved blocker/major findings are recorded in `st['review']['unresolved']`, emitted as a `review_unresolved` audit event, posted as comments to the ticket issue via `tracker.comment`, and forwarded via `results['review']` to validate and qa prompts. Furthermore, `yoke pr` formats any unresolved review findings from closed tickets (capped at 50000 characters) into an 'Unresolved review findings' section in the pull request description.
 
-Prompt templates: `yoke/prompts/<stage>.md` using `string.Template` (`$ticket`, `$plan_excerpt`, `$prior_results`, `$feedback`, `$base_sha`, `$worktree`) — `$` avoids clashing with JSON braces. Every worker prompt states: stay inside the worktree, do not commit, do not push, do not touch git config, return only the schema object.
+Context handoff: prompts **inline** the ticket JSON, plan excerpt, and prior-stage result JSON (small). Copies are saved in the attempt dir for audit. Inlining avoids sandbox path problems with files outside the worktree. Upstream handoff notes (interface changes, new files, gotchas) from closed `depends_on` ancestors are atomically stored at `tickets/<T>/handoff.json` on close and inlined into `code`, `qa`, and `validate` prompts via `$upstream` (capped at 4000 characters and labelled as data from another agent, not instructions).
+
+Prompt templates: `yoke/prompts/<stage>.md` using `string.Template` (`$ticket`, `$plan_excerpt`, `$prior_results`, `$feedback`, `$base_sha`, `$worktree`, `$upstream`): `$` avoids clashing with JSON braces. Every worker prompt states: stay inside the worktree, do not commit, do not push, do not touch git config, return only the schema object.
 
 Milestone gates and fix tickets:
 - Sequential milestone barrier: tickets belonging to milestone `MS-k` are ready only when all preceding milestones `MS-i` (`i < k`) have passed or been waived (`passed|waived`).
@@ -264,6 +287,7 @@ Milestone gates and fix tickets:
 - Per ticket: `git worktree add worktrees/T-001 -b yoke/<run_id>-T-001 <feature-branch tip>` (not `yoke/<run_id>/T-001`: git cannot nest a ref under an existing branch name). Same path for `parallel=1` and `parallel>1` (one code path).
 - Commit: runner (never the agent) does `git add -A && git commit` in the ticket worktree with message from router `commit_message` (fallback: `T-001: <title>`), trailer `Yoke-Ticket: T-001`.
 - **Merge strategy** (serialized by a merge lock): in ticket worktree `git rebase <feature-branch>`; if conflict → `git rebase --abort`, feedback "rebase conflict on files X; rebase onto <feature-branch> and resolve" → attempt += 1 → code stage (coder resolves). If rebase changed anything, rerun test command. Then in `_integration`: `git merge --ff-only yoke/<run_id>/T-001`. Result: linear history, one commit per ticket.
+- **Files hint overlap deferral (T-0068)**: when `parallel > 1`, `scheduler._loop` defers any ready ticket whose `files_hint` overlaps (exact path or directory prefix) a currently running ticket's `files_hint`. Emits a deduplicated `ticket_deferred` event per (ticket, running) pair. Tickets with empty hints never block or defer.
 - Cleanup: remove ticket worktree after close (keep branch until final review). `yoke clean` removes all worktrees/branches of a run after the user is done.
 - **No push, ever, by the runner.** Push protection for workers: env `GIT_CONFIG_COUNT=1, GIT_CONFIG_KEY_0=core.hooksPath, GIT_CONFIG_VALUE_0=<pkg>/githooks` where `githooks/pre-push` exits 1; plus Claude `--disallowedTools "Bash(git push:*)"`; plus agy `--sandbox`; plus prompt rule. Post-call check: `git -C wt log` must show no new commits by the agent (warn + record if it did).
 
@@ -282,16 +306,17 @@ Milestone gates and fix tickets:
 <a id="s2-11"></a>
 ### 2.11 Orchestrator handoff & compaction
 - Runner is independent of any chat session; killing the orchestrator session loses nothing.
-- `yoke wait [--run R] [--timeout 3000]` returns on: escalation opened, run finished, runner died, or timeout (prints "still running: k/n closed"). The orchestrator skill loops `wait` and, on escalation, presents it to the user.
+- `yoke wait [--run R] [--timeout 3000]` returns on: escalation opened, run finished, runner died, or timeout (prints "still running: k/n closed"). It keeps waiting through rate limit pauses (`waiting_limit`) since they are not escalations. The orchestrator skill loops `wait` and, on escalation, presents it to the user.
 - **Automatic handoff**: plugin `SessionStart` hook (matchers `startup|resume|compact`) runs `yoke status --brief --active`, injecting ≤15 lines about active runs into any new or compacted session. So compaction (Claude auto-compact) and fresh sessions both re-acquire state automatically.
 - `/yoke:resume`: `yoke status`; if runner pid dead and run not finished → `yoke run --resume --detach`; then continue the `wait` loop.
-- Runner crash recovery on `--resume`: kill recorded worker process groups still alive; for each `in_progress` ticket, restart the current stage (same attempt; the half-done call's dir is renamed `<stage>.interrupted`); worktree changes are kept.
+- Runner crash recovery on `--resume`: kill recorded worker process groups still alive; for each `in_progress` ticket, restart the current stage (same attempt; the half-done call's dir is renamed `<stage>.interrupted`); worktree changes are kept. If `run.json` has `waiting_limit`, `scheduler.recover` resumes the pool wait (capped by `limits.max_wait_s`), sleeping in slices; upon wake, in-progress tickets re-run their attempt with `limit_waits` count preserved for `max_waits` escalation.
 
 <a id="s2-12"></a>
-### 2.12 Process control, budgets
+### 2.12 Process control, budgets, and limits
 - Each agent call: `subprocess.Popen(cmd, cwd=..., stdout=file, stderr=file, start_new_session=True, env=...)`; `wait(timeout)`; on timeout `os.killpg(SIGTERM)`, after `kill_grace_s` `SIGKILL`; meta records `timed_out: true`. pid stored in `meta.json` while running.
 - Runner detach: `yoke run --detach` re-execs itself with `start_new_session=True`, stdout to `runner.log`, writes pid to `runner.lock`.
-- Budget counters in `run.json`: total agent calls; when `max_agent_calls_total` hit → stop scheduling, escalate "budget exhausted". No token/cost cap (record `usage`/`total_cost_usd` only).
+- Budget counters in `run.json`: total agent calls; when `max_agent_calls_total` hit or optional `budget` (`max_cost_usd`, `max_tokens`) exceeded: stop scheduling, let in-flight calls finish, escalate "budget cap exhausted". One-shot escalation: resume does not re-escalate. Agents counted: `max_tokens` checks total tokens across all agents (`totals.total_tokens`); `max_cost_usd` checks recorded Claude cost (`by_agent.claude.cost`, falling back to `totals.cost` if claude entry is absent).
+- Limits and pause-retry (`limits`): agent rate limits, quotas, and resource exhaustion are matched via regex patterns (`limits.patterns`). Output classifying into `CallResult.limit` pauses the worker pool, records a `limit_hit` event, and stores `waiting_limit` with `resume_at` in `run.json` (parsed from timestamp or exponential backoff capped by `limits.max_wait_s`). The runner sleeps in slices until `resume_at`, then retries the exact same call with identical attempt and session ID under the `limit-retry` audit label, uncharged against `agent_calls`. Escalates with the raw limit message after `limits.max_waits` consecutive waits for a single call. Crash recovery resumes pending waits automatically.
 
 <a id="s2-13"></a>
 ### 2.13 Audit record (`meta.json` per call)
@@ -362,20 +387,22 @@ yoke tickets import FILE [--run R]    # validate schema+deps, classify missing t
 yoke tickets show [--run R]           # table: id, type, stages, deps, title grouped by milestone
 yoke map [--run R]                    # render destination, out-of-scope, milestone gates, frontier, decisions log
 yoke run [--run R] [--parallel N] [--detach] [--resume]
-yoke wait [--run R] [--timeout S]
-yoke status [--run R] [--brief] [--active] [--json]
+yoke wait [--run R] [--timeout S]     # persists through waiting_limit; returns on escalation, done, stopped, died
+yoke status [--run R] [--brief] [--active] [--json] # reports usage totals, top spenders, and waiting_limit
 yoke escalations [--run R]
 yoke unblock [T-xxx] [--note TEXT] [--skip] [--reset-attempts] | --milestone MS-xx [--note TEXT] [--waive REASON]   # user responses to escalations
+yoke nudge T-xxx --note TEXT [--run R] # append note to next attempt or review round feedback without stopping runner
 yoke stop [--run R]                   # SIGTERM runner; workers killed; resumable
 yoke pr [--run R]                     # requires approve final; push branch + gh pr create
 yoke clean [--run R]
 yoke route T-xxx [--run R]            # debug: show stages/agents/models for a ticket
-yoke dashboard [--port N]             # serve local read-only web UI on 127.0.0.1 (default port 8765)
+yoke dashboard [--port N]             # serve local read-only web UI on 127.0.0.1 (shows waiting_limit banner and status)
 yoke models [--list] [--show] [--set AGENT.TIER=MODEL] [--effort E] [--scope user|project|repo] [--reset [AGENT[.TIER]]]
 yoke mcp                              # stdio MCP server
 yoke doctor [--live]
 ```
 `--run` defaults to the most recent run whose `repo` == cwd's git toplevel.
+`yoke nudge T-xxx --note TEXT` stores operator steering notes in `tickets/<tid>/nudges/` and inlines them as `User note: <note>` into feedback for the next attempt or review revision (`code-r<n>`), consumed once without stopping the runner or modifying `tickets.json` (leaving approval hashes intact).
 
 ---
 
@@ -538,6 +565,70 @@ Files: `yoke/dashboard.py`, `yoke/dashboard.html`, `yoke/cli.py` (`dashboard`), 
 - Plugin skill: `/yoke:dashboard [--port N]` skill for Claude and Antigravity agents.
 - Notes: Built `yoke/dashboard.py`, `yoke/dashboard.html`, added `yoke dashboard` command in `cli.py`, created `skills/dashboard/SKILL.md`, and bumped package version to 0.6.0. Deviations: (a) read-only design: mutations, approvals, and escalations must still go through CLI or skills to preserve hash-bound verification and audit trail integrity; (b) tail reading: `read_events_tail` seeks from the end of `events.jsonl` rather than loading the whole file into memory.
 
+<a id="m16"></a>
+### M16: Per-run usage ledger and usage.json `[x]`
+Files: `yoke/usage.py`, `yoke/pipeline.py`, `yoke/scheduler.py`, `tests/test_usage.py`, `docs/PLAN.md`, `README.md`.
+- Usage aggregation: `usage.summarize(run)` recursively walks all call `meta.json` files under the run directory (including `reask/`, `fallback/`, and `.interrupted` attempt directories) and aggregates token usage fields and observed costs by stage, ticket, agent, and model, along with overall totals.
+- Unreported cost handling: missing costs (such as from `agy`) are recorded as `"unreported"` (never 0). Mixed buckets record total cost and `unreported_calls`. Spenders are ranked by cost, falling back to total tokens if any ticket has unreported costs.
+- Atomic persistence: `usage.write_usage(run)` writes `usage.json` atomically via `run.write_json` at each ticket close in `pipeline.py` and at run end in `scheduler.py`.
+- Status, wait summary, and dashboard UI: `render_status()` in `state.py` adds usage totals and top 3 spenders to `yoke status` and `yoke wait`; missing agy cost renders as `"unreported"`, and partial/mixed costs display `(+N unreported)`. The dashboard `/api/runs/<id>` endpoint and `dashboard.html` display totals and a top 3 spenders table.
+- Notes: Built `yoke/usage.py`, hooked into `pipeline.run_ticket` and `scheduler.run`, covered with unit and integration tests in `tests/test_usage.py`.
+
+<a id="m17"></a>
+### M17: Gate hooks runner & pipeline close gate `[x]`
+Files: `yoke/hooks.py`, `yoke/config.py`, `yoke/defaults.json`, `yoke/pipeline.py`, `tests/test_gate_hooks.py`, `README.md`, `docs/PLAN.md`.
+- Hook execution runner (`yoke/hooks.py`): executes hook commands in worktrees with `YOKE_TICKET`, `YOKE_STAGE`, `YOKE_ATTEMPT` environment variables. Process group terminated on timeout via SIGTERM followed by SIGKILL. Exit 0 maps to `pass`, exit 2 maps to `fail` (capturing stdout/stderr tail up to 1000 characters), and other non-zero or timeout maps to `gate_hook_error`.
+- User-config-only gate hooks (`yoke/config.py`): `gate_hooks` loaded strictly from `~/.yoke/config.json`; definitions in repo `.yoke.json` are refused and logged with a warning.
+- Defaults (`yoke/defaults.json`): defaults to `{"after_stage": {"code": [], "qa": []}, "before_close": []}`.
+- Pipeline close gate integration (`yoke/pipeline.py`): executes `after_stage` hooks following `code` and `qa` stages and `before_close` hooks prior to commit. Failing hooks prevent commit and feed stderr/stdout tails back to the coder as retry feedback; results are recorded under `gate['gate_hooks']` in `close_gate` events and hook outputs are saved under `tickets/<id>/attempt-N/hooks/<stage>.log` and `.meta.json`.
+- Notes: Built `yoke/hooks.py` (`run_hook`, `run_hooks`, `HookResult`), wired hooks into `pipeline.py` (`_run_gate_hook_stage` in attempt and close gates), updated `config.load` to enforce user-config-only `gate_hooks` (`~/.yoke/config.json`) and reject repo `gate_hooks` securely, added defaults in `defaults.json`, documented in `README.md`, and added full test suite in `tests/test_gate_hooks.py`.
+
+<a id="m18"></a>
+### M18: Multi-lens code review & lenses `[x]`
+Files: `yoke/prompts/review_{security,performance,tests}.md`, `yoke/config.py`, `yoke/defaults.json`, `yoke/pipeline.py`, `yoke/tracker.py`, `tests/test_review.py`.
+- Multi-lens review loop (`yoke/pipeline.py`): the review stage evaluates changes across configurable review lenses (`review_lenses`, defaulting to `["security", "performance", "tests"]`). Each lens runs independently in read-only mode using dedicated prompts (`prompts/review_security.md`, `prompts/review_performance.md`, `prompts/review_tests.md`), evaluating isolated copies of results without seeing findings from other lenses.
+- Concurrent lens execution: when `parallel > 1`, lenses execute concurrently with worker threads up to `min(len(lenses), parallel)` using `ThreadPoolExecutor`.
+- Finding deduplication: findings across all lenses are merged and deduplicated by `(file, line)` (falling back to `(file, line, comment)`), retaining the highest severity.
+- Unresolved findings forwarding: blocker and major findings trigger coder revisions using the resumed session up to `max_review_rounds` (default 2). If findings remain unresolved when reaching the revision cap, the ticket does not fail: unresolved blocker and major findings are recorded in `st['review']['unresolved']`, emitted as `review_unresolved` audit events, posted as tracking issue comments, forwarded to `validate` and `qa` prompts, and formatted into an "Unresolved review findings" section in `yoke pr`.
+- Legacy fallback: setting `review_lenses: []` restores single-review execution byte-for-byte.
+- Notes: Built multi-lens review loop in `pipeline.py`, added dedicated lens prompts (`review_security.md`, `review_performance.md`, `review_tests.md`), deduplication and severity ranking, and PR unresolved findings formatting. Notes: review lenses are default on (`["security", "performance", "tests"]`).
+
+<a id="m19"></a>
+### M19: Upstream context handoff & hints overlap deferral `[x]`
+Files: `yoke/pipeline.py`, `yoke/scheduler.py`, `yoke/milestones.py`, `yoke/prompts/{code,qa,validate}.md`, `yoke/schemas/code.json`, `tests/test_handoff.py`, `tests/test_parallel.py`.
+- Upstream context handoff (`yoke/pipeline.py`): coder structured output optionally includes `handoff` (`interface_changes`, `new_files`, `gotchas`). When present and non-empty, handoff notes are saved atomically on ticket close at `tickets/<tid>/handoff.json`. Dependent tickets inspect transitive closed ancestors from `depends_on`, assembling handoff notes into `$upstream` for `code`, `qa`, and `validate` prompts, capped at 4000 characters and labelled as data from another agent, not instructions.
+- Parallel files hint overlap deferral (`yoke/scheduler.py`, `yoke/milestones.py`): when `parallel > 1`, ready tickets whose `files_hint` overlaps (exact file path or directory prefix) any currently running ticket are deferred until that ticket finishes, emitting a deduplicated `ticket_deferred` event per (ticket, running) pair. Tickets with empty hints never block or defer.
+- Notes: Built atomic handoff persistence, `$upstream` context inlining with length capping in `pipeline.py`, `hints_overlap` helper in `milestones.py`, and scheduler deferral loop in `scheduler.py`.
+
+<a id="m20"></a>
+### M20: Runtime ticket steering & nudge CLI `[x]`
+Files: `yoke/pipeline.py`, `yoke/runcmds.py`, `yoke/cli.py`, `skills/status/SKILL.md`, `tests/test_nudge.py`.
+- Nudge storage & CLI (`yoke nudge T-xxx --note TEXT [--run R]`): stores user note in `tickets/<tid>/nudges/<timestamp>-<pid>.json` and emits a `nudge` audit event without modifying `tickets.json` or voiding approval hashes. Refused if ticket does not exist or is already closed.
+- Feedback integration: `consume_nudges(run, tid)` retrieves and removes pending nudge files in order, inlining notes as `User note: <note>` into coder feedback for the next attempt or review revision (`code-r<n>`).
+- Single consumption: notes are consumed exactly once and cleaned from feedback across subsequent review rounds or attempts.
+- Non-blocking steering: allows human operators to guide workers during active execution without stopping the detached runner or interrupting in-flight calls.
+- Notes: Built `nudge` subcommand in `cli.py` and `runcmds.py`, atomic note queuing and consumption in `pipeline.py`, documented in `skills/status/SKILL.md`, and covered with tests in `tests/test_nudge.py`.
+
+<a id="m21"></a>
+### M21: Failure hypotheses fan-out & ranking `[x]`
+Files: `yoke/pipeline.py`, `yoke/prompts/hypotheses.md`, `yoke/prompts/hypotheses_rank.md`, `yoke/schemas/hypotheses.json`, `yoke/config.py`, `yoke/defaults.json`, `tests/test_hypotheses.py`.
+- Hypotheses fan-out & ranking: when `hypotheses > 0` (default 0), if ticket failure repeats on the final attempt (`attempt == max_attempts_per_ticket`, `attempt >= 2` with matching failure evidence), triggers `N` read-only fan-out calls round-robin across four categories (`spec gap`, `environment`, `test bug`, `code bug`) using role `hypotheses` (default `secondary`).
+- Primary ranking call: followed by 1 primary ranking call (role `hypotheses_rank`, default `primary`) evaluating candidates against failure evidence to synthesize a winning `fix_plan`.
+- Fallbacks & advisory stance: if ranking fails, candidate with highest confidence is chosen; if fan-out yields no candidates or fails, falls back to router triage hint. The winning fix plan is appended to coder retry feedback as `Hypothesis fix plan (advisory only): ...`. Confidence scores never decide pass/fail.
+- Process & audit: each fan-out call is audited under `tickets/<tid>/attempt-<n>/hypotheses-<k>` and `hypotheses-rank`, counting against `max_agent_calls_total`.
+- Notes: Built hypotheses prompt templates and schema, wired fan-out and ranking in `pipeline.py`, added configuration in `config.py` and `defaults.json`.
+
+<a id="m22"></a>
+### M22: Rate limit detection, pause, and retry `[x]`
+Files: `yoke/limits.py`, `yoke/calls.py`, `yoke/pipeline.py`, `yoke/scheduler.py`, `yoke/runcmds.py`, `yoke/dashboard.py`, `yoke/defaults.json`, `tests/test_limits.py`.
+- Limit pattern matching: regex patterns in `limits.patterns` detect rate limits, quotas, or resource exhaustion across `claude` and `agy` agent stdout and stderr. Calls stopped by limits classify into `CallResult.limit` with raw message and parsed reset timestamp (`reset_at`).
+- Pool pause & exponential backoff: runner pauses the worker pool, records `limit_hit` event, and writes `waiting_limit` to `run.json`. Waits until `resume_at` (parsed from timestamp or computed with exponential backoff capped by `limits.max_wait_s`, default 7200s), sleeping in 50ms slices so `yoke stop` and `SIGTERM` interrupt cleanly.
+- Same-call retry: re-executes the same call under `limit-retry` audit label with the same attempt number and session ID, uncharged against `agent_calls`.
+- Bounded escalation: after `limits.max_waits` (default 3) consecutive waits for a single call, escalates to the user with the raw limit message.
+- Status, wait & dashboard visibility: `render_status()` in `state.py` and `yoke status --brief` display `waiting for limit until <resume_at> (<ticket>)`. `yoke wait` persists waiting through rate limit pauses without returning early. Web dashboard shows active banner and run-picker indicator.
+- Crash recovery: `scheduler.recover` resumes in-progress `waiting_limit` pauses on restart, capping against `limits.max_wait_s`.
+- Notes: Built `yoke/limits.py`, wired limit detection into `calls.py`, pool pause-wait-retry in `pipeline.py`, recovery in `scheduler.py`, and visibility in `state.py`, `runcmds.py`, and `dashboard.py`. Notes: rate limit regex patterns (`limits.patterns` for `claude` and `agy`) are unverified against live real rate limits (tested with synthetic/fake CLI strings).
+
 ---
 
 <a id="s4"></a>
@@ -556,8 +647,8 @@ Files: `yoke/dashboard.py`, `yoke/dashboard.html`, `yoke/cli.py` (`dashboard`), 
 
 <a id="s5"></a>
 ## 5. Deliberately out of scope (add when needed)
-- Token/cost caps (requirements say none initially; usage is recorded).
-- Auto-merge of PRs or pushing without `yoke pr`.
+- Token/cost caps and rate limit pause-retry: previously strictly out of scope; relaxed to support practical unattended execution. Optional budget caps (`budget.max_cost_usd` and `budget.max_tokens`) are supported as of T-0060 (disabled by default with null values). Automated agent rate limit detection, exponential backoff, pool pause, and same-call retry are supported as of M22 (`limits` configuration, unverified against live real rate limits).
+- Auto-merge of PRs or pushing without `yoke pr` (remains strictly out of scope; human gate required before push).
 - More than two agents in one run beyond per-role overrides.
 
 <a id="appA"></a>
@@ -612,11 +703,14 @@ Files: `yoke/dashboard.py`, `yoke/dashboard.html`, `yoke/cli.py` (`dashboard`), 
 | `yoke/planreview.py`, `prompts/plan_review.md` | bounded plan review | [2.3](#s2-3) | [M2](#m2) |
 | `yoke/router.py` | Ollama router + fallback | [2.10](#s2-10) | [M3](#m3) |
 | `yoke/gitops.py`, `githooks/pre-push` | worktrees, commit, merge, push block | [2.9](#s2-9) | [M4](#m4), [M5](#m5) |
-| `yoke/pipeline.py`, `prompts/{code,qa,validate,docs}.md` | per-ticket state machine | [2.8](#s2-8) | [M4](#m4) |
-| `yoke/scheduler.py` | deps, pool, budgets, resume | [2.8](#s2-8), [2.11](#s2-11), [2.12](#s2-12) | [M4](#m4), [M5](#m5), [M9](#m9) |
+| `yoke/pipeline.py`, `prompts/{code,review,review_*,qa,validate,docs,hypotheses,hypotheses_rank}.md` | per-ticket state machine, hypotheses fan-out & ranking | [2.8](#s2-8) | [M4](#m4), [M11](#m11), [M17](#m17), [M18](#m18), [M19](#m19), [M20](#m20), [M21](#m21) |
+| `yoke/scheduler.py` | deps, pool, budgets, resume | [2.8](#s2-8), [2.11](#s2-11), [2.12](#s2-12) | [M4](#m4), [M5](#m5), [M9](#m9), [M19](#m19), [M22](#m22) |
 | `yoke/mcp_server.py`, `.mcp.json` | stdio MCP server | [2.10](#s2-10) | [M6](#m6) |
 | `.claude-plugin/*`, `skills/*/SKILL.md`, `hooks/hooks.json` | plugin, skills, SessionStart hook | [2.11](#s2-11), [2.15](#s2-15) | [M7](#m7) |
 | `yoke/prbody.py` | PR template matching and body fill | [2.14](#s2-14) | [M8](#m8) |
-| `yoke/tracker.py` | local / GitHub tracker, `pr_body`, `pr` | [2.14](#s2-14) | [M8](#m8) |
+| `yoke/tracker.py` | local / GitHub tracker, `pr_body`, `pr` | [2.14](#s2-14) | [M8](#m8), [M18](#m18) |
+| `yoke/usage.py` | per-run token usage & cost summary (`usage.json`) | [2.2](#s2-2), [2.13](#s2-13) | [M16](#m16) |
+| `yoke/hooks.py` | hook runner with process-group kill on timeout | [2.6](#s2-6), [2.8](#s2-8) | [M17](#m17) |
 | `yoke/dashboard.py`, `yoke/dashboard.html` | read-only dashboard server and UI | [2.16](#s2-16) | [M15](#m15) |
+| `yoke/limits.py` | limit pattern matching, timestamp parsing, pool pause & retry | [2.6](#s2-6), [2.12](#s2-12) | [M22](#m22) |
 | `tests/fake_cli.py`, `tests/test_*.py`, `tests/e2e.sh` | fake CLI, unit + e2e tests | [4](#s4) | [M1](#m1)–[M9](#m9) |

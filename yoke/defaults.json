@@ -16,17 +16,50 @@
       "search": "primary",
       "research": "secondary",
       "factcheck": "primary",
-      "pr_body": "primary"
+      "pr_body": "primary",
+      "hypotheses": "secondary",
+      "hypotheses_rank": "primary"
     }
   },
   "models": {},
   "max_attempts_per_ticket": 3,
   "max_plan_review_rounds": 3,
   "max_review_rounds": 2,
+  "review_lenses": [
+    "security",
+    "performance",
+    "tests"
+  ],
+  "hypotheses": 0,
   "max_fix_tickets_per_milestone": 2,
   "max_chart_rounds": 3,
   "max_tickets": 40,
   "max_agent_calls_total": 300,
+  "budget": {
+    "max_cost_usd": null,
+    "max_tokens": null
+  },
+  "limits": {
+    "patterns": {
+      "claude": [
+        "(?i)rate[ _]?limit",
+        "(?i)quota[ _]?exceeded",
+        "(?i)usage[ _]?limit",
+        "(?i)too many requests",
+        "(?i)overloaded_error",
+        "(?i)credit balance"
+      ],
+      "agy": [
+        "(?i)resource_exhausted",
+        "(?i)rate[ _]?limit",
+        "(?i)quota[ _]?exceeded",
+        "(?i)too many requests"
+      ]
+    },
+    "max_wait_s": 7200,
+    "max_waits": 3,
+    "backoff_s": 30
+  },
   "parallel": 1,
   "timeouts_s": {
     "plan_review": 900,
@@ -40,7 +73,9 @@
     "factcheck": 1200,
     "router_fallback": 120,
     "pr_body": 300,
-    "wayfinder": 1200
+    "wayfinder": 1200,
+    "gate_hook": 300,
+    "hypotheses": 600
   },
   "kill_grace_s": 15,
   "router": {
@@ -79,5 +114,12 @@
     "chore": {"stages": ["code", "review", "validate"]},
     "spike": {"stages": ["code", "review", "validate"]},
     "research": {"stages": ["search", "research", "factcheck"]}
+  },
+  "gate_hooks": {
+    "after_stage": {
+      "code": [],
+      "qa": []
+    },
+    "before_close": []
   }
 }

@@ -1,9 +1,12 @@
+import io
 import json
 import os
 import tempfile
 import time
 import unittest
+from unittest import mock
 
+from tests import fake_cli
 from yoke import adapters, calls, config, schema, state
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -66,6 +69,10 @@ class TestConfig(Tmp):
         cfg = config.load(home=self.tmp)
         self.assertEqual(config.agent_for(cfg, "code"), "agy")
         self.assertEqual(config.agent_for(cfg, "validate"), "claude")
+        self.assertEqual(config.agent_for(cfg, "primary"), "claude")
+        self.assertEqual(config.agent_for(cfg, "secondary"), "agy")
+        self.assertEqual(config.agent_for(cfg, "hypotheses"), "agy")
+        self.assertEqual(config.agent_for(cfg, "hypotheses_rank"), "claude")
         cfg = config.deep_merge(cfg, {"roles": {"by_role": {"docs": "gemini"}}})
         self.assertEqual(config.agent_for(cfg, "docs"), "gemini")
 
@@ -600,6 +607,105 @@ class TestRunCall(Tmp):
         res = self.call(script, ticket="T-001", attempt=1, timeout=1)
         self.assertTrue(res.timed_out)
         self.assertFalse(os.path.exists(self.run_.path("tickets/T-001/attempt-1/code/fallback")))
+
+    def test_run_call_exports_yoke_label(self):
+        script = {
+            "lens_sec": [{"structured_output": {"status": "done"}}],
+            "review": [{"structured_output": {"status": "blocked"}}],
+        }
+        res1 = self.call(script, stage="review", label="lens_sec")
+        self.assertTrue(res1.ok)
+        self.assertEqual(res1.structured_output["status"], "done")
+
+        if os.path.exists(self.script + ".pos"):
+            os.remove(self.script + ".pos")
+        res2 = self.call(script, stage="review")
+        self.assertTrue(res2.ok)
+        self.assertEqual(res2.structured_output["status"], "blocked")
+
+        if os.path.exists(self.script + ".pos"):
+            os.remove(self.script + ".pos")
+        res3 = self.call(script, stage="review", label="unscripted_lens")
+        self.assertTrue(res3.ok)
+        self.assertEqual(res3.structured_output["status"], "blocked")
+
+    def test_exec_sets_env_yoke_label(self):
+        seen_env = {}
+
+        class EnvSpyAdapter(adapters.Adapter):
+            name = "spy"
+
+            def build_cmd(self, spec):
+                cmd = (
+                    "import os, json; print(json.dumps({'structured_output': {'status': 'done'}, "
+                    "'label': os.environ.get('YOKE_LABEL'), 'stage': os.environ.get('YOKE_STAGE')}))"
+                )
+                return ["python3", "-c", cmd]
+
+            def parse(self, stdout, exit_code, cfg=None):
+                data = json.loads(stdout)
+                seen_env.update(data)
+                return adapters.CallResult(structured_output=data["structured_output"])
+
+        spec = adapters.CallSpec(prompt="t", schema_path=self.schema_path, cwd=self.tmp)
+        calls.run_call(self.run_, EnvSpyAdapter(), spec, stage="review", label="my_lens")
+        self.assertEqual(seen_env["label"], "my_lens")
+        self.assertEqual(seen_env["stage"], "review")
+
+        calls.run_call(self.run_, EnvSpyAdapter(), spec, stage="code")
+        self.assertEqual(seen_env["label"], "code")
+        self.assertEqual(seen_env["stage"], "code")
+
+
+class TestFakeCli(Tmp):
+    def test_prefers_label_over_stage(self):
+        script = self.write("script.json", {
+            "my_label": [{"raw": "from_label"}],
+            "my_stage": [{"raw": "from_stage"}],
+        })
+        with mock.patch.dict(os.environ, {"FAKE_SCRIPT": script, "YOKE_STAGE": "my_stage", "YOKE_LABEL": "my_label"}):
+            with mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+                fake_cli.main()
+            self.assertEqual(out.getvalue().strip(), "from_label")
+
+    def test_falls_back_to_stage_when_label_not_in_script(self):
+        script = self.write("script.json", {
+            "my_stage": [{"raw": "from_stage"}],
+        })
+        with mock.patch.dict(os.environ, {"FAKE_SCRIPT": script, "YOKE_STAGE": "my_stage", "YOKE_LABEL": "other_label"}):
+            with mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+                fake_cli.main()
+            self.assertEqual(out.getvalue().strip(), "from_stage")
+
+    def test_falls_back_to_stage_when_label_unset(self):
+        script = self.write("script.json", {
+            "my_stage": [{"raw": "from_stage"}],
+        })
+        with mock.patch.dict(os.environ, {"FAKE_SCRIPT": script, "YOKE_STAGE": "my_stage"}):
+            os.environ.pop("YOKE_LABEL", None)
+            with mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+                fake_cli.main()
+            self.assertEqual(out.getvalue().strip(), "from_stage")
+
+    def test_tracks_positions_independently_per_key(self):
+        script = self.write("script.json", {
+            "lens_a": [{"raw": "lens_1"}, {"raw": "lens_2"}],
+            "stage_a": [{"raw": "stage_1"}, {"raw": "stage_2"}],
+        })
+        with mock.patch.dict(os.environ, {"FAKE_SCRIPT": script, "YOKE_STAGE": "stage_a", "YOKE_LABEL": "lens_a"}):
+            with mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+                fake_cli.main()
+            self.assertEqual(out.getvalue().strip(), "lens_1")
+
+        with mock.patch.dict(os.environ, {"FAKE_SCRIPT": script, "YOKE_STAGE": "stage_a", "YOKE_LABEL": "stage_a"}):
+            with mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+                fake_cli.main()
+            self.assertEqual(out.getvalue().strip(), "stage_1")
+
+        with mock.patch.dict(os.environ, {"FAKE_SCRIPT": script, "YOKE_STAGE": "stage_a", "YOKE_LABEL": "lens_a"}):
+            with mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+                fake_cli.main()
+            self.assertEqual(out.getvalue().strip(), "lens_2")
 
 
 if __name__ == "__main__":

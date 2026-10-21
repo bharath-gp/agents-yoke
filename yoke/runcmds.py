@@ -1,4 +1,4 @@
-"""CLI handlers for the runner commands: run, status, escalations, unblock, stop (PLAN 2.16)."""
+"""CLI handlers for the runner commands: run, status, escalations, unblock, nudge, stop (PLAN 2.16)."""
 import glob
 import json
 import os
@@ -8,9 +8,9 @@ import subprocess
 import sys
 import time
 
-from . import config, gitops, milestones, planreview, scheduler, state
+from . import config, gitops, milestones, pipeline, planreview, scheduler, state
 
-CMDS = ("run", "status", "escalations", "unblock", "stop", "wait", "clean", "runs", "map", "dashboard")
+CMDS = ("run", "status", "escalations", "unblock", "stop", "wait", "clean", "runs", "map", "dashboard", "nudge")
 
 
 def add_parsers(sub):
@@ -49,10 +49,19 @@ def add_parsers(sub):
     st.add_argument("--run")
     d = sub.add_parser("dashboard", help="serve local read-only web UI")
     d.add_argument("--port", type=int, default=8765, help="port to bind to (default: 8765)")
+    nu = sub.add_parser("nudge", help="send a user note to a ticket for the next attempt or review round")
+    nu.add_argument("ticket")
+    nu.add_argument("--note", required=True, help="note text to append to feedback")
+    nu.add_argument("--run")
 
 
 def wait_for(run, timeout, poll=2):
-    """Block until an escalation opens, the run ends, or the runner dies. -> (reason, message)."""
+    """Block until an escalation opens, the run ends, or the runner dies. -> (reason, message).
+
+    Rate limit pauses (waiting_limit) do not cause wait_for to return; it keeps waiting until
+    an escalation opens or the run reaches a terminal state.
+    When the run completes, message contains rendered status including usage totals and top spenders.
+    """
     end = time.time() + timeout
     while True:
         info = run.read_json("run.json")
@@ -196,7 +205,7 @@ def summary(run):
     s = run.status()
     pid = scheduler.read_lock(run)
     alive = bool(pid and scheduler._alive(pid))
-    return {
+    res = {
         "run_id": run.run_id,
         "state": info.get("state", s.get("state")),
         "created_at": info.get("created_at"),
@@ -207,6 +216,9 @@ def summary(run):
         "escalations": s.get("escalations", 0),
         "next": next_step(run),
     }
+    if s.get("waiting_limit"):
+        res["waiting_limit"] = s["waiting_limit"]
+    return res
 
 
 def brief(run):
@@ -236,9 +248,25 @@ def brief(run):
     if s["escalations"]:
         hint = "%d open escalation(s): `yoke escalations --run %s`; " % (s["escalations"], run.run_id) + hint
 
-    return "\n".join(["yoke run %s [%s]" % (s["run_id"], s["state"]),
-                      "tickets %d, agent calls %d/%s" % (s["tickets_total"], s["agent_calls"], s["max_agent_calls"]),
-                      hint])
+    lines = ["yoke run %s [%s]" % (s["run_id"], s["state"])]
+    if s.get("waiting_limit"):
+        wl = s["waiting_limit"]
+        lines.append("waiting for limit until %s (%s)" % (wl.get("resume_at", "?"), wl.get("ticket") or "run"))
+    lines.append("tickets %d, agent calls %d/%s" % (s["tickets_total"], s["agent_calls"], s["max_agent_calls"]))
+
+    from . import usage
+    u = s.get("usage") or {}
+    totals = u.get("totals") or {}
+    cost_disp = usage.format_cost(totals.get("cost"), totals.get("unreported_calls", 0))
+    tot_tokens = totals.get("total_tokens")
+    if not isinstance(tot_tokens, (int, float)) or isinstance(tot_tokens, bool):
+        tot_tokens = sum(v for k, v in totals.items() if "token" in k and isinstance(v, (int, float)) and not isinstance(v, bool))
+    in_tokens = totals.get("input_tokens", 0)
+    out_tokens = totals.get("output_tokens", 0)
+    lines.append("usage totals: cost %s, tokens %d (in %d, out %d)" % (cost_disp, tot_tokens, in_tokens, out_tokens))
+
+    lines.append(hint)
+    return "\n".join(lines)
 
 
 def render_map(run):
@@ -441,12 +469,19 @@ def dispatch(args):
                 return 1
             scheduler.unblock(run, args.ticket, args.note, args.skip, args.reset_attempts)
             print("unblocked %s" % args.ticket)
+    elif args.cmd == "nudge":
+        try:
+            pipeline.nudge(run, args.ticket, args.note)
+            print("nudged %s" % args.ticket)
+            return 0
+        except (ValueError, KeyError) as e:
+            print("yoke: %s" % e, file=sys.stderr)
+            return 1
     else:
         pid = scheduler.read_lock(run)
         if not pid or not scheduler._alive(pid):
             print("no runner active")
             return 0
-        os.kill(pid, signal.SIGTERM)
-        scheduler.kill_workers(run)
+        scheduler.stop(run)
         print("stopped runner %d" % pid)
     return 0

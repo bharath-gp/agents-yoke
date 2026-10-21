@@ -2,7 +2,7 @@
 
 ## State of the repo
 
-`yoke`: Claude plans and validates, Antigravity (`agy`) codes, runs QA and writes docs. Milestones M0-M15 are done. [docs/PLAN.md](docs/PLAN.md) is the source of truth for design; each milestone's "Notes" in section 3 records deviations from it. [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) is discovery output. Keep PLAN.md anchors (`#s2-8`, `#m4`, ...) stable. Usage lives in [README.md](README.md).
+`yoke`: Claude plans and validates, Antigravity (`agy`) codes, runs QA and writes docs. Milestones M0-M16 are done. [docs/PLAN.md](docs/PLAN.md) is the source of truth for design; each milestone's "Notes" in section 3 records deviations from it. [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) is discovery output. Keep PLAN.md anchors (`#s2-8`, `#m4`, ...) stable. Usage lives in [README.md](README.md).
 
 ## Commands
 
@@ -19,7 +19,7 @@ tests/e2e.sh [normal|fallback]                        # manual, real agents, spe
 - Never pass `--dangerously-skip-permissions` to any agent CLI. The runner never pushes; only `yoke pr` pushes, after `approve final`.
 - Always read an agent's `structured_output` (agy and claude `--json-schema`), never parse the free-text `response`.
 - agy runs headless with no shell: code/qa/docs prompts say so; the runner runs tests and commits, never the agent.
-- Prompt templates use `string.Template` (`$ticket`), not `{}`, to avoid JSON brace clashes.
+- Prompt templates use `string.Template` (`$ticket`, `$upstream`), not `{}`, to avoid JSON brace clashes.
 - State and audit records live under `$YOKE_HOME` (default `~/.yoke/runs/<run_id>/`), outside the target repo, written atomically.
 - Approvals are bound to sha256 of `plan.md` and canonical `tickets.json`; a changed hash invalidates them. GitHub issue numbers go in `issues.json` and milestone numbers go in `gh_milestones.json`, not in `tickets.json`.
 - Bump the version in `.claude-plugin/plugin.json` and `pyproject.toml` (keep them equal) in any change to the plugin's core logic or behaviour (code, prompts, schemas, defaults, skills, hooks); installed copies only pull new versions when it changes. Docs-only changes need no bump.
@@ -33,4 +33,5 @@ tests/e2e.sh [normal|fallback]                        # manual, real agents, spe
 - Git (`gitops.py`): feature branch `yoke/<run_id>`, one worktree and branch `yoke/<run_id>-T-001` per ticket, runner commits, rebase then `--ff-only` merge under a merge lock; a rebase conflict is re-applied with `cherry-pick -n` for the coder to resolve.
 - `router.py` (Ollama, then small Claude call, then deterministic default; never blocks) is imported by the runner and exposed over stdio MCP by `mcp_server.py` (`.mcp.json`).
 - `tracker.py`: GitHub milestones and issues on `approve tickets`, gate close/fix tracking, `yoke pr`; plugin files are `.claude-plugin/`, `hooks/`, `skills/`.
-- `dashboard.py`: local read-only HTTP server and JSON API (`/api/runs`, `/api/runs/<id>`) serving single-file UI (`dashboard.html`) on 127.0.0.1; run picker, stage strip, milestone gate status, ticket table, and live polling.
+- `dashboard.py`: local read-only HTTP server and JSON API (`/api/runs`, `/api/runs/<id>`) serving single-file UI (`dashboard.html`) on 127.0.0.1; run picker, stage strip, milestone gate status, ticket table, usage & cost summary card with top spenders, and live polling.
+- `usage.py`: per-run usage ledger (`usage.json`) walking `meta.json` files to aggregate token usage and costs across stages, tickets, agents, and models, written atomically at ticket close and run end; formatted into status, wait summaries, and dashboard.

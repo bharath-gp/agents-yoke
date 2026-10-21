@@ -1,5 +1,6 @@
 """Milestone handling: milestone extraction, ticket merging, and fix ticket generation."""
 import copy
+import os
 
 from . import state
 
@@ -194,6 +195,37 @@ def unblock_milestone(run, milestone, note=None, waive=None):
         esc = [e for e in run.read_json("escalations.json", []) if e.get("ticket") != milestone]
         run.write_json("escalations.json", esc)
     run.event("unblock", milestone=milestone, note=note, waive=waive)
+
+
+def normalize_hint(path_or_dir):
+    """Normalize a files_hint entry: forward slashes, stripped, no leading/trailing slash, '.' -> ''."""
+    if not path_or_dir or not isinstance(path_or_dir, str):
+        return ""
+    s = path_or_dir.strip().replace("\\", "/")
+    if not s:
+        return ""
+    norm = os.path.normpath(s).replace("\\", "/").strip("/")
+    if norm in (".", ""):
+        return ""
+    return norm
+
+
+def hints_overlap(hints_a, hints_b):
+    """True if any non-empty hint in hints_a overlaps (exact path or directory prefix) any in hints_b.
+    Empty hints never overlap or block."""
+    if not hints_a or not hints_b:
+        return False
+    norm_a = [normalize_hint(h) for h in hints_a]
+    norm_b = [normalize_hint(h) for h in hints_b]
+    norm_a = [h for h in norm_a if h]
+    norm_b = [h for h in norm_b if h]
+    if not norm_a or not norm_b:
+        return False
+    for a in norm_a:
+        for b in norm_b:
+            if a == b or a.startswith(b + "/") or b.startswith(a + "/"):
+                return True
+    return False
 
 
 def ticket_waiting_for(ticket, all_milestones, ms_states, sts, ms_idx=None):

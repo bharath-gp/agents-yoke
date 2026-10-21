@@ -1,9 +1,11 @@
 """Config: defaults <- ~/.yoke/config.json <- <repo>/.yoke.json <- overrides (PLAN 2.6)."""
 import copy
 import json
+import logging
 import os
 
 DEFAULTS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "defaults.json")
+logger = logging.getLogger(__name__)
 
 
 def yoke_home():
@@ -37,14 +39,49 @@ def _read(path, required=False):
 
 
 def load(repo=None, home=None, overrides=None):
+    """Load configuration merged across defaults, user config, repo config, and overrides.
+
+    gate_hooks is accepted only from user config (~/.yoke/config.json). If defined in
+    repo config, it is refused and logged with a warning.
+    """
     cfg = _read(DEFAULTS_PATH, required=True)
     cfg = deep_merge(cfg, _read(os.path.join(home or yoke_home(), "config.json")))
     if repo:
-        cfg = deep_merge(cfg, _read(os.path.join(repo, ".yoke.json")))
+        repo_path = os.path.join(repo, ".yoke.json")
+        repo_cfg = _read(repo_path)
+        if "gate_hooks" in repo_cfg:
+            logger.warning(
+                "refusing gate_hooks from repo config %s: gate_hooks may only be configured in user config",
+                repo_path,
+            )
+            repo_cfg = copy.deepcopy(repo_cfg)
+            del repo_cfg["gate_hooks"]
+        cfg = deep_merge(cfg, repo_cfg)
     return deep_merge(cfg, overrides or {})
 
 
 AGENTS = ("claude", "agy")
+DEFAULT_REVIEW_LENSES = ["security", "performance", "tests"]
+
+
+def review_lenses(cfg=None):
+    """Return configured review lenses, defaulting to ['security', 'performance', 'tests']."""
+    if cfg is None:
+        cfg = load()
+    lenses = cfg.get("review_lenses")
+    if lenses is not None:
+        return list(lenses)
+    return list(DEFAULT_REVIEW_LENSES)
+
+
+def hypotheses_count(cfg=None):
+    """Return configured hypotheses fan-out count, defaulting to 0."""
+    if cfg is None:
+        cfg = load()
+    try:
+        return max(0, int(cfg.get("hypotheses", 0)))
+    except (TypeError, ValueError):
+        return 0
 
 
 def agent_for(cfg, role):
@@ -55,6 +92,8 @@ def agent_for(cfg, role):
     AGENTS, falls back to 'primary' when different from the code agent, else 'secondary'.
     """
     roles = cfg["roles"]
+    if role in ("primary", "secondary"):
+        return roles[role]
     who = roles["by_role"][role]
     if who == "auto" and role != "review":
         raise ValueError("role %s cannot be auto (review only)" % role)
@@ -178,3 +217,76 @@ def save_models(path, sets=None, reset=None):
 
     _write_atomic(path, json.dumps(out, indent=2) + "\n")
     return out["models"]
+
+
+BUDGET_CAP_PREFIX = "budget cap exhausted:"
+
+
+def check_budget(run):
+    """Check if config budget (max_cost_usd, max_tokens) is exceeded by recorded usage.
+
+    Agents counted:
+    - max_tokens counts total tokens across all agents (totals.total_tokens).
+    - max_cost_usd checks recorded Claude cost (by_agent.claude.cost), falling back to totals.cost if claude entry is absent.
+
+    Returns (exceeded: bool, reason: str or None).
+    The budget cap is one-shot: once escalated, resume does not re-escalate for the rest of the run.
+    """
+    cfg = run.cfg
+    budget = cfg.get("budget")
+    if not isinstance(budget, dict):
+        return False, None
+
+    max_cost = budget.get("max_cost_usd")
+    max_tokens = budget.get("max_tokens")
+    if max_cost is None and max_tokens is None:
+        return False, None
+
+    try:
+        max_cost_val = float(max_cost) if max_cost is not None else None
+    except (ValueError, TypeError):
+        max_cost_val = None
+
+    try:
+        max_tokens_val = int(max_tokens) if max_tokens is not None else None
+    except (ValueError, TypeError):
+        max_tokens_val = None
+
+    if max_cost_val is None and max_tokens_val is None:
+        return False, None
+
+    # Cap is one-shot: check run.json flag and past escalations
+    info = run.read_json("run.json", {})
+    if info.get("budget_escalated"):
+        return False, None
+    for e in run.read_json("escalations.json", []):
+        if e.get("ticket") is None and str(e.get("reason", "")).startswith(BUDGET_CAP_PREFIX):
+            return False, None
+
+    from . import usage
+    summary = usage.summarize(run)
+    totals = summary.get("totals", {})
+
+    if max_tokens_val is not None:
+        tot_tokens = totals.get("total_tokens")
+        if not isinstance(tot_tokens, (int, float)) or isinstance(tot_tokens, bool):
+            tot_tokens = sum(
+                v for k, v in totals.items()
+                if "token" in k and k != "total_tokens" and isinstance(v, (int, float)) and not isinstance(v, bool)
+            )
+        if tot_tokens > 0 and tot_tokens >= max_tokens_val:
+            return True, "%s max_tokens exceeded (%d >= %d)" % (BUDGET_CAP_PREFIX, tot_tokens, max_tokens_val)
+
+    if max_cost_val is not None:
+        claude_cost = summary.get("by_agent", {}).get("claude", {}).get("cost")
+        if isinstance(claude_cost, (int, float)) and not isinstance(claude_cost, bool):
+            cost_val = float(claude_cost)
+        elif isinstance(totals.get("cost"), (int, float)) and not isinstance(totals.get("cost"), bool):
+            cost_val = float(totals["cost"])
+        else:
+            cost_val = 0.0
+
+        if cost_val > 0 and cost_val >= max_cost_val:
+            return True, "%s max_cost_usd exceeded (%.6f >= %.6f)" % (BUDGET_CAP_PREFIX, cost_val, max_cost_val)
+
+    return False, None
