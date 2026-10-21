@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import unittest
+from unittest import mock
 
 from tests.test_core import FAKE_CLI, Tmp
 from yoke import adapters, cli, planreview, schema, state
@@ -139,6 +140,61 @@ class TestApprovals(Base):
         self.tickets([])
         with self.assertRaisesRegex(planreview.ApprovalError, "tickets not approved"):
             planreview.approve(self.run_, "final")
+
+
+GOOD_PLAN = """# Plan
+
+## Contents
+- [Context](#context)
+- [Work items](#work-items)
+  - [T1 add helper](#t1)
+
+## Context
+text, and a [link](#context) outside the index
+
+## Work items
+<a id="t1"></a>
+### T1 add helper
+```
+## not a heading
+```
+"""
+
+
+class TestToc(Base):
+    def test_good_plan_and_repo_plan(self):
+        self.assertEqual(planreview.toc_errors(GOOD_PLAN), [])
+        with open(os.path.join(os.path.dirname(__file__), "..", "docs", "PLAN.md")) as f:
+            self.assertEqual(planreview.toc_errors(f.read()), [])
+
+    def test_missing_or_late_toc(self):
+        self.assertIn("no table of contents", planreview.toc_errors("# P\n## A\n")[0])
+        self.assertIn("no table of contents", planreview.toc_errors("# P\n## A\n## Contents\n- [A](#a)\n")[0])
+        self.assertEqual(planreview.toc_errors("# P\n## Contents\nnone\n## A\n")[0],
+                         "table of contents has no [title](#anchor) links")
+
+    def test_dangling_link_and_unlisted_section(self):
+        errs = planreview.toc_errors(GOOD_PLAN.replace("(#t1)", "(#t9)") + "## Risks\n")
+        self.assertEqual(errs, ["table of contents links to missing anchor #t9",
+                                "table of contents does not link section 'Risks'"])
+
+    def test_duplicate_headings_get_numbered_slugs(self):
+        doc = "## Contents\n- [A](#a)\n- [A again](#a-1)\n## A\n## A\n"
+        self.assertEqual(planreview.toc_errors(doc), [])
+
+    def test_cli_approve_plan_refuses_without_toc(self):
+        patch = mock.patch.dict(os.environ, {"YOKE_HOME": self.tmp})
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.plan("# Plan\n## Approach\n")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(cli.main(["approve", "plan", "--run", self.run_.run_id]), 1)
+        self.assertIn("no table of contents", err.getvalue())
+        self.assertNotIn("plan", self.run_.read_json("approvals.json", {}))
+        self.plan(GOOD_PLAN)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(cli.main(["approve", "plan", "--run", self.run_.run_id]), 0)
 
 
 if __name__ == "__main__":

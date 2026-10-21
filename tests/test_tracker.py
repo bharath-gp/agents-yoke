@@ -430,5 +430,14 @@ class TestMilestones(TrackerBase):
         self.assertNotIn("Closes #2", body)
 
 
+class TestIssueBody(unittest.TestCase):
+    def test_design_and_steps_rendered_when_present(self):
+        t = {"description": "d", "exit_criteria": ["e"], "depends_on": [], "files_hint": [], "plan_excerpt": "p"}
+        self.assertNotIn("**Design**", tracker._body(t))
+        body = tracker._body(dict(t, design="use X", steps=["edit a", "edit b"]))
+        self.assertIn("**Design**\n\nuse X", body)
+        self.assertIn("1. edit a\n2. edit b", body)
+
+
 if __name__ == "__main__":
     unittest.main()

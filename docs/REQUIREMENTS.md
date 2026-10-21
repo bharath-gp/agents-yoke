@@ -1,5 +1,14 @@
 # Requirements: Primary/Secondary Agent Loop (Claude + Antigravity)
 
+## Contents
+
+- [Context](#context)
+- [Facts established](#facts-established)
+- [Architecture (from diagram + answers)](#architecture-from-diagram--answers)
+- [Cross-cutting requirements](#cross-cutting-requirements)
+- [Open items for planning phase](#open-items-for-planning-phase)
+- [Verification (later)](#verification-later)
+
 ## Context
 Run very big work items through a multi-agent loop: a primary agent (Claude today) plans and orchestrates, a secondary agent (Antigravity `agy` today) implements. Inspired by chaseai-yt/claudex-loop (stdlib Python runner, one CLI turn per call, schema-validated JSON results, hashed approvals, bounded rounds, independent review). This doc = discovery output only. Planning + implementation happen in later sessions.
 

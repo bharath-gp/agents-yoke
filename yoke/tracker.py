@@ -61,6 +61,10 @@ def _body(t):
         lines += ["", "Depends on: " + ", ".join(t["depends_on"])]
     if t["files_hint"]:
         lines += ["", "Files: " + ", ".join(t["files_hint"])]
+    if t.get("design"):
+        lines += ["", "**Design**", "", t["design"]]
+    if t.get("steps"):
+        lines += ["", "**Steps**"] + ["%d. %s" % (i + 1, s) for i, s in enumerate(t["steps"])]
     lines += ["", "<details><summary>Plan excerpt</summary>", "", t["plan_excerpt"], "", "</details>"]
     return "\n".join(lines)
 

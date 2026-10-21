@@ -178,6 +178,16 @@ def _run(args):
     return run
 
 
+def _plan_toc_errors(run):
+    """TOC problems in plan.md, or [] (a missing plan.md is left to approve to report)."""
+    from . import planreview
+    try:
+        with open(run.path("plan.md")) as f:
+            return planreview.toc_errors(f.read())
+    except FileNotFoundError:
+        return []
+
+
 def _front_half(args):
     from . import planreview
     if args.cmd == "init":
@@ -188,6 +198,8 @@ def _front_half(args):
         return 0
     run = _run(args)
     if args.cmd == "review-plan":
+        for e in _plan_toc_errors(run):
+            print("warning: plan.md %s (yoke approve plan will refuse)" % e, file=sys.stderr)
         try:
             n, res = planreview.review_round(run)
         except (RuntimeError, planreview.ApprovalError) as e:
@@ -199,6 +211,12 @@ def _front_half(args):
             print("verdict %s, %d findings: %s" % (out["verdict"], len(out["findings"]), out["summary"]))
             return 0
         print("review failed: %s" % res.error, file=sys.stderr)
+        return 1
+    toc_errs = _plan_toc_errors(run) if args.kind == "plan" else []
+    if toc_errs:
+        for e in toc_errs:
+            print("yoke: plan.md %s" % e, file=sys.stderr)
+        print("yoke: add a `## Contents` index at the top of plan.md, then approve again", file=sys.stderr)
         return 1
     try:
         entry = planreview.approve(run, args.kind)

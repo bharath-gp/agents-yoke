@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import re
 import shutil
 import string
 
@@ -67,6 +68,65 @@ def approve(run, kind):
         run.write_json("approvals.json", approvals)
     run.event("approved", approval=kind, sha256=entry["sha256"])
     return entry
+
+
+_TOC_TITLE = re.compile(r"^(contents|table of contents)$", re.I)
+_HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
+_ANCHOR = re.compile(r"<a\s+(?:id|name)=\"([^\"]+)\"")
+_LINK = re.compile(r"\]\(#([^)\s]+)\)")
+
+
+def _slug(title):
+    """GitHub-style heading anchor."""
+    return re.sub(r"[^\w\- ]", "", title.lower()).replace(" ", "-")
+
+
+def toc_errors(text):
+    """Problems with the document's table of contents; [] when it is fine.
+
+    The first `##` section must be titled Contents (or Table of contents), list at least one
+    `[...](#anchor)` link, link every other `##` section, and every link must resolve to a
+    heading slug or an `<a id="...">` anchor."""
+    anchors, slugs_seen, sections = set(), {}, []  # sections: (title, its anchors)
+    toc, in_toc, fence, pending = None, False, False, []
+    for line in text.splitlines():
+        if line.lstrip().startswith("```"):
+            fence = not fence
+            continue
+        if fence:
+            continue
+        pending += _ANCHOR.findall(line)
+        anchors.update(_ANCHOR.findall(line))
+        m = _HEADING.match(line)
+        if not m:
+            if in_toc:
+                toc += _LINK.findall(line)
+            if line.strip() and not _ANCHOR.search(line):  # an <a id> applies to the heading right below it
+                pending = []
+            continue
+        level, title = len(m.group(1)), m.group(2)
+        slug = _slug(title)
+        n = slugs_seen.get(slug, 0)
+        slugs_seen[slug] = n + 1
+        slug = slug if n == 0 else "%s-%d" % (slug, n)
+        anchors.add(slug)
+        here, pending = pending + [slug], []
+        if level <= 2 and in_toc:
+            in_toc = False
+        if level == 2 or (toc is None and level <= 3 and _TOC_TITLE.match(title)):
+            if toc is None and not sections and _TOC_TITLE.match(title):
+                toc, in_toc = [], True
+            elif not _TOC_TITLE.match(title) and level == 2:
+                sections.append((title, here))
+    if toc is None:
+        return ["no table of contents: the first ## section must be `## Contents` with links to every ## section"]
+    errs = []
+    if not toc:
+        errs.append("table of contents has no [title](#anchor) links")
+    errs += ["table of contents links to missing anchor #%s" % a for a in toc if a not in anchors]
+    errs += ["table of contents does not link section '%s'" % t for t, ids in sections
+             if not set(ids) & set(toc)]
+    return errs
 
 
 def next_round(run):

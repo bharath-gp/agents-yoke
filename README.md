@@ -2,6 +2,21 @@
 
 Multi-agent loop for large work items. Claude (primary) gathers requirements, plans, splits tickets and validates; Antigravity `agy` (secondary) codes, writes tests and docs. Agents are pluggable per role via `yoke/adapters.py`.
 
+## Contents
+
+- [How it works](#how-it-works)
+- [Prerequisites](#prerequisites)
+- [Install](#install)
+- [Typical flow](#typical-flow)
+- [Implementation map & milestone gates](#implementation-map--milestone-gates)
+- [Web dashboard (yoke dashboard)](#web-dashboard-yoke-dashboard)
+- [GitHub tracker & milestones](#github-tracker--milestones)
+- [Pull requests (yoke pr)](#pull-requests-yoke-pr)
+- [Research agents](#research-agents)
+- [Tests](#tests)
+- [Docs](#docs)
+- [License](#license)
+
 ## How it works
 
 1. Interactive: requirements, `plan.md`, one read-only secondary plan review, ticket split. You approve the plan and tickets (hash-bound).
@@ -281,6 +296,8 @@ Subcommands take `--run <id>`; default is the latest run for the current repo. `
 ## Implementation map & milestone gates
 
 - **Wayfinder charting (`yoke tickets chart`)**: Maps the approved `plan.md` into destination, out-of-scope boundaries, milestones with optional integration `exit_check` commands, and tickets. Pass `--feedback "<notes>"` to refine the breakdown.
+- **Design-carrying tickets**: the `plan` skill writes a sectioned plan (context, architecture, decisions, interfaces, per-ticket work items with steps, named tests and impacted existing tests). Wayfinder copies that into optional ticket fields `design`, `interfaces`, `steps`, `test_plan`, `impacted_tests`, `risks`, which coder, QA and validator see in the ticket JSON. Import warns when a feature, bugfix or refactor ticket has no `steps` or `test_plan`.
+- **Contents index**: `plan.md` must start with a `## Contents` list of `[title](#anchor)` links to every `##` section, so agents read the index and jump to the sections they need. `yoke approve plan` refuses a plan whose index is missing, has a dead link, or leaves out a section; `yoke review-plan` warns. Tickets name the sections they rely on in `plan_sections`. Docs and research agents write the same index into long Markdown they produce.
 - **Implementation map (`yoke map`)**: Renders destination, out-of-scope items, per-milestone gate status, tickets with waiting/blocking reasons, execution frontier, and decisions log (`map.md`).
 - **Sequential milestone barrier**: The runner executes tickets milestone-by-milestone. Tickets belonging to later milestones do not become ready until all preceding milestones pass or are waived.
 - **Exit checks & fix tickets**: When all tickets in a milestone complete, the runner runs its `exit_check` in the integration worktree. If the check fails, the runner auto-generates fix tickets (`F-001`, `F-002` up to `max_fix_tickets_per_milestone`, default 2). If fixes are exhausted, the gate escalates.
