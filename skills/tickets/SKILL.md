@@ -10,6 +10,8 @@ If the user gives a run id, pass `--run <id>` to every `yoke` command.
 
 1. Chart tickets: run `yoke tickets chart` to have the wayfinder map the approved plan into destination, milestones, and tickets in `tickets.json`. Alternatively, write `tickets.json` per schema `yoke/schemas/ticket-list.json` and run `yoke tickets import <path-to-tickets.json>`.
    - Each ticket: `id` (T-001), `title`, `type` (omit if unsure; router classifies), `description`, `exit_criteria`, `depends_on`, `files_hint`, `plan_excerpt`, and optional `milestone`.
+   - `plan_sections`: anchors from the plan's Contents index that the ticket relies on.
+   - Design detail, optional in the schema but expected on feature, bugfix and refactor tickets: `design`, `interfaces`, `steps`, `test_plan`, `impacted_tests`, `risks`. Coder, QA and validator see the ticket JSON, so this is how plan detail reaches them. Import warns when `steps` or `test_plan` is missing; fill them before approving.
    - Exit criteria must be checkable by a command or specific observation, not "works well".
    - `plan_excerpt` is copied verbatim from `plan.md`.
    - Keep `depends_on` minimal so independent tickets can run in parallel.

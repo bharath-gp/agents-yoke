@@ -3,6 +3,8 @@ import json
 
 from . import router, schema
 
+DETAILED_TYPES = ("feature", "bugfix", "refactor")  # types expected to carry steps and test_plan
+
 
 def find_cycle(tickets):
     """Return a list of ids forming a dependency cycle, or None (DFS, deps assumed to exist)."""
@@ -102,7 +104,8 @@ def check(tickets, max_tickets, milestones=None):
 def warnings(tickets, milestones=None):
     """Runner-level warnings (non-fatal); returns warning strings.
 
-    Flags tickets with >6 files_hint or >6 exit_criteria, and milestones with >12 tickets.
+    Flags tickets with >6 files_hint or >6 exit_criteria, feature/bugfix/refactor tickets
+    without steps or test_plan, and milestones with >12 tickets.
     """
     if isinstance(tickets, dict):
         doc = tickets
@@ -119,6 +122,11 @@ def warnings(tickets, milestones=None):
         ec = t.get("exit_criteria", [])
         if len(ec) > 6:
             warns.append("ticket %s has %d exit_criteria (more than 6)" % (t.get("id"), len(ec)))
+        if t.get("type") in DETAILED_TYPES:
+            missing = [k for k in ("steps", "test_plan") if not t.get(k)]
+            if missing:
+                warns.append("ticket %s (%s) has no %s; the coder will have to plan it" %
+                             (t.get("id"), t["type"], " or ".join(missing)))
 
     if milestones:
         counts = {}

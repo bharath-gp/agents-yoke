@@ -53,6 +53,7 @@ Status legend per milestone: `[ ]` todo, `[~]` in progress, `[x]` done. Update t
    | [M20](#m20) | Runtime ticket steering & nudge CLI | [2.8](#s2-8), [2.16](#s2-16) |
    | [M21](#m21) | Failure hypotheses fan-out & ranking | [2.5](#s2-5), [2.6](#s2-6), [2.7](#s2-7), [2.8](#s2-8) |
    | [M22](#m22) | Rate limit detection, pause, and retry | [2.6](#s2-6), [2.8](#s2-8), [2.11](#s2-11), [2.12](#s2-12) |
+   | [M23](#m23) | Detailed plans and design-carrying tickets | [2.5](#s2-5), [2.7](#s2-7) |
 4. [Verification matrix](#s4)
 5. [Out of scope](#s5)
 - [Appendix A: Topic index](#appA)
@@ -628,6 +629,18 @@ Files: `yoke/limits.py`, `yoke/calls.py`, `yoke/pipeline.py`, `yoke/scheduler.py
 - Status, wait & dashboard visibility: `render_status()` in `state.py` and `yoke status --brief` display `waiting for limit until <resume_at> (<ticket>)`. `yoke wait` persists waiting through rate limit pauses without returning early. Web dashboard shows active banner and run-picker indicator.
 - Crash recovery: `scheduler.recover` resumes in-progress `waiting_limit` pauses on restart, capping against `limits.max_wait_s`.
 - Notes: Built `yoke/limits.py`, wired limit detection into `calls.py`, pool pause-wait-retry in `pipeline.py`, recovery in `scheduler.py`, and visibility in `state.py`, `runcmds.py`, and `dashboard.py`. Notes: rate limit regex patterns (`limits.patterns` for `claude` and `agy`) are unverified against live real rate limits (tested with synthetic/fake CLI strings).
+
+<a id="m23"></a>
+### M23: Detailed plans and design-carrying tickets (0.9.0) `[x]`
+Files: `skills/plan/SKILL.md`, `skills/tickets/SKILL.md`, `yoke/prompts/chart.md`, `yoke/prompts/plan_review.md`, `yoke/prompts/code.md`, `yoke/prompts/qa.md`, `yoke/prompts/validate.md`, `yoke/schemas/ticket.json`, `yoke/schemas/ticket-list.json`, `yoke/schemas/chart.json`, `yoke/tickets.py`, `yoke/tracker.py`, `tests/test_milestones.py`, `tests/test_tracker.py`, `yoke/planreview.py`, `yoke/cli.py`, `yoke/prompts/docs.md`, `yoke/prompts/research.md`, `skills/grill/SKILL.md`, `skills/go/SKILL.md`, `tests/test_planreview.py`.
+- Why: across seven earlier runs about two thirds of tickets needed a second or third coder attempt; most retries were the runner's full-suite re-run failing after QA reported pass (existing tests broken by the change, leaked files/warnings) and coder scope drift. Analysis in `docs/research/planner-improvements.md`.
+- Plan skill: explore the code first (callers, existing tests, fakes), then write `plan.md` with fixed sections: Context, Architecture, Decisions, Interfaces, Work items (per future ticket: files, ordered steps, interfaces, named test cases, impacted existing tests, exit criteria, risks), Cross-cutting, Verification, Risks, Out of scope.
+- Ticket fields: optional `design`, `interfaces`, `steps`, `test_plan`, `impacted_tests`, `risks` in all three ticket schemas. Optional so hand-written and older `tickets.json` still import; the chart prompt asks wayfinder to fill them from the plan and the code. They reach coder, QA and validator through the existing `$ticket` JSON, so no new template variables.
+- Lint: `tickets.warnings` warns when a feature, bugfix or refactor ticket has no `steps` or `test_plan`.
+- Plan review flags as major: work items a coder would have to guess at, interfaces not defined once, missing named tests or fakes, unlisted impacted tests, oversized work items.
+- Downstream prompts: coder follows design/interfaces/steps, updates `impacted_tests`, returns blocked instead of redesigning; QA implements `test_plan` and avoids leaking state into the suite; validator checks interface names and impacted tests.
+- GitHub issue body shows `design` and numbered `steps` when present.
+- Contents index (against lost-in-the-middle and token waste): `plan.md` must start with `## Contents`, one `[title](#anchor)` link per `##` section (work items get `<a id>` anchors). `planreview.toc_errors` checks it: first `##` section is Contents, every link resolves to a heading slug or `<a id>`, every `##` section is linked; fenced code is ignored. `yoke approve plan` refuses on any error (CLI only; `planreview.approve` itself is unchanged); `yoke review-plan` warns. Tickets gain optional `plan_sections` (anchors). Chart and plan-review prompts read the index first; the docs and research agents and the requirements written by `grill`/`go` start long Markdown with the same index; the coder keeps an existing index in sync. README, docs/REQUIREMENTS.md and docs/research/*.md got indexes.
 
 ---
 

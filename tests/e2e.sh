@@ -36,7 +36,7 @@ info["config"]["test_command"] = "python3 -m unittest discover -s tests"
 if mode == "fallback":
     info["config"]["router"]["ollama_url"] = "http://127.0.0.1:1"
 json.dump(info, open(p, "w"), indent=2)
-open(d + "/plan.md", "w").write("# Plan\nT-001 stats, T-002 export (after T-001), T-003 slugify.\n")
+open(d + "/plan.md", "w").write("# Plan\n\n## Contents\n- [Work items](#work-items)\n\n## Work items\nT-001 stats, T-002 export (after T-001), T-003 slugify.\n")
 def t(i, title, type_, desc, crit, deps=()):
     d_ = {"id": "T-%03d" % i, "title": title, "description": desc, "exit_criteria": crit,
           "depends_on": list(deps), "files_hint": [], "plan_excerpt": "see plan"}

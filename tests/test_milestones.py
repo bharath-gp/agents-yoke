@@ -319,6 +319,22 @@ class TestMilestones(unittest.TestCase):
         warns_many = tickets.warnings(doc_many)
         self.assertTrue(any("exceeds 12" in w or "more than 12" in w for w in warns_many))
 
+    def test_warnings_detail_fields(self):
+        base = {"id": "T-001", "milestone": "MS-01", "type": "feature"}
+        warns = tickets.warnings({"tickets": [dict(base, steps=["edit a.py:f"])]})
+        self.assertEqual(warns, ["ticket T-001 (feature) has no test_plan; the coder will have to plan it"])
+        full = dict(base, steps=["edit a.py:f"], test_plan=["tests/test_a.py::test_f"])
+        self.assertEqual(tickets.warnings({"tickets": [full, dict(base, id="T-002", type="docs")]}), [])
+
+    def test_detail_fields_validate(self):
+        t = {"id": "T-001", "title": "t", "type": "feature", "description": "d", "exit_criteria": ["e"],
+             "depends_on": [], "files_hint": [], "plan_excerpt": "p", "design": "x",
+             "interfaces": ["f(a) -> b"], "steps": ["s"], "test_plan": ["c"], "impacted_tests": ["none found"],
+             "risks": ["r"], "plan_sections": ["w1"]}
+        self.assertEqual(schema.validate({"tickets": [t]}, schema.load_schema("ticket-list")), [])
+        self.assertEqual(schema.validate({"tickets": [t]}, schema.load_schema("chart")), [])
+        self.assertTrue(schema.validate({"tickets": [dict(t, steps="s")]}, schema.load_schema("ticket-list")))
+
     def test_cli_show_grouped_by_milestone(self):
         doc = {
             "milestones": [
