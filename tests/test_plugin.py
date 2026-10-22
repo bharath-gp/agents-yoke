@@ -24,10 +24,10 @@ class TestPackaging(unittest.TestCase):
     def test_manifests(self):
         p = load(".claude-plugin/plugin.json")
         self.assertEqual(p["name"], "yoke")
-        self.assertEqual(p["version"], "0.9.0")
+        self.assertEqual(p["version"], "0.10.2")
         with open(os.path.join(ROOT, "pyproject.toml")) as f:
             pyproject_ver = re.search(r'version\s*=\s*"([^"]+)"', f.read()).group(1)
-        self.assertEqual(pyproject_ver, "0.9.0")
+        self.assertEqual(pyproject_ver, "0.10.2")
         self.assertEqual(p["version"], pyproject_ver)
         m = load(".claude-plugin/marketplace.json")
         self.assertEqual(m["name"], "yoke")

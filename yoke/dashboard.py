@@ -235,6 +235,64 @@ def list_runs(home=None):
     return results
 
 
+def _run_window(run, info):
+    """(start, end) timestamps of a run: creation to its last event, or now while it is active."""
+    evs = read_events_tail(run, limit=1)
+    last = evs[-1].get("at") if (evs and isinstance(evs[-1], dict)) else None
+    end = last if info.get("state") == "done" and last else datetime.datetime.now(datetime.timezone.utc).isoformat()
+    return info.get("created_at"), end
+
+
+def _interactive(run, info, summary):
+    from . import usage
+    try:
+        start, end = _run_window(run, info)
+        return usage.interactive_messages(info.get("repo"), start, end, set(summary.get("session_ids") or []))
+    except Exception:
+        return {}
+
+
+def list_projects(home=None):
+    """Group runs by target repo and roll up usage (run.json 'repo'). Never raises."""
+    from . import usage
+    if home is None:
+        home = config.yoke_home()
+    runs_dir = os.path.join(home, "runs")
+    groups = {}
+    try:
+        names = sorted(os.listdir(runs_dir))
+    except OSError:
+        return []
+    for name in names:
+        info = _read_json_safe(state.Run(name, home=home), "run.json", {})
+        if not isinstance(info, dict) or info.get("kind") == "research" or not info.get("repo"):
+            continue
+        try:
+            run = state.Run(name, home=home)
+            u = _read_json_safe(run, "usage.json", None)
+            if not isinstance(u, dict) or info.get("state") != "done":
+                u = usage.summarize(run)
+        except Exception:
+            continue
+        # messages merge by id so a chat spanning overlapping runs is counted once
+        groups.setdefault(info["repo"], []).append((u, _interactive(run, info, u)))
+    out = []
+    for repo, pairs in sorted(groups.items()):
+        msgs = {}
+        for _, m in pairs:
+            msgs.update(m)
+        us = [u for u, _ in pairs]
+        row = usage.project_summary(us)
+        if msgs:
+            b = usage.interactive_bucket(msgs)
+            row["totals"] = usage.merge([row["totals"], b])
+            row["by_agent"]["interactive"] = b
+        row["repo"] = repo
+        row["runs"] = len(us)
+        out.append(row)
+    return out
+
+
 def run_detail(run):
     """Return complete run detail dictionary from existing readers only.
 
@@ -411,6 +469,8 @@ def run_detail(run):
     try:
         from . import usage
         usage_data = usage.summarize(run)
+        info = _read_json_safe(run, "run.json", {})
+        usage_data = usage.with_interactive(usage_data, _interactive(run, info, usage_data))
     except Exception:
         from . import usage
         usage_data = usage.empty_summary()
@@ -515,6 +575,10 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
         runs = list_runs(home=home)
         self._send_json(200, runs, head=head)
 
+    def _serve_projects(self, head=False):
+        home = getattr(self.server, "home", None) or config.yoke_home()
+        self._send_json(200, list_projects(home=home), head=head)
+
     def _serve_run_detail(self, raw_id, head=False):
         if not raw_id:
             self._send_json(404, {"error": "Run not found"}, head=head)
@@ -576,6 +640,10 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
 
         if path == "/api/runs":
             self._serve_runs_list(head=head)
+            return
+
+        if path == "/api/projects":
+            self._serve_projects(head=head)
             return
 
         if path.startswith("/api/runs/"):

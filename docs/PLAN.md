@@ -54,6 +54,7 @@ Status legend per milestone: `[ ]` todo, `[~]` in progress, `[x]` done. Update t
    | [M21](#m21) | Failure hypotheses fan-out & ranking | [2.5](#s2-5), [2.6](#s2-6), [2.7](#s2-7), [2.8](#s2-8) |
    | [M22](#m22) | Rate limit detection, pause, and retry | [2.6](#s2-6), [2.8](#s2-8), [2.11](#s2-11), [2.12](#s2-12) |
    | [M23](#m23) | Detailed plans and design-carrying tickets | [2.5](#s2-5), [2.7](#s2-7) |
+   | [M24](#m24) | Dashboard usage breakdown | [2.2](#s2-2), [2.12](#s2-12), [2.13](#s2-13) |
 4. [Verification matrix](#s4)
 5. [Out of scope](#s5)
 - [Appendix A: Topic index](#appA)
@@ -642,6 +643,18 @@ Files: `skills/plan/SKILL.md`, `skills/tickets/SKILL.md`, `yoke/prompts/chart.md
 - GitHub issue body shows `design` and numbered `steps` when present.
 - Contents index (against lost-in-the-middle and token waste): `plan.md` must start with `## Contents`, one `[title](#anchor)` link per `##` section (work items get `<a id>` anchors). `planreview.toc_errors` checks it: first `##` section is Contents, every link resolves to a heading slug or `<a id>`, every `##` section is linked; fenced code is ignored. `yoke approve plan` refuses on any error (CLI only; `planreview.approve` itself is unchanged); `yoke review-plan` warns. Tickets gain optional `plan_sections` (anchors). Chart and plan-review prompts read the index first; the docs and research agents and the requirements written by `grill`/`go` start long Markdown with the same index; the coder keeps an existing index in sync. README, docs/REQUIREMENTS.md and docs/research/*.md got indexes.
 
+<a id="m24"></a>
+### M24: Dashboard usage breakdown (0.10.2) `[x]`
+Files: `yoke/usage.py`, `yoke/dashboard.py`, `yoke/dashboard.html`, `tests/test_dashboard.py`, `tests/test_usage.py`, `tests/test_plugin.py`, `README.md`, `docs/PLAN.md`, `.claude-plugin/plugin.json`, `pyproject.toml`.
+- Why: the dashboard showed run totals and the top 3 spenders only; the question was where tokens and cost go (per ticket, run, agent, stage, repo).
+- Usage ledger: `usage.summarize` adds `by_ticket_agent` and `session_ids` (every agent `session_id` seen in `meta.json`). Buckets gain `io_total` (input + output tokens, the headline figure) and `cache_total` (cache creation + read). These are named without "token" on purpose: the budget fallbacks in `config.py`, `state.py` and `runcmds.py` sum every `*token*` key and would double count. `total_tokens` is untouched, so `max_tokens` enforcement is unchanged. `usage.merge` sums buckets across runs and never counts missing cost as 0.
+- Roles: primary/secondary is the agent name (`claude` / `agy`), shown in By Agent; role at call time is not recorded.
+- Cost: reported cost only. agy has none and shows `unreported`; no price table or estimate.
+- Dashboard: the ticket table gains tokens, cost and claude/agy split; the usage card gains By Agent and By Stage tables. Tokens display as `3.5M` / `143K`, cost to 2 decimals. `GET /api/projects` (`dashboard.list_projects`) groups runs by `run.json` `repo`, reading `usage.json` for `done` runs and recomputing for the rest.
+- Interactive sessions: calls the runner makes are the only ones with a `meta.json`; the chat session that grills, plans and supervises is not. `usage.interactive_messages` reads `~/.claude/projects/<repo path with non-alphanumerics as "-">/*.jsonl` (`CLAUDE_CONFIG_DIR` overrides `~/.claude`), keeps assistant messages inside the run window (creation to last event, or now while active), drops sessions yoke spawned (`session_ids`), and takes the last record per message id. They appear as agent and stage `interactive`. Transcripts carry per-session cost (`cost-state.totalCostUSD`), so each message gets an equal share and a run takes the share inside its window; such cost is marked `~` (`cost_partial`). Sessions without `cost-state` stay unreported. The project rollup merges messages by id so a chat spanning overlapping runs counts once.
+- Limits: attribution is by time window, so unrelated chats on the same repo during a run are counted; subagent transcripts (`<session>/subagents/`) are not read; planning done in the chat is inside `interactive`, not a separate stage.
+- Notes: Built in `usage.py`, `dashboard.py`, `dashboard.html`, bumped to 0.10.2.
+
 ---
 
 <a id="s4"></a>
@@ -722,7 +735,7 @@ Files: `skills/plan/SKILL.md`, `skills/tickets/SKILL.md`, `yoke/prompts/chart.md
 | `.claude-plugin/*`, `skills/*/SKILL.md`, `hooks/hooks.json` | plugin, skills, SessionStart hook | [2.11](#s2-11), [2.15](#s2-15) | [M7](#m7) |
 | `yoke/prbody.py` | PR template matching and body fill | [2.14](#s2-14) | [M8](#m8) |
 | `yoke/tracker.py` | local / GitHub tracker, `pr_body`, `pr` | [2.14](#s2-14) | [M8](#m8), [M18](#m18) |
-| `yoke/usage.py` | per-run token usage & cost summary (`usage.json`) | [2.2](#s2-2), [2.13](#s2-13) | [M16](#m16) |
+| `yoke/usage.py` | per-run token usage & cost summary (`usage.json`), project merge, interactive-session usage | [2.2](#s2-2), [2.13](#s2-13) | [M16](#m16), [M24](#m24) |
 | `yoke/hooks.py` | hook runner with process-group kill on timeout | [2.6](#s2-6), [2.8](#s2-8) | [M17](#m17) |
 | `yoke/dashboard.py`, `yoke/dashboard.html` | read-only dashboard server and UI | [2.16](#s2-16) | [M15](#m15) |
 | `yoke/limits.py` | limit pattern matching, timestamp parsing, pool pause & retry | [2.6](#s2-6), [2.12](#s2-12) | [M22](#m22) |

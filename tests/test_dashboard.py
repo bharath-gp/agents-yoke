@@ -1,3 +1,4 @@
+import datetime
 import contextlib
 import http.client
 import io
@@ -386,6 +387,62 @@ class TestDashboard(unittest.TestCase):
         self.assertEqual(len(detail["usage"]["top_spenders"]), 1)
         self.assertEqual(detail["usage"]["top_spenders"][0]["ticket"], "T-001")
         self.assertEqual(detail["usage"]["top_spenders"][0]["cost"], 0.025)
+
+    def test_usage_split_and_project_rollup(self):
+        run = self._create_run()
+        for agent, stage, usage, cost in (
+            ("claude", "validate", {"input_tokens": 100, "output_tokens": 20, "cache_read_input_tokens": 900}, 0.5),
+            ("agy", "code", {"input_tokens": 30, "output_tokens": 10}, None),
+        ):
+            d = run.path("tickets/T-001/attempt-1/" + stage)
+            os.makedirs(d, exist_ok=True)
+            with open(os.path.join(d, "meta.json"), "w", encoding="utf-8") as f:
+                json.dump({"stage": stage, "ticket": "T-001", "agent": agent,
+                           "observed": {"model": "m", "usage": usage, "cost": cost}}, f)
+        u = dashboard.run_detail(run)["usage"]
+        self.assertEqual(u["totals"]["io_total"], 160)
+        self.assertEqual(u["totals"]["cache_total"], 900)
+        self.assertEqual(u["by_ticket_agent"]["T-001"]["agy"]["io_total"], 40)
+        proj = dashboard.list_projects(home=self.tmp)
+        self.assertEqual(len(proj), 1)
+        self.assertEqual(proj[0]["totals"]["io_total"], 160)
+        self.assertEqual(proj[0]["totals"]["cost"], 0.5)
+        self.assertEqual(proj[0]["totals"]["unreported_calls"], 1)
+        self.assertEqual(proj[0]["by_agent"]["claude"]["io_total"], 120)
+
+    def test_interactive_session_usage_included_once(self):
+        run = self._create_run()
+        info = json.load(open(run.path("run.json")))
+        proj = os.path.join(self.tmp, "claude", "projects", re.sub(r"[^A-Za-z0-9]", "-", info["repo"]))
+        os.makedirs(proj)
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+        def rec(mid, sid, out, ts=None):
+            return json.dumps({"type": "assistant", "timestamp": ts or now, "sessionId": sid, "message": {
+                "id": mid, "usage": {"input_tokens": 10, "output_tokens": out}}})
+        with open(os.path.join(proj, "chat.jsonl"), "w") as f:
+            # m1 is streamed twice: only the final record counts
+            f.write("\n".join([rec("m1", "chat", 1), rec("m1", "chat", 5), rec("m2", "chat", 7),
+                               rec("m0", "chat", 100, "2000-01-01T00:00:00Z"),
+                               json.dumps({"type": "cost-state", "sessionId": "chat", "totalCostUSD": 1.0}),
+                               json.dumps({"type": "cost-state", "sessionId": "chat", "totalCostUSD": 3.0})]))
+        with open(os.path.join(proj, "spawned.jsonl"), "w") as f:
+            f.write(rec("m3", "yoke-spawned", 99))
+        d = run.path("calls/router-1")
+        os.makedirs(d)
+        with open(os.path.join(d, "meta.json"), "w") as f:
+            json.dump({"stage": "router", "agent": "claude", "observed": {
+                "session_id": "yoke-spawned", "usage": {"input_tokens": 1, "output_tokens": 1}, "cost": 0.1}}, f)
+        os.environ["CLAUDE_CONFIG_DIR"] = os.path.join(self.tmp, "claude")
+        self.addCleanup(os.environ.pop, "CLAUDE_CONFIG_DIR", None)
+        u = dashboard.run_detail(run)["usage"]
+        self.assertEqual(u["by_agent"]["interactive"]["io_total"], 10 + 5 + 10 + 7)
+        # session cost 3.0 over 3 messages, 2 inside the run window
+        self.assertEqual(u["by_agent"]["interactive"]["cost"], 2.0)
+        self.assertEqual(u["by_agent"]["interactive"]["cost_partial"], 1)
+        self.assertEqual(u["totals"]["io_total"], 2 + 32)
+        self.assertEqual(u["totals"]["cost"], 2.1)
+        self.assertEqual(dashboard.list_projects(home=self.tmp)[0]["by_agent"]["interactive"]["io_total"], 32)
 
     def test_run_detail_agy_only_shows_unreported_cost(self):
         run = self._create_run()
