@@ -1,9 +1,11 @@
 import json
 import os
 import unittest
+from unittest import mock
 
 from tests.test_pipeline import CODE, DOCS, PipeBase, REV, qa, resp, ticket, val
-from yoke import gitops, milestones, runcmds, scheduler
+from tests.test_router import choice
+from yoke import gitops, milestones, router, runcmds, scheduler
 
 os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
 
@@ -79,6 +81,139 @@ class TestGates(PipeBase):
         }
         self.setup_doc(doc, script)
         self.assertEqual(self.go(), "done")
+
+        fixes = self.run_.read_json("fixes.json", [])
+        self.assertEqual(len(fixes), 1)
+        self.assertEqual(fixes[0]["id"], "F-0002")
+        self.assertEqual(fixes[0]["milestone"], "MS-01")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+        f_state = self.run_.read_json("tickets/F-0002/state.json")
+        self.assertEqual(f_state["status"], "closed")
+        ms_st = milestones.load_states(self.run_)
+        self.assertEqual(ms_st["MS-01"]["status"], "passed")
+
+    def test_gate_decision_escalates(self):
+        doc = {
+            "milestones": [
+                {"id": "MS-01", "title": "M1", "exit_check": "test -f fix.txt"},
+            ],
+            "tickets": [
+                ms_ticket(1, milestone="MS-01"),
+            ],
+        }
+        script = {
+            "code": [
+                resp(CODE, "c1", write={"other.txt": "x\n"}),
+            ],
+            "review": [resp(REV)],
+            "validate": [resp(val())],
+            "router": [{"exit": 1}],
+        }
+        self.setup_doc(doc, script)
+        with mock.patch.object(router, "_ollama", return_value={"gate": choice("escalate", 0.95)}):
+            res = self.go()
+            self.assertEqual(res, "needs_user")
+
+        fixes = self.run_.read_json("fixes.json", [])
+        self.assertEqual(fixes, [])
+        ms_st = milestones.load_states(self.run_)
+        self.assertEqual(ms_st["MS-01"]["status"], "failed")
+
+        with open(self.run_.path("events.jsonl")) as f:
+            events = [json.loads(line) for line in f]
+        self.assertTrue(any(e.get("kind") == "escalation" and e.get("ticket") == "MS-01" for e in events))
+
+    def test_gate_decision_none_creates_fix_ticket(self):
+        doc = {
+            "milestones": [
+                {"id": "MS-01", "title": "M1", "exit_check": "test -f fix.txt"},
+            ],
+            "tickets": [
+                ms_ticket(1, milestone="MS-01"),
+            ],
+        }
+        script = {
+            "code": [
+                resp(CODE, "c1", write={"other.txt": "x\n"}),
+                resp(CODE, "c2", write={"fix.txt": "fixed\n"}),
+            ],
+            "review": [resp(REV)] * 2,
+            "qa": [resp(qa("test -f fix.txt"))],
+            "validate": [resp(val())] * 2,
+            "docs": [resp(DOCS)],
+            "router": [{"exit": 1}],
+        }
+        self.setup_doc(doc, script)
+        with mock.patch.object(router, "_ollama", side_effect=RuntimeError("offline")):
+            self.assertEqual(self.go(), "done")
+
+        fixes = self.run_.read_json("fixes.json", [])
+        self.assertEqual(len(fixes), 1)
+        self.assertEqual(fixes[0]["id"], "F-0002")
+        self.assertEqual(fixes[0]["milestone"], "MS-01")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+        f_state = self.run_.read_json("tickets/F-0002/state.json")
+        self.assertEqual(f_state["status"], "closed")
+        ms_st = milestones.load_states(self.run_)
+        self.assertEqual(ms_st["MS-01"]["status"], "passed")
+
+    def test_gate_decision_fix_ticket_creates_fix_ticket(self):
+        doc = {
+            "milestones": [
+                {"id": "MS-01", "title": "M1", "exit_check": "test -f fix.txt"},
+            ],
+            "tickets": [
+                ms_ticket(1, milestone="MS-01"),
+            ],
+        }
+        script = {
+            "code": [
+                resp(CODE, "c1", write={"other.txt": "x\n"}),
+                resp(CODE, "c2", write={"fix.txt": "fixed\n"}),
+            ],
+            "review": [resp(REV)] * 2,
+            "qa": [resp(qa("test -f fix.txt"))],
+            "validate": [resp(val())] * 2,
+            "docs": [resp(DOCS)],
+            "router": [{"exit": 1}],
+        }
+        self.setup_doc(doc, script)
+        with mock.patch.object(router, "_ollama", return_value={"gate": choice("fix_ticket", 0.95)}):
+            self.assertEqual(self.go(), "done")
+
+        fixes = self.run_.read_json("fixes.json", [])
+        self.assertEqual(len(fixes), 1)
+        self.assertEqual(fixes[0]["id"], "F-0002")
+        self.assertEqual(fixes[0]["milestone"], "MS-01")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+        f_state = self.run_.read_json("tickets/F-0002/state.json")
+        self.assertEqual(f_state["status"], "closed")
+        ms_st = milestones.load_states(self.run_)
+        self.assertEqual(ms_st["MS-01"]["status"], "passed")
+
+    def test_gate_decision_below_threshold_creates_fix_ticket(self):
+        doc = {
+            "milestones": [
+                {"id": "MS-01", "title": "M1", "exit_check": "test -f fix.txt"},
+            ],
+            "tickets": [
+                ms_ticket(1, milestone="MS-01"),
+            ],
+        }
+        script = {
+            "code": [
+                resp(CODE, "c1", write={"other.txt": "x\n"}),
+                resp(CODE, "c2", write={"fix.txt": "fixed\n"}),
+            ],
+            "review": [resp(REV)] * 2,
+            "qa": [resp(qa("test -f fix.txt"))],
+            "validate": [resp(val())] * 2,
+            "docs": [resp(DOCS)],
+            "router": [{"exit": 1}],
+        }
+        self.setup_doc(doc, script)
+        with mock.patch.object(router, "_ollama", return_value={"gate": choice("escalate", 0.50)}):
+            self.assertEqual(self.go(), "done")
 
         fixes = self.run_.read_json("fixes.json", [])
         self.assertEqual(len(fixes), 1)

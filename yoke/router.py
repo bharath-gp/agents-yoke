@@ -263,6 +263,23 @@ def after_failure(run, ticket, attempt, feedback):
     return decide(run.cfg, "after_failure", state, q, parse, run)
 
 
+def gate_failure_route(run, milestone_id, exit_check, tail):
+    """Ask Ollama decision point 'gate_failure' whether to create a fix ticket or escalate."""
+    q = {
+        "gate": {
+            "type": "choice",
+            "instructions": "Should this milestone gate failure create a fix ticket or escalate?",
+            "criteria": {
+                "fix_ticket": "a local defect a single fix can address",
+                "escalate": "spec gap or cross-ticket design problem",
+            },
+        }
+    }
+    state = ("Milestone: %s\nExit check: %s\nOutput tail:\n%s" % (milestone_id, exit_check, tail))[-STATE_CHARS:]
+    parse = lambda a: (a["gate"]["choice"], a["gate"]["confidence"])
+    return decide(run.cfg, "gate_failure", state, q, parse, run)
+
+
 def assert_check(run, claim, evidence, adapter=None):
     state = ("Evidence:\n%s" % evidence)[-STATE_CHARS:]
 
