@@ -315,6 +315,10 @@ The decision router evaluates routing and safety triage via local Ollama models 
 - **User config only**: Like `gate_hooks`, `guard` and `router.thresholds.safety` are strictly enforced from user configuration (`~/.yoke/config.json`). Any definitions in repo configuration (`<repo>/.yoke.json`) are refused with a warning log to prevent untrusted repositories from tampering with safety policies.
 - **Environment override**: The `YOKE_OLLAMA_URL` environment variable overrides `router.ollama_url` across all runs, applied over user config and prior to repo config (used in tests to point to a dead port for offline verification).
 - **Dashboard decisions card**: The web dashboard aggregates decision points by source (ollama, none, default, fallback, or dynamic sources) and tracks recent flagged guard events (deny, ask, escalate) with reasons and target paths in the Decision models card.
+- **Guard CLI & chat hook**: `yoke guard` provides command-line safety checks for tool invocations and diffs:
+  - `yoke guard tool [--run R] [--active] [--mode chat|agent]`: Consumes PreToolUse JSON payload (`tool_name`, `tool_input`, `cwd`) on stdin and evaluates the tool call against safety guard policies. If the call is denied or flagged for confirmation, it prints hook-specific JSON output (`deny` or `ask`). On allow or when unhandled, it outputs nothing. It catches all internal errors and always exits with code 0. In `chat` mode (default), the check is silent unless a run is active for the repository and `guard.chat_hook` is enabled (default: `true`).
+  - `yoke guard check-diff [--run R]`: Runs safety analysis on repository diffs via `guard.scan_diff` and outputs JSON results, loading configuration from the specified run or local repository settings.
+  - **PreToolUse chat hook**: `hooks/hooks.json` registers a `PreToolUse` hook running `command -v yoke >/dev/null 2>&1 && yoke guard tool --active --mode chat || true` with a 10-second timeout, protecting host agent sessions during active runs without blocking tool execution.
 
 
 ## Typical flow
@@ -357,6 +361,8 @@ yoke wait                         # blocks until escalation, done, needs_user, s
 yoke runs [--active] [--json]     # list runs for this repo with goal and next step
 yoke status [--json|--brief]      # also: escalations, unblock [T-001|--milestone MS-01], stop; --active lists active runs; reports usage totals, top 3 spenders, and waiting_limit
 yoke nudge T-001 --note "text"    # send note to pending or in-progress ticket for next attempt/review round
+yoke guard tool --active --mode chat # inspect tool call from stdin; silent on allow, never exits non-zero
+yoke guard check-diff [--run R]    # inspect staged diff against secret and safety patterns
 yoke dashboard [--port N]         # serve local read-only web UI on 127.0.0.1 (default port 8765)
 yoke approve final && yoke pr     # push branch, open PR
 yoke clean                        # remove worktrees (keeps branches and audit)

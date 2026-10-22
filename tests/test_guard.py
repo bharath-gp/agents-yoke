@@ -1,3 +1,6 @@
+import argparse
+import contextlib
+import io
 import json
 import os
 import re
@@ -7,7 +10,7 @@ import unittest
 from unittest.mock import patch
 
 from tests.test_gitops import GitBase, git
-from yoke import config, guard, router
+from yoke import cli, config, guard, planreview, router, runcmds, state
 
 os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
 
@@ -634,6 +637,174 @@ class DiffTest(GitBase):
         diff_text, files, _ = guard.diff_inputs(self.repo)
         self.assertIn("large.txt", files)
         self.assertEqual(len(diff_text), 200000)
+
+
+class CliTest(GitBase):
+    def setUp(self):
+        super().setUp()
+        old_yoke_home = os.environ.get("YOKE_HOME")
+        os.environ["YOKE_HOME"] = self.tmp
+        if old_yoke_home is None:
+            self.addCleanup(os.environ.pop, "YOKE_HOME", None)
+        else:
+            self.addCleanup(os.environ.__setitem__, "YOKE_HOME", old_yoke_home)
+
+    def _run_guard(self, args, stdin_text=""):
+        stdin = io.StringIO(stdin_text)
+        stdout = io.StringIO()
+        with patch("sys.stdin", stdin), contextlib.redirect_stdout(stdout):
+            rc = runcmds.dispatch(args)
+        return rc, stdout.getvalue()
+
+    def test_guard_tool_no_active_run_silent(self):
+        non_repo = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, non_repo, ignore_errors=True)
+        old_cwd = os.getcwd()
+        os.chdir(non_repo)
+        self.addCleanup(os.chdir, old_cwd)
+
+        args = argparse.Namespace(cmd="guard", target="tool", run=None, active=True, mode="chat")
+        rc, out = self._run_guard(args, json.dumps({"tool_name": "Read", "tool_input": {"file_path": ".env"}}))
+        self.assertEqual(rc, 0)
+        self.assertEqual(out, "")
+
+    def test_guard_tool_run_denies_env_read(self):
+        run = planreview.init_run(self.repo, None, {}, home=self.tmp)
+        args = argparse.Namespace(cmd="guard", target="tool", run=run.run_id, active=False, mode="agent")
+        stdin_data = json.dumps({"tool_name": "Read", "tool_input": {"file_path": ".env"}, "cwd": self.repo})
+        rc, out = self._run_guard(args, stdin_data)
+        self.assertEqual(rc, 0)
+        out = out.strip()
+        self.assertTrue(out)
+        data = json.loads(out)
+        self.assertEqual(data["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertIn("yoke guard:", data["hookSpecificOutput"]["permissionDecisionReason"])
+
+    def test_guard_tool_bad_json_silent(self):
+        run = planreview.init_run(self.repo, None, {}, home=self.tmp)
+        args = argparse.Namespace(cmd="guard", target="tool", run=run.run_id, active=False, mode="agent")
+        rc, out = self._run_guard(args, "not json")
+        self.assertEqual(rc, 0)
+        self.assertEqual(out, "")
+
+    def test_chat_hook_disabled(self):
+        # Positive control: chat mode with default config denies .env read
+        run_default = planreview.init_run(self.repo, None, {}, home=self.tmp)
+        args_default = argparse.Namespace(cmd="guard", target="tool", run=run_default.run_id, active=False, mode="chat")
+        stdin_data = json.dumps({"tool_name": "Read", "tool_input": {"file_path": ".env"}, "cwd": self.repo})
+        rc, out = self._run_guard(args_default, stdin_data)
+        self.assertEqual(rc, 0)
+        self.assertTrue(out.strip())
+        data = json.loads(out.strip())
+        self.assertEqual(data["hookSpecificOutput"]["permissionDecision"], "deny")
+
+        # Negative control: when chat_hook is false, chat mode is silent
+        run_disabled = planreview.init_run(self.repo, None, {"guard": {"chat_hook": False}}, home=self.tmp)
+        args_disabled = argparse.Namespace(cmd="guard", target="tool", run=run_disabled.run_id, active=False, mode="chat")
+        rc, out = self._run_guard(args_disabled, stdin_data)
+        self.assertEqual(rc, 0)
+        self.assertEqual(out, "")
+
+    def test_guard_tool_active_run_denies(self):
+        run = planreview.init_run(self.repo, None, {}, home=self.tmp)
+        old_cwd = os.getcwd()
+        os.chdir(self.repo)
+        self.addCleanup(os.chdir, old_cwd)
+
+        args = argparse.Namespace(cmd="guard", target="tool", run=None, active=True, mode="agent")
+        stdin_data = json.dumps({"tool_name": "Read", "tool_input": {"file_path": ".env"}, "cwd": self.repo})
+        rc, out = self._run_guard(args, stdin_data)
+        self.assertEqual(rc, 0)
+        out_data = json.loads(out.strip())
+        self.assertEqual(out_data["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def test_guard_tool_benign_allowed_silent(self):
+        run = planreview.init_run(self.repo, None, {}, home=self.tmp)
+        args = argparse.Namespace(cmd="guard", target="tool", run=run.run_id, active=False, mode="agent")
+        stdin_data = json.dumps({"tool_name": "Read", "tool_input": {"file_path": "a.txt"}, "cwd": self.repo})
+        rc, out = self._run_guard(args, stdin_data)
+        self.assertEqual(rc, 0)
+        self.assertEqual(out, "")
+
+    def test_guard_tool_non_dict_json_silent(self):
+        run = planreview.init_run(self.repo, None, {}, home=self.tmp)
+        args = argparse.Namespace(cmd="guard", target="tool", run=run.run_id, active=False, mode="agent")
+        rc, out = self._run_guard(args, "[1, 2, 3]")
+        self.assertEqual(rc, 0)
+        self.assertEqual(out, "")
+
+    def test_guard_tool_bad_run_id_silent(self):
+        args = argparse.Namespace(cmd="guard", target="tool", run="nonexistent-run", active=False, mode="agent")
+        stdin_data = json.dumps({"tool_name": "Read", "tool_input": {"file_path": ".env"}, "cwd": self.repo})
+        rc, out = self._run_guard(args, stdin_data)
+        self.assertEqual(rc, 0)
+        self.assertEqual(out, "")
+
+    def test_guard_tool_active_picks_newest_run(self):
+        run1 = planreview.init_run(self.repo, None, {"guard": {"chat_hook": False}}, home=self.tmp)
+        run2 = planreview.init_run(self.repo, None, {"guard": {"chat_hook": True}}, home=self.tmp)
+        run1.update(created_at="2026-01-01T00:00:00")
+        run2.update(created_at="2026-01-02T00:00:00")
+
+        old_cwd = os.getcwd()
+        os.chdir(self.repo)
+        self.addCleanup(os.chdir, old_cwd)
+
+        args = argparse.Namespace(cmd="guard", target="tool", run=None, active=True, mode="chat")
+        stdin_data = json.dumps({"tool_name": "Read", "tool_input": {"file_path": ".env"}, "cwd": self.repo})
+        rc, out = self._run_guard(args, stdin_data)
+        self.assertEqual(rc, 0)
+        self.assertTrue(out.strip())
+        data = json.loads(out.strip())
+        self.assertEqual(data["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def test_guard_cli_main_e2e(self):
+        run = planreview.init_run(self.repo, None, {}, home=self.tmp)
+        stdin_data = json.dumps({"tool_name": "Read", "tool_input": {"file_path": ".env"}, "cwd": self.repo})
+        stdin = io.StringIO(stdin_data)
+        stdout = io.StringIO()
+        with patch("sys.stdin", stdin), contextlib.redirect_stdout(stdout):
+            rc = cli.main(["guard", "tool", "--run", run.run_id, "--mode", "agent"])
+        self.assertEqual(rc, 0)
+        out = json.loads(stdout.getvalue().strip())
+        self.assertEqual(out["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def test_guard_check_diff(self):
+        run = planreview.init_run(self.repo, None, {}, home=self.tmp)
+        old_cwd = os.getcwd()
+        os.chdir(self.repo)
+        self.addCleanup(os.chdir, old_cwd)
+
+        with open(os.path.join(self.repo, ".env"), "w") as f:
+            f.write("SECRET=123\n")
+        git(self.repo, "add", ".env")
+
+        args = argparse.Namespace(cmd="guard", target="check-diff", run=run.run_id, active=False, mode="chat")
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            rc = runcmds.dispatch(args)
+        self.assertEqual(rc, 0)
+        res = json.loads(stdout.getvalue().strip())
+        self.assertEqual(res["decision"], "deny")
+        self.assertEqual(res["source"], "denylist")
+
+    def test_guard_check_diff_no_run_flag(self):
+        old_cwd = os.getcwd()
+        os.chdir(self.repo)
+        self.addCleanup(os.chdir, old_cwd)
+
+        with open(os.path.join(self.repo, ".env"), "w") as f:
+            f.write("SECRET=123\n")
+        git(self.repo, "add", ".env")
+
+        args = argparse.Namespace(cmd="guard", target="check-diff", run=None, active=False, mode="chat")
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            rc = runcmds.dispatch(args)
+        self.assertEqual(rc, 0)
+        res = json.loads(stdout.getvalue().strip())
+        self.assertEqual(res["decision"], "deny")
+        self.assertEqual(res["source"], "denylist")
 
 
 if __name__ == "__main__":

@@ -41,6 +41,18 @@ class TestPackaging(unittest.TestCase):
         self.assertEqual(h["matcher"], "startup|resume|compact")
         self.assertIn("yoke status --brief --active", h["hooks"][0]["command"])
 
+    def test_pretooluse_hook_registered(self):
+        hooks = load("hooks/hooks.json")["hooks"]
+        session_start = hooks["SessionStart"][0]
+        self.assertEqual(session_start["matcher"], "startup|resume|compact")
+        self.assertIn("yoke status --brief --active", session_start["hooks"][0]["command"])
+        pre_tool = hooks["PreToolUse"][0]
+        self.assertEqual(pre_tool["matcher"], "*")
+        cmd = pre_tool["hooks"][0]["command"]
+        self.assertIn("yoke guard tool --active", cmd)
+        self.assertIn("|| true", cmd)
+        self.assertEqual(pre_tool["hooks"][0].get("timeout"), 10)
+
     def test_skills(self):
         for name in SKILLS:
             with open(os.path.join(ROOT, "skills", name, "SKILL.md")) as f:
@@ -58,7 +70,7 @@ class TestPackaging(unittest.TestCase):
             with open(os.path.join(ROOT, "skills", name, "SKILL.md")) as f:
                 subs.update(re.findall(r"`yoke ([a-z-]+)", f.read()))
         known = {"setup", "init", "review-plan", "approve", "tickets", "run", "wait", "status", "escalations",
-                 "unblock", "stop", "pr", "route", "doctor", "models", "runs", "map", "dashboard", "nudge"}
+                 "unblock", "stop", "pr", "route", "doctor", "models", "runs", "map", "dashboard", "nudge", "guard"}
         self.assertFalse(subs - known, subs - known)
 
 

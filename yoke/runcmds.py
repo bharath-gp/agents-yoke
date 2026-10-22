@@ -1,4 +1,4 @@
-"""CLI handlers for the runner commands: run, status, escalations, unblock, nudge, stop (PLAN 2.16)."""
+"""CLI handlers for the runner commands: run, status, escalations, unblock, nudge, stop, guard (PLAN 2.16)."""
 import glob
 import json
 import os
@@ -8,9 +8,9 @@ import subprocess
 import sys
 import time
 
-from . import config, gitops, milestones, pipeline, planreview, scheduler, state
+from . import config, gitops, guard, milestones, pipeline, planreview, scheduler, state
 
-CMDS = ("run", "status", "escalations", "unblock", "stop", "wait", "clean", "runs", "map", "dashboard", "nudge")
+CMDS = ("run", "status", "escalations", "unblock", "stop", "wait", "clean", "runs", "map", "dashboard", "nudge", "guard")
 
 
 def add_parsers(sub):
@@ -53,6 +53,11 @@ def add_parsers(sub):
     nu.add_argument("ticket")
     nu.add_argument("--note", required=True, help="note text to append to feedback")
     nu.add_argument("--run")
+    g = sub.add_parser("guard", help="safety checks for tool invocations and diffs")
+    g.add_argument("target", choices=["tool", "check-diff"])
+    g.add_argument("--run")
+    g.add_argument("--active", action="store_true", help="use latest active run for this repo")
+    g.add_argument("--mode", choices=["chat", "agent"], default="chat")
 
 
 def wait_for(run, timeout, poll=2):
@@ -345,8 +350,56 @@ def _active_runs():
     return [r for r in runs if is_active(r)]
 
 
+def _guard(args):
+    """Execute safety guard checks for tool invocations or staged diffs."""
+    if getattr(args, "target", None) == "tool":
+        try:
+            data = json.load(sys.stdin)
+            if not isinstance(data, dict):
+                return 0
+            run = None
+            if getattr(args, "run", None):
+                run = state.Run.load(args.run)
+            elif getattr(args, "active", False):
+                runs = _active_runs()
+                if runs:
+                    run = runs[-1]
+            if not run:
+                return 0
+            mode = getattr(args, "mode", "chat")
+            guard_cfg = run.cfg.get("guard", {}) if isinstance(run.cfg, dict) and isinstance(run.cfg.get("guard"), dict) else {}
+            if mode == "chat" and not guard_cfg.get("chat_hook", True):
+                return 0
+            res = guard.check_tool(
+                run.cfg,
+                data.get("tool_name"),
+                data.get("tool_input") or {},
+                data.get("cwd") or os.getcwd(),
+                mode,
+                run,
+            )
+            out = guard.hook_output(res, mode)
+            if out:
+                print(out)
+        except Exception:
+            return 0
+        return 0
+
+    if getattr(args, "target", None) == "check-diff":
+        run = state.Run.load(args.run) if getattr(args, "run", None) else None
+        cfg = run.cfg if run else config.load(repo=os.getcwd())
+        diff_text, files, deleted = guard.diff_inputs(os.getcwd())
+        res = guard.scan_diff(cfg, diff_text, files, deleted, run=run)
+        print(json.dumps(res))
+        return 0
+
+    return 0
+
+
 def dispatch(args):
     from . import cli
+    if args.cmd == "guard":
+        return _guard(args)
     if args.cmd == "status" and getattr(args, "active", False):  # hook path: never fail, never print when idle
         try:
             active = _active_runs()
