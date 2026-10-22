@@ -795,6 +795,27 @@
           </div>
         </section>
 
+        <!-- Decision models card -->
+        <section class="card" id="decision-points">
+          <div class="card-title">Decision models</div>
+          <div class="table-container">
+            <table class="ticket-table">
+              <thead>
+                <tr>
+                  <th>Point</th>
+                  <th>Ollama</th>
+                  <th>None</th>
+                  <th>Default</th>
+                  <th>Fallback</th>
+                </tr>
+              </thead>
+              <tbody id="decisions-tbody"></tbody>
+            </table>
+          </div>
+          <div style="font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin: 12px 0 8px;">Guard Flags (<span id="guard-counts">deny: 0, ask: 0, escalate: 0</span>)</div>
+          <div id="guard-recent-list" class="escalation-list"></div>
+        </section>
+
         <!-- Milestone strip with gate chips -->
         <section class="card">
           <div class="card-title">Milestones</div>
@@ -1183,6 +1204,65 @@
             tr.appendChild(tdIn);
             tr.appendChild(tdOut);
             spendersTbody.appendChild(tr);
+          });
+        }
+
+        // Decision models
+        const dp = d.decision_points || {};
+        const points = dp.points || {};
+        const guard = dp.guard || { deny: 0, ask: 0, escalate: 0, recent: [] };
+
+        const guardCountsElem = document.getElementById('guard-counts');
+        if (guardCountsElem) {
+          guardCountsElem.textContent = 'deny: ' + (guard.deny || 0) + ', ask: ' + (guard.ask || 0) + ', escalate: ' + (guard.escalate || 0);
+        }
+
+        const decTbody = document.getElementById('decisions-tbody');
+        clearElement(decTbody);
+        const pointKeys = Object.keys(points);
+        if (pointKeys.length === 0) {
+          const tr = el('tr');
+          const td = el('td', 'empty-note', 'No decision points');
+          td.setAttribute('colspan', '5');
+          tr.appendChild(td);
+          decTbody.appendChild(tr);
+        } else {
+          pointKeys.forEach(p => {
+            const counts = points[p] || {};
+            const tr = el('tr');
+            tr.appendChild(el('td', 'cell-id', p));
+            tr.appendChild(el('td', '', String(counts.ollama || 0)));
+            tr.appendChild(el('td', '', String(counts.none || 0)));
+            tr.appendChild(el('td', '', String(counts.default || 0)));
+            tr.appendChild(el('td', '', String(counts.fallback || 0)));
+            decTbody.appendChild(tr);
+          });
+        }
+
+        const guardList = document.getElementById('guard-recent-list');
+        clearElement(guardList);
+        const recentFlags = guard.recent || [];
+        if (recentFlags.length === 0) {
+          guardList.appendChild(el('div', 'empty-note', 'No flagged guard events'));
+        } else {
+          recentFlags.forEach(gf => {
+            const item = el('div', 'escalation-item');
+            const top = el('div', 'escalation-top');
+            const decChip = el('span', 'status-chip status-' + normalizeClass(gf.decision), gf.decision || 'flag');
+            top.appendChild(decChip);
+            if (gf.ticket) {
+              top.appendChild(el('span', 'escalation-ticket', 'Ticket: ' + gf.ticket));
+            }
+            if (gf.target) {
+              top.appendChild(el('span', '', 'Target: ' + gf.target));
+            }
+            top.appendChild(el('span', 'escalation-time', formatTime(gf.at)));
+            item.appendChild(top);
+            if (gf.reason) {
+              const reason = el('div', 'escalation-reason', gf.reason);
+              item.appendChild(reason);
+            }
+            guardList.appendChild(item);
           });
         }
 

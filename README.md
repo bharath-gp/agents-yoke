@@ -292,6 +292,7 @@ The decision router evaluates routing and safety triage via local Ollama models 
 - **Safety guard**: `guard` controls path and command restrictions, sensitive/grey file inspection, and secret pattern detection.
 - **User config only**: Like `gate_hooks`, `guard` and `router.thresholds.safety` are strictly enforced from user configuration (`~/.yoke/config.json`). Any definitions in repo configuration (`<repo>/.yoke.json`) are refused with a warning log to prevent untrusted repositories from tampering with safety policies.
 - **Environment override**: The `YOKE_OLLAMA_URL` environment variable overrides `router.ollama_url` across all runs, applied over user config and prior to repo config (used in tests to point to a dead port for offline verification).
+- **Dashboard decisions card**: The web dashboard aggregates decision points by source (ollama, none, default, fallback, or dynamic sources) and tracks recent flagged guard events (deny, ask, escalate) with reasons and target paths in the Decision models card.
 
 
 ## Typical flow
@@ -364,6 +365,7 @@ Subcommands take `--run <id>`; default is the latest run for the current repo. `
   - **Stage strip**: Visual breadcrumbs across lifecycle stages (`grill`, `plan`, `tickets`, `run`, `finish`).
   - **Progress & Milestones**: Overall done vs remaining progress bar, plus milestone cards showing gate status, exit checks, and fix ticket counts.
   - **Usage & Cost**: Headline tokens (input + output, shown as `3.5M` / `143K`) with cache tokens separate, cost to 2 decimals, a **By Agent** table (`claude` vs `agy`), a **By Stage** table (code, qa, review, validate, docs, plan_review, wayfinder, router, pr_body) and the top 3 spending tickets. agy reports no cost, so it shows `unreported` and totals read `(+N unreported)`; yoke never estimates it.
+  - **Decision models**: Table of decision points by source counts (ollama, none, default, fallback, or dynamic sources) and recent flagged guard events (deny, ask, escalate) with timestamps, target paths, and reasons.
   - **Interactive session**: your own Claude Code chat on the repo (grill, plan, supervising) has no runner call, so it is read from `~/.claude/projects/<repo>` and shown as `interactive`. It counts messages within the run's window (creation to last event), skips sessions yoke spawned, and prorates the session's recorded cost to that window, marked `~`. Attribution is by time, so unrelated chats on the same repo during a run are included; subagent transcripts are not read.
   - **Ticket table**: Real-time ticket statuses, attempt counts, active stage and agent, tokens, cost and claude/agy split per ticket, last update timestamps, and explicit `waiting_for` dependency reasons.
   - **Projects**: a collapsible panel under the run picker (`GET /api/projects`) rolls runs up by target repo: runs, tokens, cost and agent split.
