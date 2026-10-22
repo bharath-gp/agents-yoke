@@ -177,10 +177,11 @@
     ],
     "grey_files": [
       ".github/workflows/*",
-      ".gitlab-ci.yml"
+      ".gitlab-ci.yml",
+      ".githooks/*"
     ],
     "network_patterns": [
-      "(?i)\\b(curl|wget|scp|nc|ssh|rsync)\\b"
+      "(?i)\\b(curl|wget|scp|nc|ssh|rsync|requests)\\b"
     ]
   },
   "skills": {

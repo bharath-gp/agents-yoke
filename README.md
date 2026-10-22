@@ -282,6 +282,27 @@ The decision router evaluates routing and safety triage via local Ollama models 
       "(?i)(curl|wget)\\b.*\\|\\s*(ba)?sh",
       "(?i)curl\\b.*-d\\s*@",
       "(?i)\\b(scp|nc)\\b"
+    ],
+    "secret_patterns": [
+      "(?i)AKIA[0-9A-Z]{16}",
+      "-----BEGIN [A-Z ]*PRIVATE KEY-----",
+      "(?i)gh[pousr]_[A-Za-z0-9_]{36,}"
+    ],
+    "sensitive_files": [
+      ".env*",
+      "~/.ssh/*",
+      "~/.aws/*",
+      "*.pem",
+      "*.key",
+      ".git/hooks/*"
+    ],
+    "grey_files": [
+      ".github/workflows/*",
+      ".gitlab-ci.yml",
+      ".githooks/*"
+    ],
+    "network_patterns": [
+      "(?i)\\b(curl|wget|scp|nc|ssh|rsync|requests)\\b"
     ]
   }
 }
@@ -289,7 +310,8 @@ The decision router evaluates routing and safety triage via local Ollama models 
 
 - **Per-point thresholds**: `router.thresholds` sets confidence floors for each decision point. Points omitted from `thresholds` fall back to `router.min_confidence` (default: 0.7).
 - **Retry bump**: When `router.retry_bump` is enabled (default: `true`), repeated attempts dynamically step up the model tier or effort.
-- **Safety guard**: `guard` controls path and command restrictions, sensitive/grey file inspection, and secret pattern detection.
+- **Safety guard**: `guard` controls path and command restrictions, sensitive/grey file inspection, secret pattern detection, and pre-commit diff scanning.
+- **Pre-commit diff scan**: Staged changes undergo diff analysis via `guard.scan_diff` and `guard.diff_inputs`. Deterministic denylist checks refuse added secrets matching `secret_patterns` without echoing secret text in reasons or events, and block modifications to `sensitive_files`. Grey zone findings (deletions exceeding `max_deleted_lines`, CI or hook files in `grey_files`, or network calls in `network_patterns`) are evaluated with model flags via Ollama; clean diffs allow immediately without a model call.
 - **User config only**: Like `gate_hooks`, `guard` and `router.thresholds.safety` are strictly enforced from user configuration (`~/.yoke/config.json`). Any definitions in repo configuration (`<repo>/.yoke.json`) are refused with a warning log to prevent untrusted repositories from tampering with safety policies.
 - **Environment override**: The `YOKE_OLLAMA_URL` environment variable overrides `router.ollama_url` across all runs, applied over user config and prior to repo config (used in tests to point to a dead port for offline verification).
 - **Dashboard decisions card**: The web dashboard aggregates decision points by source (ollama, none, default, fallback, or dynamic sources) and tracks recent flagged guard events (deny, ask, escalate) with reasons and target paths in the Decision models card.

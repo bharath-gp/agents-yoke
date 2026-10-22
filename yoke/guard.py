@@ -8,7 +8,7 @@ import json
 import os
 import re
 
-from . import config, router
+from . import config, gitops, router
 
 FILE_TOOLS = ("Read", "Edit", "Write", "NotebookEdit")
 
@@ -473,3 +473,219 @@ def hook_output(res, mode=None):
         })
     except Exception:
         return ""
+
+
+def diff_inputs(wt):
+    """Collect staged diff text, affected files, and total deleted lines for diff scan.
+
+    Args:
+        wt: Path to the git worktree.
+
+    Returns:
+        tuple: (diff_text, files, deleted_lines) where diff_text is truncated
+        to 200,000 characters, files is a list of affected relative file paths,
+        and deleted_lines is the integer sum of deleted lines from numstat.
+    """
+    diff_text = gitops.git(wt, "diff", "--cached").stdout[:200000]
+    numstat = gitops.git(wt, "diff", "--cached", "--numstat").stdout
+    files = []
+    deleted_lines = 0
+    for line in numstat.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        if len(parts) >= 3:
+            added_str, deleted_str = parts[0], parts[1]
+            path = "\t".join(parts[2:])
+            files.append(path)
+            if deleted_str.isdigit():
+                deleted_lines += int(deleted_str)
+    return diff_text, files, deleted_lines
+
+
+def scan_diff(cfg, diff_text, files, deleted_lines, run=None):
+    """Pre-commit diff scan: deterministic deny on secrets or sensitive files,
+    grey zone evaluation via model, or allow.
+
+    Args:
+        cfg: Configuration dictionary containing 'guard' settings.
+        diff_text: Staged diff string.
+        files: List of file paths affected in the diff.
+        deleted_lines: Total number of deleted lines.
+        run: Optional active Run instance for emitting 'guard' audit events.
+
+    Returns:
+        dict: {
+            "decision": "allow" | "deny" | "escalate",
+            "reason": str,
+            "findings": [{"kind": str, "detail": str}],
+            "source": "denylist" | "ollama" | "none" | "error"
+        }
+        Finding kinds include 'secret', 'sensitive_file', 'mass_delete',
+        'ci_or_hook', and 'network'. Secret findings cite pattern index and file,
+        never leaking secret text.
+    """
+    try:
+        guard_cfg = cfg["guard"]
+        if not guard_cfg.get("enabled", True):
+            res = {
+                "decision": "allow",
+                "reason": "guard disabled",
+                "findings": [],
+                "source": "none",
+            }
+            _event(run, "diff", res)
+            return res
+
+        deny_findings = []
+        grey_findings = []
+
+        secret_patterns = guard_cfg.get("secret_patterns", [])
+        network_patterns = guard_cfg.get("network_patterns", [])
+        sensitive_files = guard_cfg.get("sensitive_files", [])
+        grey_files = guard_cfg.get("grey_files", [])
+
+        compiled_secrets = []
+        for i, pat in enumerate(secret_patterns):
+            try:
+                compiled_secrets.append((i, re.compile(pat)))
+            except re.error:
+                pass
+
+        compiled_network = []
+        for i, pat in enumerate(network_patterns):
+            try:
+                compiled_network.append((i, re.compile(pat)))
+            except re.error:
+                pass
+
+        current_file = ""
+        in_hunk = False
+        diff_str = diff_text or ""
+        for line in diff_str.splitlines():
+            if line.startswith("diff --git "):
+                in_hunk = False
+                continue
+            if line.startswith("@@ "):
+                in_hunk = True
+                continue
+            if not in_hunk:
+                if line.startswith("+++ b/"):
+                    current_file = line[6:].strip()
+                    continue
+                if line.startswith("+++ /dev/null"):
+                    continue
+                if line.startswith("--- "):
+                    continue
+            if line.startswith("+"):
+                # Added line
+                attr_file = current_file or ((files[0] if files else "") or "")
+                content = line[1:]
+                # Check secrets
+                for i, rx in compiled_secrets:
+                    if rx.search(content):
+                        f = {"kind": "secret", "detail": "secret pattern %d in %s" % (i, attr_file)}
+                        if f not in deny_findings:
+                            deny_findings.append(f)
+                # Check network
+                for i, rx in compiled_network:
+                    if rx.search(content):
+                        f = {"kind": "network", "detail": "network pattern %d in %s" % (i, attr_file)}
+                        if f not in grey_findings:
+                            grey_findings.append(f)
+
+        # Check sensitive files
+        all_files = list(files or [])
+        if current_file and current_file != "/dev/null" and current_file not in all_files:
+            all_files.append(current_file)
+
+        for fpath in all_files:
+            if _match_path(fpath, sensitive_files, cwd=None):
+                f = {"kind": "sensitive_file", "detail": "sensitive file %s" % fpath}
+                if f not in deny_findings:
+                    deny_findings.append(f)
+
+        # Deterministic deny
+        if deny_findings:
+            res = {
+                "decision": "deny",
+                "reason": "; ".join(f["detail"] for f in deny_findings),
+                "findings": deny_findings,
+                "source": "denylist",
+            }
+            _event(run, "diff", res)
+            return res
+
+        # Grey findings from files and deleted lines
+        max_deleted = guard_cfg.get("max_deleted_lines", 500)
+        if deleted_lines and deleted_lines > max_deleted:
+            f = {"kind": "mass_delete", "detail": "mass delete: %d lines" % deleted_lines}
+            if f not in grey_findings:
+                grey_findings.append(f)
+
+        for fpath in all_files:
+            if _match_path(fpath, grey_files, cwd=None):
+                f = {"kind": "ci_or_hook", "detail": "ci or hook file %s" % fpath}
+                if f not in grey_findings:
+                    grey_findings.append(f)
+
+        # Clean diff -> allow without model call
+        if not grey_findings:
+            res = {
+                "decision": "allow",
+                "reason": "clean",
+                "findings": [],
+                "source": "none",
+            }
+            _event(run, "diff", res)
+            return res
+
+        # Grey findings present -> model call
+        details = "\n".join(f["detail"] for f in grey_findings)
+        state = "findings:\n" + details + "\ndiff:\n" + diff_str[:1500]
+        flags, mx = _model_flags(cfg, state, run)
+
+        if flags is None or mx is None:
+            res = {
+                "decision": "escalate",
+                "reason": "model unavailable",
+                "findings": grey_findings,
+                "source": "none",
+            }
+            _event(run, "diff", res)
+            return res
+
+        thr = config.threshold(cfg, "safety")
+        ask_floor = guard_cfg.get("ask_floor", 0.4)
+
+        if mx >= thr:
+            decision = "deny"
+            source = "ollama"
+            reason = "model flagged safety risk (%.2f)" % mx
+        elif mx < ask_floor:
+            decision = "allow"
+            source = "ollama"
+            reason = "model flags below threshold (%.2f)" % mx
+        else:
+            decision = "escalate"
+            source = "ollama"
+            reason = "model grey zone (%.2f)" % mx
+
+        res = {
+            "decision": decision,
+            "reason": reason,
+            "findings": grey_findings,
+            "source": source,
+        }
+        _event(run, "diff", res)
+        return res
+
+    except Exception as e:
+        res = {
+            "decision": None,
+            "source": "error",
+            "reason": str(e),
+            "findings": [],
+        }
+        _event(run, "diff", res)
+        return res
