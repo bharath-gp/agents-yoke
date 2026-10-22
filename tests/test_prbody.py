@@ -8,6 +8,8 @@ import unittest
 from tests.test_core import FAKE_CLI
 from yoke import adapters, config, prbody, schema, state
 
+os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
+
 
 class TestFindTemplate(unittest.TestCase):
     def setUp(self):

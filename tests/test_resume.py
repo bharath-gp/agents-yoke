@@ -8,6 +8,8 @@ from tests.test_core import FAKE_CLI
 from tests.test_pipeline import CODE, PipeBase, REV, resp, ticket, val
 from yoke import runcmds, scheduler
 
+os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RUNNER = ("import sys; from yoke import adapters, scheduler, state; from tests.test_core import FAKE_CLI; "
           "scheduler.run(state.Run.load(sys.argv[1]), adapter_for=lambda r: adapters.FakeAdapter(FAKE_CLI))")

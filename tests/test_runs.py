@@ -9,6 +9,8 @@ from unittest import mock
 
 from yoke import cli, config, planreview, runcmds, state
 
+os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
+
 
 class TestRuns(unittest.TestCase):
     def setUp(self):

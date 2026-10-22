@@ -9,6 +9,8 @@ from unittest import mock
 from tests import fake_cli
 from yoke import adapters, calls, config, schema, state
 
+os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 FAKE_CLI = os.path.join(HERE, "fake_cli.py")
 
@@ -706,6 +708,93 @@ class TestFakeCli(Tmp):
             with mock.patch("sys.stdout", new_callable=io.StringIO) as out:
                 fake_cli.main()
             self.assertEqual(out.getvalue().strip(), "lens_2")
+
+
+class ConfigGuardLayerTest(Tmp):
+    def test_repo_cannot_set_guard(self):
+        home, repo = os.path.join(self.tmp, "home"), os.path.join(self.tmp, "repo")
+        self.write("repo/.yoke.json", {"guard": {"deny_paths": []}})
+        with self.assertLogs(config.logger, level="WARNING") as log_cm:
+            cfg = config.load(repo, home=home)
+        self.assertTrue(any("refusing guard from repo config" in m for m in log_cm.output))
+        default_cfg = config.load(home=home)
+        self.assertEqual(cfg["guard"]["deny_paths"], default_cfg["guard"]["deny_paths"])
+        self.assertTrue(len(cfg["guard"]["deny_paths"]) > 0)
+
+    def test_repo_cannot_set_safety_threshold(self):
+        home, repo = os.path.join(self.tmp, "home"), os.path.join(self.tmp, "repo")
+        self.write("repo/.yoke.json", {"router": {"thresholds": {"safety": 0.99, "skill": 0.5}}})
+        with self.assertLogs(config.logger, level="WARNING") as log_cm:
+            cfg = config.load(repo, home=home)
+        self.assertTrue(any("refusing router.thresholds.safety from repo config" in m for m in log_cm.output))
+        self.assertEqual(cfg["router"]["thresholds"]["safety"], 0.7)
+        self.assertEqual(cfg["router"]["thresholds"]["skill"], 0.5)
+
+    def test_repo_router_without_thresholds_or_null_thresholds(self):
+        home, repo = os.path.join(self.tmp, "home"), os.path.join(self.tmp, "repo")
+        self.write("repo/.yoke.json", {"router": {"model": "custom:model"}})
+        cfg1 = config.load(repo, home=home)
+        self.assertEqual(cfg1["router"]["thresholds"]["safety"], 0.7)
+        # Load twice to verify no mutation of cached objects
+        cfg2 = config.load(repo, home=home)
+        self.assertEqual(cfg2["router"]["thresholds"]["safety"], 0.7)
+
+        self.write("repo/.yoke.json", {"router": {"thresholds": None, "min_confidence": 0.0}})
+        cfg3 = config.load(repo, home=home)
+        self.assertEqual(cfg3["router"]["thresholds"]["safety"], 0.7)
+        self.assertEqual(config.threshold(cfg3, "safety"), 0.7)
+
+    def test_env_ollama_url_applies(self):
+        home = os.path.join(self.tmp, "home")
+        with mock.patch.dict(os.environ, {"YOKE_OLLAMA_URL": "http://x:1"}):
+            cfg = config.load(home=home)
+            self.assertEqual(cfg["router"]["ollama_url"], "http://x:1")
+            cfg_override = config.load(home=home, overrides={"router": {"ollama_url": "http://override:2"}})
+            self.assertEqual(cfg_override["router"]["ollama_url"], "http://override:2")
+
+    def test_threshold_default_and_override(self):
+        home = os.path.join(self.tmp, "home")
+        cfg = config.load(home=home)
+        self.assertEqual(config.threshold(cfg, "unknown"), cfg["router"]["min_confidence"])
+        self.assertEqual(config.threshold(cfg, "after_failure"), 0.85)
+
+    def test_model_for_tier(self):
+        cfg = {"models": {"fake": {"cheap": {"model": "c", "effort": "low"}}}}
+        self.assertEqual(config.model_for_tier(cfg, "fake", "cheap"), ("c", "low"))
+        self.assertEqual(config.model_for_tier(cfg, "fake", "missing_tier"), (None, None))
+        self.assertEqual(config.model_for_tier(cfg, "missing_agent", "cheap"), (None, None))
+
+    def test_defaults_regex_and_new_keys(self):
+        import re
+        cfg = config.load(home=self.tmp)
+        self.assertIn("skills", cfg)
+        self.assertIn("e2e", cfg)
+        self.assertEqual(cfg["timeouts_s"]["e2e"], 900)
+        self.assertEqual(cfg["roles"]["by_role"]["e2e"], "primary")
+        self.assertTrue(cfg["router"]["retry_bump"])
+        guard = cfg["guard"]
+        for key in ("deny_commands", "secret_patterns", "network_patterns"):
+            for pat in guard[key]:
+                self.assertIsNotNone(re.compile(pat))
+
+    def test_user_safety_threshold_survives_repo(self):
+        home, repo = os.path.join(self.tmp, "home"), os.path.join(self.tmp, "repo")
+        self.write("home/config.json", {"router": {"thresholds": {"safety": 0.8}}})
+        self.write("repo/.yoke.json", {"guard": {"ask_floor": 0.9}, "router": {"thresholds": {"safety": 0.1}}})
+        with self.assertLogs(config.logger, level="WARNING"):
+            cfg = config.load(repo, home=home)
+        self.assertEqual(cfg["router"]["thresholds"]["safety"], 0.8)
+        self.assertEqual(config.threshold(cfg, "safety"), 0.8)
+        repo_data = json.loads(slurp(os.path.join(repo, ".yoke.json")))
+        self.assertIn("guard", repo_data)
+        self.assertEqual(repo_data["router"]["thresholds"]["safety"], 0.1)
+
+    def test_repo_router_null_does_not_crash(self):
+        home, repo = os.path.join(self.tmp, "home"), os.path.join(self.tmp, "repo")
+        self.write("repo/.yoke.json", {"router": None})
+        cfg = config.load(repo, home=home)
+        self.assertIsInstance(cfg["router"], dict)
+        self.assertEqual(cfg["router"]["thresholds"]["safety"], 0.7)
 
 
 if __name__ == "__main__":

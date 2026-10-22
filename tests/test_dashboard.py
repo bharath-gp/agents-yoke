@@ -12,6 +12,8 @@ import unittest
 
 from yoke import cli, config, dashboard, milestones, runcmds, state
 
+os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
+
 
 class TestDashboard(unittest.TestCase):
     def setUp(self):

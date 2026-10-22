@@ -9,6 +9,8 @@ from unittest import mock
 from tests.test_core import FAKE_CLI, Tmp
 from yoke import adapters, cli, planreview, schema, state
 
+os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
+
 APPROVE = {"verdict": "approve", "findings": [], "summary": "ok"}
 CHANGES = {"verdict": "changes_requested", "summary": "fix",
            "findings": [{"severity": "major", "section": "2", "issue": "gap", "suggestion": "fill"}]}

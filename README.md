@@ -245,6 +245,54 @@ yoke nudge <ticket_id> --note "<guidance text>"
 - **Feedback loop**: The note is injected into prompt feedback on the ticket's next attempt or review revision round.
 - **Use cases**: Guiding an agent back on track when monitoring progress, clarifying ambiguities, or suggesting alternative approaches without restarting the run.
 
+### Decision router and safety guard
+
+The decision router evaluates routing and safety triage via local Ollama models (`/v1/systemone`) or cheap agent fallbacks:
+
+```json
+{
+  "router": {
+    "ollama_url": "http://127.0.0.1:11434",
+    "model": "tev1:4b",
+    "min_confidence": 0.7,
+    "thresholds": {
+      "safety": 0.7,
+      "test_failure": 0.7,
+      "after_failure": 0.85,
+      "gate_failure": 0.85,
+      "validator_reject": 0.75,
+      "model_tier": 0.7,
+      "effort": 0.7,
+      "skill": 0.6,
+      "e2e_pick": 0.6,
+      "e2e_verdict": 0.8
+    },
+    "retry_bump": true
+  },
+  "guard": {
+    "enabled": true,
+    "chat_hook": true,
+    "ask_floor": 0.4,
+    "ollama_timeout_s": 5,
+    "max_deleted_lines": 500,
+    "fast_allow_tools": ["Read", "Grep", "Glob"],
+    "deny_paths": [".env*", "~/.ssh/*", "~/.aws/*", "*.pem", "*.key", ".git/hooks/*"],
+    "deny_commands": [
+      "(?i)rm\\s+-rf?\\s+",
+      "(?i)(curl|wget)\\b.*\\|\\s*(ba)?sh",
+      "(?i)curl\\b.*-d\\s*@",
+      "(?i)\\b(scp|nc)\\b"
+    ]
+  }
+}
+```
+
+- **Per-point thresholds**: `router.thresholds` sets confidence floors for each decision point. Points omitted from `thresholds` fall back to `router.min_confidence` (default: 0.7).
+- **Retry bump**: When `router.retry_bump` is enabled (default: `true`), repeated attempts dynamically step up the model tier or effort.
+- **Safety guard**: `guard` controls path and command restrictions, sensitive/grey file inspection, and secret pattern detection.
+- **User config only**: Like `gate_hooks`, `guard` and `router.thresholds.safety` are strictly enforced from user configuration (`~/.yoke/config.json`). Any definitions in repo configuration (`<repo>/.yoke.json`) are refused with a warning log to prevent untrusted repositories from tampering with safety policies.
+- **Environment override**: The `YOKE_OLLAMA_URL` environment variable overrides `router.ollama_url` across all runs, applied over user config and prior to repo config (used in tests to point to a dead port for offline verification).
+
 
 ## Typical flow
 

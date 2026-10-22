@@ -7,6 +7,8 @@ from contextlib import redirect_stdout
 
 from yoke import cli, config, milestones, pipeline, runcmds, state, tickets
 
+os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
+
 
 class TestMap(unittest.TestCase):
     def setUp(self):

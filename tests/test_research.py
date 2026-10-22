@@ -11,6 +11,8 @@ from tests.test_gitops import git
 from tests.test_pipeline import PipeBase, resp, ticket
 from yoke import adapters, pipeline, research, schema, state, tickets
 
+os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
+
 DOC = "docs/research/t-001-ticket-1.md"
 SEARCH = {"status": "found", "queries": ["q"], "tools_used": ["WebSearch"], "summary": "s",
           "sources": [{"url": "https://a.example", "title": "A", "excerpt": "e", "relevance": "r"}]}

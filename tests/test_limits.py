@@ -8,6 +8,8 @@ from tests.test_core import FAKE_CLI, SCHEMA
 from tests.test_pipeline import PipeBase, ticket, resp, CODE, REV, val
 from yoke import adapters, calls, config, limits, pipeline, runcmds, scheduler, state
 
+os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
+
 
 class LimitsTest(unittest.TestCase):
     def setUp(self):

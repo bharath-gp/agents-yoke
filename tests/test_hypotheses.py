@@ -8,6 +8,8 @@ from tests.test_core import FAKE_CLI
 from tests.test_pipeline import CODE, PipeBase, REV, qa, resp, ticket, val
 from yoke import adapters, pipeline, router, scheduler
 
+os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
+
 
 def slurp(path):
     with open(path) as f:

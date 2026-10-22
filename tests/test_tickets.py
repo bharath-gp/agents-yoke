@@ -11,6 +11,8 @@ try:
 except ImportError:
     from test_router import FAKE_CLI
 
+os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
+
 
 def tk(i, deps=(), **kw):
     t = {"id": "T-%03d" % i, "title": "t%d" % i, "type": "feature", "description": "d",

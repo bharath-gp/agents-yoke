@@ -8,6 +8,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from yoke import adapters, config, router, state
 
+os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
+
 FAKE_CLI = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fake_cli.py")
 
 
@@ -147,6 +149,119 @@ class TestRoute(unittest.TestCase):
             "routing": {"chore": {"overrides": {"code": {"model": "m1", "effort": "low"}}}}})
         s = router.route_ticket(cfg, {"type": "chore"})["stages"][0]
         self.assertEqual((s["stage"], s["model"], s["effort"]), ("code", "m1", "low"))
+
+
+class DecideTest(RouterCase):
+    def test_decide_acts_above_threshold(self):
+        Stub.answers = {"q": choice("a", 0.9)}
+
+        def parse(ans):
+            return ans["q"]["choice"], ans["q"]["confidence"]
+
+        out = router.decide(self.run_.cfg, "classify_ticket", "state", {"q": "inst"}, parse, run=self.run_)
+        self.assertEqual(out["result"], "a")
+        self.assertEqual(out["source"], "ollama")
+        self.assertEqual(out["confidence"], 0.9)
+        self.assertIsNone(out["fallback_reason"])
+        ev = self.events()[-1]
+        self.assertEqual(ev.get("point"), "classify_ticket")
+        self.assertEqual(ev.get("source"), "ollama")
+
+    def test_decide_below_threshold_is_none(self):
+        Stub.answers = {"q": choice("a", 0.5)}
+
+        def parse(ans):
+            return ans["q"]["choice"], ans["q"]["confidence"]
+
+        out = router.decide(self.run_.cfg, "classify_ticket", "state", {"q": "inst"}, parse, run=self.run_)
+        self.assertIsNone(out["result"])
+        self.assertEqual(out["source"], "none")
+        self.assertEqual(out["confidence"], 0.5)
+        self.assertIn("confidence", out["fallback_reason"])
+
+    def test_decide_per_point_threshold(self):
+        cfg = config.deep_merge(self.run_.cfg, {"router": {"thresholds": {"x": 0.95}}})
+        Stub.answers = {"q": choice("a", 0.9)}
+
+        def parse(ans):
+            return ans["q"]["choice"], ans["q"]["confidence"]
+
+        out = router.decide(cfg, "x", "state", {"q": "inst"}, parse)
+        self.assertIsNone(out["result"])
+        self.assertEqual(out["source"], "none")
+        self.assertEqual(out["confidence"], 0.9)
+
+    def test_decide_ollama_down_is_none(self):
+        cfg = config.deep_merge(self.run_.cfg, {"router": {"ollama_url": "http://127.0.0.1:%d" % dead_port()}})
+
+        def parse(ans):
+            return "a", 0.9
+
+        out = router.decide(cfg, "x", "state", {}, parse)
+        self.assertEqual(out["source"], "none")
+        self.assertIsNone(out["result"])
+        self.assertIn("ollama failed", out["fallback_reason"])
+
+    def test_decide_parse_error_is_none(self):
+        Stub.answers = {}
+
+        def parse(ans):
+            raise KeyError("missing")
+
+        out = router.decide(self.run_.cfg, "x", "state", {}, parse)
+        self.assertEqual(out["source"], "none")
+        self.assertIsNone(out["result"])
+        self.assertIn("ollama failed", out["fallback_reason"])
+
+    def test_decide_exact_threshold_acts(self):
+        Stub.answers = {"q": choice("exact", 0.7)}
+
+        def parse(ans):
+            return ans["q"]["choice"], ans["q"]["confidence"]
+
+        out = router.decide(self.run_.cfg, "unknown_point", "state", {"q": "inst"}, parse, run=self.run_)
+        self.assertEqual(out["result"], "exact")
+        self.assertEqual(out["source"], "ollama")
+        self.assertEqual(out["confidence"], 0.7)
+
+    def test_decide_conf_none_is_none(self):
+        Stub.answers = {"q": {"choice": "a"}}
+
+        def parse(ans):
+            return ans["q"]["choice"], None
+
+        out = router.decide(self.run_.cfg, "x", "state", {}, parse)
+        self.assertEqual(out["source"], "none")
+        self.assertIsNone(out["result"])
+        self.assertIn("confidence", out["fallback_reason"])
+
+    def test_decide_no_run_no_event(self):
+        Stub.answers = {"q": choice("a", 0.9)}
+
+        def parse(ans):
+            return ans["q"]["choice"], ans["q"]["confidence"]
+
+        events_before = len(self.events())
+        out = router.decide(self.run_.cfg, "x", "state", {}, parse, run=None)
+        self.assertEqual(out["source"], "ollama")
+        self.assertEqual(len(self.events()), events_before)
+
+    def test_ollama_timeout_passed(self):
+        from unittest import mock
+        with mock.patch("urllib.request.urlopen") as mock_open:
+            mock_open.return_value.__enter__.return_value.read.return_value = b'{"answers": {}}'
+            try:
+                router._ollama(self.run_.cfg, "s", {}, timeout=42)
+            except Exception:
+                pass
+            self.assertEqual(mock_open.call_args[1].get("timeout"), 42)
+
+    def test_decide_timeout_passed(self):
+        from unittest import mock
+        with mock.patch("yoke.router._ollama") as mock_ollama:
+            mock_ollama.return_value = {"q": choice("a", 0.9)}
+            router.decide(self.run_.cfg, "x", "state", {}, lambda a: ("a", 0.9), timeout=15)
+            self.assertEqual(mock_ollama.call_args[1].get("timeout"), 15)
 
 
 if __name__ == "__main__":

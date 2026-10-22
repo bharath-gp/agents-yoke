@@ -18,7 +18,8 @@
       "factcheck": "primary",
       "pr_body": "primary",
       "hypotheses": "secondary",
-      "hypotheses_rank": "primary"
+      "hypotheses_rank": "primary",
+      "e2e": "primary"
     }
   },
   "models": {},
@@ -75,7 +76,8 @@
     "pr_body": 300,
     "wayfinder": 1200,
     "gate_hook": 300,
-    "hypotheses": 600
+    "hypotheses": 600,
+    "e2e": 900
   },
   "kill_grace_s": 15,
   "router": {
@@ -83,6 +85,19 @@
     "model": "tev1:4b",
     "llm_model": "claude-haiku-5-5",
     "min_confidence": 0.7,
+    "thresholds": {
+      "safety": 0.7,
+      "test_failure": 0.7,
+      "after_failure": 0.85,
+      "gate_failure": 0.85,
+      "validator_reject": 0.75,
+      "model_tier": 0.7,
+      "effort": 0.7,
+      "skill": 0.6,
+      "e2e_pick": 0.6,
+      "e2e_verdict": 0.8
+    },
+    "retry_bump": true,
     "fallback": {"agent": "claude", "model": "claude-haiku-5-5", "effort": "low"}
   },
   "test_command": null,
@@ -121,5 +136,65 @@
       "qa": []
     },
     "before_close": []
+  },
+  "guard": {
+    "enabled": true,
+    "chat_hook": true,
+    "ask_floor": 0.4,
+    "ollama_timeout_s": 5,
+    "max_deleted_lines": 500,
+    "fast_allow_tools": [
+      "Read",
+      "Grep",
+      "Glob"
+    ],
+    "deny_paths": [
+      ".env*",
+      "~/.ssh/*",
+      "~/.aws/*",
+      "*.pem",
+      "*.key",
+      ".git/hooks/*"
+    ],
+    "deny_commands": [
+      "(?i)rm\\s+-rf?\\s+",
+      "(?i)(curl|wget)\\b.*\\|\\s*(ba)?sh",
+      "(?i)curl\\b.*-d\\s*@",
+      "(?i)\\b(scp|nc)\\b"
+    ],
+    "secret_patterns": [
+      "(?i)AKIA[0-9A-Z]{16}",
+      "-----BEGIN [A-Z ]*PRIVATE KEY-----",
+      "(?i)gh[pousr]_[A-Za-z0-9_]{36,}"
+    ],
+    "sensitive_files": [
+      ".env*",
+      "~/.ssh/*",
+      "~/.aws/*",
+      "*.pem",
+      "*.key",
+      ".git/hooks/*"
+    ],
+    "grey_files": [
+      ".github/workflows/*",
+      ".gitlab-ci.yml"
+    ],
+    "network_patterns": [
+      "(?i)\\b(curl|wget|scp|nc|ssh|rsync)\\b"
+    ]
+  },
+  "skills": {
+    "allowlist": [],
+    "max": 3,
+    "agy_mode": "inline",
+    "inline_chars": 4000,
+    "roots": []
+  },
+  "e2e": {
+    "url": null,
+    "start_command": null,
+    "ready_timeout_s": 60,
+    "max_steps": 12,
+    "candidates": 20
   }
 }

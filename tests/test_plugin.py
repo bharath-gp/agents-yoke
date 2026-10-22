@@ -11,6 +11,8 @@ from unittest import mock
 
 from yoke import cli, config, state
 
+os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SKILLS = ("setup", "grill", "plan", "tickets", "run", "resume", "status", "finish", "go", "models", "dashboard")
 

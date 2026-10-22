@@ -10,6 +10,8 @@ from unittest import mock
 
 from yoke import cli, config, models
 
+os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
+
 
 class TestListModels(unittest.TestCase):
     def test_claude_static_models(self):

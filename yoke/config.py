@@ -41,22 +41,56 @@ def _read(path, required=False):
 def load(repo=None, home=None, overrides=None):
     """Load configuration merged across defaults, user config, repo config, and overrides.
 
-    gate_hooks is accepted only from user config (~/.yoke/config.json). If defined in
-    repo config, it is refused and logged with a warning.
+    gate_hooks, guard, and router.thresholds.safety are accepted only from user config
+    (~/.yoke/config.json). If defined in repo config, they are refused and logged with a warning.
     """
     cfg = _read(DEFAULTS_PATH, required=True)
     cfg = deep_merge(cfg, _read(os.path.join(home or yoke_home(), "config.json")))
+    url = os.environ.get("YOKE_OLLAMA_URL")
+    if url:
+        cfg["router"]["ollama_url"] = url
     if repo:
         repo_path = os.path.join(repo, ".yoke.json")
         repo_cfg = _read(repo_path)
-        if "gate_hooks" in repo_cfg:
-            logger.warning(
-                "refusing gate_hooks from repo config %s: gate_hooks may only be configured in user config",
-                repo_path,
-            )
+        user_safety = cfg.get("router", {}).get("thresholds", {}).get("safety", 0.7)
+        has_gate_hooks = "gate_hooks" in repo_cfg
+        has_guard = "guard" in repo_cfg
+        repo_router = repo_cfg.get("router")
+        has_safety = (
+            isinstance(repo_router, dict)
+            and "thresholds" in repo_router
+            and (not isinstance(repo_router["thresholds"], dict) or "safety" in repo_router["thresholds"])
+        )
+        if has_gate_hooks or has_guard or has_safety:
             repo_cfg = copy.deepcopy(repo_cfg)
-            del repo_cfg["gate_hooks"]
+            if has_gate_hooks:
+                logger.warning(
+                    "refusing gate_hooks from repo config %s: gate_hooks may only be configured in user config",
+                    repo_path,
+                )
+                del repo_cfg["gate_hooks"]
+            if has_guard:
+                logger.warning(
+                    "refusing guard from repo config %s: guard may only be configured in user config",
+                    repo_path,
+                )
+                del repo_cfg["guard"]
+            if has_safety:
+                logger.warning(
+                    "refusing router.thresholds.safety from repo config %s: router.thresholds.safety may only be configured in user config",
+                    repo_path,
+                )
+                if not isinstance(repo_cfg["router"]["thresholds"], dict):
+                    repo_cfg["router"].pop("thresholds", None)
+                else:
+                    repo_cfg["router"]["thresholds"].pop("safety", None)
         cfg = deep_merge(cfg, repo_cfg)
+        if "router" in cfg:
+            if not isinstance(cfg["router"], dict):
+                cfg["router"] = {}
+            if not isinstance(cfg["router"].get("thresholds"), dict):
+                cfg["router"]["thresholds"] = {}
+            cfg["router"]["thresholds"]["safety"] = user_safety
     return deep_merge(cfg, overrides or {})
 
 
@@ -173,6 +207,33 @@ def model_for(cfg, agent, role):
     if role not in PLAN_ROLES and role not in by_roles:
         return None, None
     tier = "plan" if role in PLAN_ROLES else "cheap"
+    agent_name = getattr(agent, "name", agent)
+    models = cfg.get("models") if isinstance(cfg, dict) else None
+    if not isinstance(models, dict):
+        return None, None
+    agent_cfg = models.get(agent_name)
+    if not isinstance(agent_cfg, dict):
+        return None, None
+    tier_cfg = agent_cfg.get(tier)
+    if not isinstance(tier_cfg, dict):
+        return None, None
+    return tier_cfg.get("model"), tier_cfg.get("effort")
+
+
+def threshold(cfg, point):
+    """Return threshold for decision point, defaulting to min_confidence."""
+    router = cfg.get("router", {}) if isinstance(cfg, dict) else {}
+    thresholds = router.get("thresholds") or {}
+    if point == "safety":
+        return thresholds.get("safety", 0.7)
+    return thresholds.get(point, router.get("min_confidence", 0.7))
+
+
+def model_for_tier(cfg, agent, tier):
+    """Concrete (model, effort) tuple for (agent, tier); either may be None.
+
+    Returns (None, None) when absent or malformed.
+    """
     agent_name = getattr(agent, "name", agent)
     models = cfg.get("models") if isinstance(cfg, dict) else None
     if not isinstance(models, dict):

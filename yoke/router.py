@@ -17,13 +17,13 @@ def _out(result, source, model, confidence, reason=None):
             "fallback_reason": reason}
 
 
-def _ollama(cfg, state, questions):
+def _ollama(cfg, state, questions, timeout=60):
     """POST /v1/systemone; returns the `answers` dict. Raises on any failure."""
     r = cfg["router"]
     body = json.dumps({"model": r["model"], "state": state, "questions": questions}).encode()
     req = urllib.request.Request(r["ollama_url"].rstrip("/") + "/v1/systemone", data=body,
                                  headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=60) as resp:
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.load(resp)["answers"]
 
 
@@ -52,8 +52,8 @@ def _decide(run, fn, state, questions, from_ollama, prompt, default, adapter):
         errs = schema.validate(result, schema.load_schema("router-" + sname))
         if errs:
             reason = "ollama result invalid: " + "; ".join(errs)
-        elif conf < cfg["router"]["min_confidence"]:
-            reason = "ollama confidence %.2f < %.2f" % (conf, cfg["router"]["min_confidence"])
+        elif conf < config.threshold(cfg, fn):
+            reason = "ollama confidence %.2f < %.2f" % (conf, config.threshold(cfg, fn))
         else:
             return _log(run, fn, _out(result, "ollama", model, conf))
     except Exception as e:
@@ -62,6 +62,61 @@ def _decide(run, fn, state, questions, from_ollama, prompt, default, adapter):
     if out is not None:
         return _log(run, fn, _out(out, "fallback", cfg["router"]["llm_model"], out.get("confidence"), reason))
     return _log(run, fn, _out(default, "default", None, None, reason + "; fallback agent failed"))
+
+
+def decide(cfg, point, state, questions, parse, run=None, timeout=60):
+    """Ollama-only decision path that never raises and never calls an agent."""
+    thr = config.threshold(cfg, point)
+    result = None
+    conf = None
+    source = "none"
+    reason = None
+    try:
+        raw = _ollama(cfg, (state or "")[:STATE_CHARS], questions, timeout=timeout)
+        result, conf = parse(raw)
+        if conf is None or conf < thr:
+            source = "none"
+            result = None
+            if conf is None:
+                reason = "ollama confidence none < %.2f" % thr
+            else:
+                reason = "ollama confidence %.2f < %.2f" % (conf, thr)
+        else:
+            source = "ollama"
+            reason = None
+    except Exception as e:
+        source = "none"
+        result = None
+        reason = "ollama failed: %s" % e
+
+    out = {
+        "point": point,
+        "result": result,
+        "source": source,
+        "confidence": conf,
+        "threshold": thr,
+        "fallback_reason": reason,
+    }
+
+    if run is not None:
+        try:
+            choice = str(result)[:200] if result is not None else None
+            model = cfg["router"]["model"]
+            run.event(
+                "router",
+                fn=point,
+                point=point,
+                source=source,
+                choice=choice,
+                confidence=conf,
+                threshold=thr,
+                fallback_reason=reason,
+                model=model,
+            )
+        except Exception:
+            pass
+
+    return out
 
 
 def schema_name_of(fn):

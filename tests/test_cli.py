@@ -5,6 +5,8 @@ import unittest
 
 from yoke import cli, config
 
+os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
+
 
 class TestDoctor(unittest.TestCase):
     def test_runs_and_reports_python(self):

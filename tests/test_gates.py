@@ -5,6 +5,8 @@ import unittest
 from tests.test_pipeline import CODE, DOCS, PipeBase, REV, qa, resp, ticket, val
 from yoke import gitops, milestones, runcmds, scheduler
 
+os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
+
 
 def ms_ticket(n, milestone="MS-01", type_="chore", deps=()):
     t = ticket(n, type_=type_, deps=deps)

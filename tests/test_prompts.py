@@ -5,6 +5,8 @@ import unittest
 
 from yoke import config, schema
 
+os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
+
 PROMPTS = os.path.join(os.path.dirname(__file__), "..", "yoke", "prompts")
 NO_SHELL = "You have no shell in this environment. Do not run any command; edit files only."
 
