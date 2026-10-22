@@ -961,7 +961,18 @@ def _attempt_body(run, adapter_for, env, ticket, st, wt, stages, start_idx, resu
             if out["verdict"] != "approve" or unmet:
                 parts = [out["feedback_for_coder"]] + ["Unmet criterion: " + c for c in unmet]
                 parts += ["%s %s: %s" % (i["severity"], i["file"], i["description"]) for i in out["issues"]]
-                return "\n".join(p for p in parts if p), results, test_cmd, rerun_rc
+                fb = "\n".join(p for p in parts if p)
+                d = router.validator_route(run, ticket, out)
+                r = d["result"] if d.get("source") == "ollama" else None
+                if r == "escalate":
+                    summary = out.get("summary") or ""
+                    raise Escalate("validator reject, decision model escalated: " + summary[:500])
+                if r in ("qa", "docs") and r in stages and stages.index(r) < stages.index("validate"):
+                    st["start_stage"] = r
+                    fb = ("Decision: validator reject routed to %s.\n" % r) + fb
+                elif r == "docs":
+                    fb = "Decision: validator reject routed to docs.\n" + fb
+                return fb, results, test_cmd, rerun_rc
     return None, results, test_cmd, rerun_rc
 
 
@@ -1127,6 +1138,11 @@ def run_ticket(run, ticket, adapter_for=None, env=None, merge_lock=None):
                 except Exception as e:
                     run.event("usage_error", ticket=tid, error=str(e))
                 return "closed"
+            if st["attempt"] >= 1:
+                d = router.after_failure(run, ticket, st["attempt"], fb)
+                if d.get("source") == "ollama" and d.get("result") in ("split", "replan", "escalate"):
+                    choice = d["result"]
+                    raise Escalate("decision model recommends %s after attempt %d: %s" % (choice, st["attempt"], fb[:500]))
             if st["attempt"] + 1 > cfg["max_attempts_per_ticket"]:
                 raise Escalate("max attempts (%d) reached; last feedback:\n%s" % (st["attempt"], fb))
             st["attempt"] += 1

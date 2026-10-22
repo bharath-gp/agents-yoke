@@ -201,6 +201,68 @@ def test_failure_category(run, ticket, cmd, tail):
     return decide(run.cfg, "test_failure", state, q, parse, run)
 
 
+def validator_route(run, ticket, out):
+    """Route a validator rejection to coder, qa, docs, or escalate."""
+    q = {
+        "route": {
+            "type": "choice",
+            "instructions": "Where should this validator rejection be routed?",
+            "criteria": {
+                "coder": "code needs changes",
+                "qa": "tests are weak or missing",
+                "docs": "only docs are lacking",
+                "escalate": "the spec is ambiguous or contradictory",
+            },
+        }
+    }
+    title = ticket.get("title", "") if isinstance(ticket, dict) else str(ticket)
+    out = out or {}
+    summary = out.get("summary") or ""
+    fb_coder = out.get("feedback_for_coder") or ""
+    unmet = [
+        c.get("criterion", "") if isinstance(c, dict) else str(c)
+        for c in (out.get("exit_criteria") or [])
+        if isinstance(c, dict) and not c.get("met")
+    ]
+    issues = [
+        ("%s %s: %s" % (i.get("severity", ""), i.get("file", ""), i.get("description", ""))).strip()
+        if isinstance(i, dict) else str(i)
+        for i in (out.get("issues") or [])
+    ]
+    parts = ["Ticket: %s" % title]
+    if summary:
+        parts.append("Summary: %s" % summary)
+    if fb_coder:
+        parts.append("Feedback for coder:\n%s" % fb_coder)
+    if unmet:
+        parts.append("Unmet criteria:\n" + "\n".join(unmet))
+    if issues:
+        parts.append("Issues:\n" + "\n".join(issues))
+    state = "\n\n".join(parts)[-STATE_CHARS:]
+    parse = lambda a: (a["route"]["choice"], a["route"]["confidence"])
+    return decide(run.cfg, "validator_reject", state, q, parse, run)
+
+
+def after_failure(run, ticket, attempt, feedback):
+    """Ask Ollama decision point 'after_failure' whether to retry, split, replan, or escalate."""
+    q = {
+        "next": {
+            "type": "choice",
+            "instructions": "What should be done after this failed attempt?",
+            "criteria": {
+                "retry": "retry the attempt",
+                "split": "the ticket is too big",
+                "replan": "the plan is wrong for this",
+                "escalate": "needs a human",
+            },
+        }
+    }
+    title = ticket.get("title", "") if isinstance(ticket, dict) else str(ticket)
+    state = ("Ticket: %s\nAttempt: %d\nFeedback:\n%s" % (title, attempt, feedback or ""))[-STATE_CHARS:]
+    parse = lambda a: (a["next"]["choice"], a["next"]["confidence"])
+    return decide(run.cfg, "after_failure", state, q, parse, run)
+
+
 def assert_check(run, claim, evidence, adapter=None):
     state = ("Evidence:\n%s" % evidence)[-STATE_CHARS:]
 

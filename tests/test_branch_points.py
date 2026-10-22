@@ -15,10 +15,20 @@ def choice(c, conf):
 
 class _OllamaPatcher:
     def __init__(self, answers_by_key):
-        self.answers_by_key = answers_by_key
+        self.answers_by_key = dict(answers_by_key)
 
         def fake_ollama(cfg, state, questions, timeout=60):
-            return {k: self.answers_by_key[k] for k in questions if k in self.answers_by_key}
+            res = {}
+            for k in questions:
+                if k in self.answers_by_key:
+                    ans = self.answers_by_key[k]
+                    if callable(ans):
+                        res[k] = ans(questions[k])
+                    elif isinstance(ans, list):
+                        res[k] = ans.pop(0) if len(ans) > 1 else ans[0]
+                    else:
+                        res[k] = ans
+            return res
 
         self._patcher = mock.patch("yoke.router._ollama", side_effect=fake_ollama)
         self._active = False
@@ -212,24 +222,23 @@ class BranchTest(PipeBase):
         self.assertEqual(len(stage_skip_events), 0)
 
     def test_docs_start_keeps_qa_gate(self):
+        self.patch_ollama({"route": choice("docs", 0.9), "next": choice("retry", 0.9)})
         self.setup_tickets(
             [ticket(1, type_="feature")],
             {
-                "docs": [resp(DOCS)],
+                "code": [resp(CODE, "c1", write={"f1.txt": "x"})],
+                "qa": [resp(qa("true", status="pass"))],
+                "docs": [resp(DOCS), resp(DOCS)],
+                "validate": [
+                    resp(val(ok=False)),
+                    resp(val(ok=True)),
+                ],
                 "router": [{"exit": 1}],
             },
         )
-        st = pipeline.ticket_state(self.run_, "T-001")
-        st["start_stage"] = "docs"
-        st["last_results"] = {
-            "code": CODE,
-            "review": REV,
-            "qa": qa("true", status="pass"),
-            "validate": val(ok=True),
-        }
-        st["last_test_cmd"] = "true"
-        st["last_rerun_rc"] = 0
-        pipeline.save_state(self.run_, "T-001", st)
+        cfg = self.run_.cfg
+        cfg["routing"]["feature"]["stages"] = ["code", "qa", "docs", "validate"]
+        self.run_.update(config=cfg)
 
         self.assertEqual(self.go(), "done")
         self.assertEqual(self.tstate(1)["status"], "closed")
@@ -238,9 +247,9 @@ class BranchTest(PipeBase):
         self.assertEqual(self.tstate(1).get("last_rerun_rc"), 0)
         with open(self.script + ".pos") as f:
             pos = json.load(f)
-        self.assertEqual(pos.get("code", 0), 0)
-        self.assertEqual(pos.get("qa", 0), 0)
-        self.assertEqual(pos.get("docs", 0), 1)
+        self.assertEqual(pos.get("code", 0), 1)
+        self.assertEqual(pos.get("qa", 0), 1)
+        self.assertEqual(pos.get("docs", 0), 2)
         with open(self.run_.path("events.jsonl")) as f:
             events = [json.loads(line) for line in f if line.strip()]
         stage_skip_events = [e for e in events if e.get("kind") == "stage_skip"]
@@ -250,6 +259,291 @@ class BranchTest(PipeBase):
         gates = [e for e in events if e.get("kind") == "close_gate"]
         self.assertTrue(len(gates) >= 1)
         self.assertTrue(gates[-1]["gate"]["qa"])
+
+    def test_validator_reject_routes_to_qa(self):
+        self.patch_ollama({"route": choice("qa", 0.9), "next": choice("retry", 0.9)})
+        self.setup_tickets(
+            [ticket(1, type_="refactor")],
+            {
+                "code": [resp(CODE, "c1", write={"f1.txt": "x"})],
+                "review": [resp(REV)] * 4,
+                "qa": [
+                    resp(qa("true", status="pass")),
+                    resp(qa("true", status="pass")),
+                ],
+                "validate": [
+                    resp(val(ok=False)),
+                    resp(val(ok=True)),
+                ],
+                "router": [{"exit": 1}],
+            },
+        )
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+        self.assertNotIn("start_stage", self.tstate(1))
+        with open(self.script + ".pos") as f:
+            pos = json.load(f)
+        self.assertEqual(pos.get("code", 0), 1)
+        self.assertEqual(pos.get("qa", 0), 2)
+        with open(self.run_.path("events.jsonl")) as f:
+            events = [json.loads(line) for line in f if line.strip()]
+        stage_skip_events = [e for e in events if e.get("kind") == "stage_skip"]
+        self.assertEqual(len(stage_skip_events), 1)
+        self.assertEqual(stage_skip_events[0]["start_stage"], "qa")
+        self.assertEqual(stage_skip_events[0]["ticket"], "T-001")
+        fb = pipeline._read_feedback(self.run_, "T-001", 2)
+        self.assertTrue(fb.startswith("Decision: validator reject routed to qa.\n"))
+
+    def test_validator_reject_routes_to_coder(self):
+        self.patch_ollama({"route": choice("coder", 0.9), "next": choice("retry", 0.9)})
+        self.setup_tickets(
+            [ticket(1, type_="refactor")],
+            {
+                "code": [
+                    resp(CODE, "c1", write={"f1.txt": "x"}),
+                    resp(CODE, "c1", write={"f1.txt": "y"}),
+                ],
+                "review": [resp(REV)] * 4,
+                "qa": [
+                    resp(qa("true", status="pass")),
+                    resp(qa("true", status="pass")),
+                ],
+                "validate": [
+                    resp(val(ok=False)),
+                    resp(val(ok=True)),
+                ],
+                "router": [{"exit": 1}],
+            },
+        )
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+        self.assertNotIn("start_stage", self.tstate(1))
+        with open(self.script + ".pos") as f:
+            pos = json.load(f)
+        self.assertEqual(pos.get("code", 0), 2)
+        with open(self.run_.path("events.jsonl")) as f:
+            events = [json.loads(line) for line in f if line.strip()]
+        stage_skip_events = [e for e in events if e.get("kind") == "stage_skip"]
+        self.assertEqual(len(stage_skip_events), 0)
+        fb = pipeline._read_feedback(self.run_, "T-001", 2)
+        self.assertFalse(fb.startswith("Decision:"))
+
+    def test_validator_reject_escalate(self):
+        self.patch_ollama({"route": choice("escalate", 0.9)})
+        self.setup_tickets(
+            [ticket(1, type_="refactor")],
+            {
+                "code": [resp(CODE, "c1", write={"f1.txt": "x"})],
+                "review": [resp(REV)] * 4,
+                "qa": [resp(qa("true", status="pass"))],
+                "validate": [resp(val(ok=False))],
+                "router": [{"exit": 1}],
+            },
+        )
+        self.assertEqual(self.go(), "needs_user")
+        self.assertEqual(self.tstate(1)["status"], "blocked")
+        esc = self.run_.read_json("escalations.json")
+        self.assertTrue(any("decision model escalated" in e["reason"] for e in esc))
+
+    def test_validator_route_ignored_when_stage_absent(self):
+        self.patch_ollama({"route": choice("qa", 0.9), "next": choice("retry", 0.9)})
+        self.setup_tickets(
+            [ticket(1, type_="chore")],
+            {
+                "code": [
+                    resp(CODE, "c1", write={"f1.txt": "x"}),
+                    resp(CODE, "c1", write={"f1.txt": "y"}),
+                ],
+                "review": [resp(REV)] * 4,
+                "validate": [
+                    resp(val(ok=False)),
+                    resp(val(ok=True)),
+                ],
+                "router": [{"exit": 1}],
+            },
+        )
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+        with open(self.script + ".pos") as f:
+            pos = json.load(f)
+        self.assertEqual(pos.get("code", 0), 2)
+        with open(self.run_.path("events.jsonl")) as f:
+            events = [json.loads(line) for line in f if line.strip()]
+        stage_skip_events = [e for e in events if e.get("kind") == "stage_skip"]
+        self.assertEqual(len(stage_skip_events), 0)
+
+    def test_validator_reject_routes_to_docs_fallback_when_docs_after_validate(self):
+        self.patch_ollama({"route": choice("docs", 0.9), "next": choice("retry", 0.9)})
+        self.setup_tickets(
+            [ticket(1, type_="feature")],
+            {
+                "code": [
+                    resp(CODE, "c1", write={"f1.txt": "x"}),
+                    resp(CODE, "c1", write={"f1.txt": "y"}),
+                ],
+                "review": [resp(REV)] * 4,
+                "qa": [
+                    resp(qa("true", status="pass")),
+                    resp(qa("true", status="pass")),
+                ],
+                "validate": [
+                    resp(val(ok=False)),
+                    resp(val(ok=True)),
+                ],
+                "docs": [resp(DOCS)],
+                "router": [{"exit": 1}],
+            },
+        )
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+        self.assertNotIn("start_stage", self.tstate(1))
+        with open(self.script + ".pos") as f:
+            pos = json.load(f)
+        self.assertEqual(pos.get("code", 0), 2)
+        with open(self.run_.path("events.jsonl")) as f:
+            events = [json.loads(line) for line in f if line.strip()]
+        stage_skip_events = [e for e in events if e.get("kind") == "stage_skip"]
+        self.assertEqual(len(stage_skip_events), 0)
+        fb = pipeline._read_feedback(self.run_, "T-001", 2)
+        self.assertTrue(fb.startswith("Decision: validator reject routed to docs.\n"))
+
+    def test_after_failure_split_escalates_with_recommendation(self):
+        self.patch_ollama({"next": choice("split", 0.9)})
+        self.setup_tickets(
+            [ticket(1, type_="refactor")],
+            {
+                "code": [resp(CODE, "c1", write={"f1.txt": "x"})],
+                "review": [resp(REV)] * 4,
+                "qa": [resp(qa("false", status="fail", failures=["test failure message"]))],
+                "validate": [resp(val())] * 4,
+                "router": [{"exit": 1}],
+            },
+        )
+        self.assertEqual(self.go(), "needs_user")
+        self.assertEqual(self.tstate(1)["status"], "blocked")
+        esc = self.run_.read_json("escalations.json")
+        self.assertTrue(any("recommends split" in e["reason"] for e in esc))
+
+    def test_after_failure_replan_escalates_with_recommendation(self):
+        self.patch_ollama({"next": choice("replan", 0.9)})
+        self.setup_tickets(
+            [ticket(1, type_="refactor")],
+            {
+                "code": [resp(CODE, "c1", write={"f1.txt": "x"})],
+                "review": [resp(REV)] * 4,
+                "qa": [resp(qa("false", status="fail", failures=["test failure message"]))],
+                "validate": [resp(val())] * 4,
+                "router": [{"exit": 1}],
+            },
+        )
+        self.assertEqual(self.go(), "needs_user")
+        self.assertEqual(self.tstate(1)["status"], "blocked")
+        esc = self.run_.read_json("escalations.json")
+        self.assertTrue(any("recommends replan" in e["reason"] for e in esc))
+
+    def test_after_failure_escalate_escalates_with_recommendation(self):
+        self.patch_ollama({"next": choice("escalate", 0.9)})
+        self.setup_tickets(
+            [ticket(1, type_="refactor")],
+            {
+                "code": [resp(CODE, "c1", write={"f1.txt": "x"})],
+                "review": [resp(REV)] * 4,
+                "qa": [resp(qa("false", status="fail", failures=["test failure message"]))],
+                "validate": [resp(val())] * 4,
+                "router": [{"exit": 1}],
+            },
+        )
+        self.assertEqual(self.go(), "needs_user")
+        self.assertEqual(self.tstate(1)["status"], "blocked")
+        esc = self.run_.read_json("escalations.json")
+        self.assertTrue(any("recommends escalate" in e["reason"] for e in esc))
+
+    def test_after_failure_low_conf_retries(self):
+        self.patch_ollama({"next": choice("split", 0.5)})
+        self.setup_tickets(
+            [ticket(1, type_="refactor")],
+            {
+                "code": [
+                    resp(CODE, "c1", write={"f1.txt": "x"}),
+                    resp(CODE, "c1", write={"f1.txt": "y"}),
+                ],
+                "review": [resp(REV)] * 4,
+                "qa": [
+                    resp(qa("false", status="fail", failures=["flaky failure"])),
+                    resp(qa("true", status="pass")),
+                ],
+                "validate": [resp(val())] * 4,
+                "router": [{"exit": 1}],
+            },
+        )
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+        with open(self.script + ".pos") as f:
+            pos = json.load(f)
+        self.assertEqual(pos.get("code", 0), 2)
+        esc = self.run_.read_json("escalations.json", [])
+        self.assertFalse(any("recommends" in e.get("reason", "") for e in esc))
+
+    def test_router_validator_route_structure(self):
+        recorded = {}
+
+        def fake_decide(cfg, point, state, q, parse, run):
+            recorded["point"] = point
+            recorded["state"] = state
+            recorded["q"] = q
+            res, conf = parse({"route": {"choice": "qa", "confidence": 0.85}})
+            return {"point": point, "result": res, "confidence": conf, "source": "ollama"}
+
+        with mock.patch("yoke.router.decide", side_effect=fake_decide):
+            out = router.validator_route(
+                self.run_,
+                {"title": "Test Title"},
+                {
+                    "summary": "needs tests",
+                    "feedback_for_coder": "add tests",
+                    "exit_criteria": [{"criterion": "c1", "met": False}],
+                    "issues": [{"severity": "major", "file": "f.py", "description": "missing test"}],
+                },
+            )
+            self.assertEqual(recorded["point"], "validator_reject")
+            self.assertIn("route", recorded["q"])
+            self.assertEqual(recorded["q"]["route"]["type"], "choice")
+            self.assertEqual(
+                set(recorded["q"]["route"]["criteria"]),
+                {"coder", "qa", "docs", "escalate"},
+            )
+            self.assertEqual(out["result"], "qa")
+            self.assertEqual(out["confidence"], 0.85)
+            self.assertIn("Test Title", recorded["state"])
+            self.assertIn("needs tests", recorded["state"])
+            self.assertIn("add tests", recorded["state"])
+            self.assertIn("c1", recorded["state"])
+            self.assertIn("missing test", recorded["state"])
+
+    def test_router_after_failure_structure(self):
+        recorded = {}
+
+        def fake_decide(cfg, point, state, q, parse, run):
+            recorded["point"] = point
+            recorded["state"] = state
+            recorded["q"] = q
+            res, conf = parse({"next": {"choice": "split", "confidence": 0.9}})
+            return {"point": point, "result": res, "confidence": conf, "source": "ollama"}
+
+        with mock.patch("yoke.router.decide", side_effect=fake_decide):
+            out = router.after_failure(self.run_, {"title": "Test Title"}, 1, "test failed")
+            self.assertEqual(recorded["point"], "after_failure")
+            self.assertIn("next", recorded["q"])
+            self.assertEqual(recorded["q"]["next"]["type"], "choice")
+            self.assertEqual(
+                set(recorded["q"]["next"]["criteria"]),
+                {"retry", "split", "replan", "escalate"},
+            )
+            self.assertEqual(out["result"], "split")
+            self.assertEqual(out["confidence"], 0.9)
+            self.assertIn("Test Title", recorded["state"])
+            self.assertIn("Attempt: 1", recorded["state"])
+            self.assertIn("test failed", recorded["state"])
 
     def test_router_test_failure_category_structure(self):
         recorded = {}
