@@ -10,6 +10,7 @@ STATE_CHARS = 6000  # ~1500 tokens; tev1:4b runs with num_ctx 2048
 # noul is uncalibrated (failures read 0.28-0.44 in the M0 spike); ponytail: tune on real data
 RETRYABLE_MIN = 0.2
 TRIAGE_CATEGORIES = ["test_failure", "env_problem", "spec_gap", "agent_error", "other"]
+EFFORTS = ["low", "medium", "high"]
 
 
 def _out(result, source, model, confidence, reason=None):
@@ -278,6 +279,154 @@ def gate_failure_route(run, milestone_id, exit_check, tail):
     state = ("Milestone: %s\nExit check: %s\nOutput tail:\n%s" % (milestone_id, exit_check, tail))[-STATE_CHARS:]
     parse = lambda a: (a["gate"]["choice"], a["gate"]["confidence"])
     return decide(run.cfg, "gate_failure", state, q, parse, run)
+
+
+def bump(tier, effort, attempt):
+    """Deterministically bump effort (and tier past index 2) on retries.
+
+    Effort advances by (attempt - 1) positions along EFFORTS (low, medium, high).
+    When the advanced index exceeds high (index 2), tier escalates to 'plan' (if tier
+    is not None) and effort remains clamped at 'high'. Returns (tier, effort).
+    """
+    if effort is None or effort not in EFFORTS:
+        return tier, effort
+    try:
+        att = int(attempt) if attempt is not None else 1
+    except (ValueError, TypeError):
+        att = 1
+    if att < 1:
+        att = 1
+    start = EFFORTS.index(effort)
+    idx = start + (att - 1)
+    if idx > 2:
+        if tier is not None:
+            tier = "plan"
+        idx = min(idx, 2)
+    return tier, EFFORTS[idx]
+
+
+def pick_tier_effort(run, ticket, stage, attempt):
+    """Ask Ollama for model tier (cheap/plan) and effort (low/medium/high) for a stage call.
+
+    Evaluates ticket metadata and attempt count against model_tier and effort confidence
+    thresholds. Returns {'tier': str|None, 'effort': str|None, 'source': 'ollama'|'none'}.
+    """
+    cfg = getattr(run, "cfg", None) or {}
+    t = ticket if isinstance(ticket, dict) else {}
+    title = t.get("title", "") if isinstance(ticket, dict) else str(ticket or "")
+    type_ = t.get("type", "")
+    desc = t.get("description", "")
+    design = t.get("design", "")
+    steps = t.get("steps") or []
+    n_steps = len(steps) if isinstance(steps, list) else 0
+    risks = t.get("risks") or []
+    risks_str = "; ".join(str(r) for r in risks) if isinstance(risks, list) else str(risks)
+    files_hint = t.get("files_hint") or []
+    n_files = len(files_hint) if isinstance(files_hint, list) else 0
+
+    state_parts = [
+        "Title: %s" % title,
+        "Type: %s" % type_,
+        "Stage: %s, attempt %s" % (stage, attempt if attempt is not None else 1),
+    ]
+    if desc:
+        state_parts.append("Description: %s" % desc)
+    if design:
+        state_parts.append("Design: %s" % design)
+    state_parts.append("Steps count: %d" % n_steps)
+    if risks_str:
+        state_parts.append("Risks: %s" % risks_str)
+    state_parts.append("Files hint count: %d" % n_files)
+    state = "\n".join(state_parts)[:STATE_CHARS]
+
+    q = {
+        "tier": {
+            "type": "choice",
+            "instructions": "What model tier is appropriate?",
+            "criteria": {
+                "cheap": "routine or straightforward work",
+                "plan": "complex reasoning or planning work",
+            },
+        },
+        "effort": {
+            "type": "choice",
+            "instructions": "What reasoning effort is appropriate?",
+            "criteria": {
+                "low": "minimal effort",
+                "medium": "moderate effort",
+                "high": "thorough reasoning",
+            },
+        },
+    }
+
+    key_points = [
+        ("tier", "model_tier", ("cheap", "plan")),
+        ("effort", "effort", tuple(EFFORTS)),
+    ]
+    model = cfg.get("router", {}).get("model")
+
+    try:
+        answers = _ollama(cfg, state, q, timeout=10)
+    except Exception as e:
+        reason = "ollama failed: %s" % e
+        for _, point, _ in key_points:
+            thr = config.threshold(cfg, point)
+            if run is not None:
+                try:
+                    run.event(
+                        "router",
+                        fn=point,
+                        point=point,
+                        source="none",
+                        choice=None,
+                        confidence=None,
+                        threshold=thr,
+                        fallback_reason=reason,
+                        model=model,
+                    )
+                except Exception:
+                    pass
+        return {"tier": None, "effort": None, "source": "none"}
+
+    picked = {"tier": None, "effort": None}
+    for key, point, allowed in key_points:
+        thr = config.threshold(cfg, point)
+        ans = answers.get(key) if isinstance(answers, dict) else None
+        choice = ans.get("choice") if isinstance(ans, dict) else None
+        conf = ans.get("confidence") if isinstance(ans, dict) else None
+        reason = None
+        pt_source = "none"
+        if not isinstance(ans, dict) or choice is None:
+            reason = "ollama result missing choice"
+        elif choice not in allowed:
+            reason = "ollama choice %r not in %s" % (choice, allowed)
+        elif isinstance(conf, bool) or not isinstance(conf, (int, float)) or not (conf >= thr):
+            if isinstance(conf, bool) or not isinstance(conf, (int, float)):
+                reason = "ollama confidence none < %.2f" % thr
+            else:
+                reason = "ollama confidence %.2f < %.2f" % (conf, thr)
+        else:
+            pt_source = "ollama"
+            picked[key] = choice
+
+        if run is not None:
+            try:
+                run.event(
+                    "router",
+                    fn=point,
+                    point=point,
+                    source=pt_source,
+                    choice=str(picked[key])[:200] if picked[key] is not None else None,
+                    confidence=conf,
+                    threshold=thr,
+                    fallback_reason=reason,
+                    model=model,
+                )
+            except Exception:
+                pass
+
+    source = "ollama" if (picked["tier"] is not None or picked["effort"] is not None) else "none"
+    return {"tier": picked["tier"], "effort": picked["effort"], "source": source}
 
 
 def assert_check(run, claim, evidence, adapter=None):

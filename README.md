@@ -98,6 +98,14 @@ Models can be configured per agent across two tiers: `plan` (used for `requireme
 }
 ```
 
+#### Dynamic tier and effort selection
+
+For execution stages (`code`, `review`, `qa`, `validate`, `docs`), when neither `model` nor `effort` is explicitly specified in routing overrides, yoke dynamically selects model tier and effort:
+- **Ollama decision pick**: Yoke queries Ollama (`tev1:4b`) to determine the model tier (`cheap` vs `plan`) and reasoning effort (`low`, `medium`, `high`) using ticket metadata (title, type, description, design, steps count, risks, and files hint count) and attempt number.
+- **Independent thresholds**: Each question is accepted independently against its configured confidence threshold (`router.thresholds.model_tier` and `router.thresholds.effort`, default 0.7). If Ollama fails or confidence is below threshold, yoke falls back to defaults (`cheap` tier, or `plan` for roles in `PLAN_ROLES`), preserving deterministic offline behavior.
+- **Retry bumping**: On retries (`attempt > 1`), if `router.retry_bump` is enabled (default `true`), reasoning effort is bumped by one step per attempt (`low` -> `medium` -> `high`). Bumping past `high` escalates the model tier to `plan`.
+- **Precedence**: Explicit routing overrides in `routing.<ticket_type>.overrides.<stage>` always take precedence and bypass the Ollama pick entirely.
+
 When an agent call fails due to a model error, yoke automatically retries once without a model (clearing both model and effort) under a `/fallback` audit directory and logs a `model_fallback` event.
 
 Configure and inspect models via `yoke models`:

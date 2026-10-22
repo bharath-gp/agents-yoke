@@ -524,6 +524,9 @@ def _call(run, adapter_for, env, ticket, stage, attempt, wt, base, mode, results
     hooks = os.path.join(PKG, "githooks")  # push protection for workers (PLAN 2.9)
     wenv = dict(env or {}, GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="core.hooksPath", GIT_CONFIG_VALUE_0=hooks)
     timeout = cfg["timeouts_s"][stage]
+    tid = ticket["id"] if isinstance(ticket, dict) else ticket
+    target_adapter = adapter if adapter is not None else adapter_for(stage)
+    agent_name = getattr(target_adapter, "name", None)
     spec = adapters.CallSpec(
         prompt=prompt, schema_path=schema.schema_path(stage), cwd=wt, mode=mode,
         model=over.get("model"), effort=over.get("effort"), resume_session=resume,
@@ -531,6 +534,29 @@ def _call(run, adapter_for, env, ticket, stage, attempt, wt, base, mode, results
         allowed_tools=tuple(cfg["agents"]["claude"]["write_allowed_tools"]),
         web_tools=tuple(cfg["search"]["tools"]) if stage in WEB_STAGES else (),
         settings_path=run.read_json("run.json").get("agent_settings"))
+
+    if stage in ("code", "review", "qa", "validate", "docs") and not over.get("model") and not over.get("effort"):
+        pick = router.pick_tier_effort(run, ticket, stage, attempt)
+        default_tier = "plan" if stage in config.PLAN_ROLES else "cheap"
+        tier = pick["tier"] or default_tier
+        bumped = bool(cfg.get("router", {}).get("retry_bump", True) and attempt and attempt > 1)
+        if bumped:
+            model, tier_cfg_effort = config.model_for_tier(cfg, agent_name, tier)
+            starting_effort = pick["effort"] or tier_cfg_effort or "medium"
+            new_tier, effort = router.bump(tier, starting_effort, attempt)
+            if new_tier != tier:
+                tier = new_tier
+                model, tier_effort = config.model_for_tier(cfg, agent_name, tier)
+            else:
+                tier_effort = tier_cfg_effort
+        else:
+            effort = pick["effort"]
+            model, tier_effort = (config.model_for_tier(cfg, agent_name, tier)
+                                  if (pick["source"] != "none" or tier != default_tier)
+                                  else (None, None))
+        if pick["source"] != "none" or bumped or tier != default_tier:
+            spec.model = model
+            spec.effort = effort or tier_effort
 
     _wait_pool(run)
     # Concurrent multi-lens calls under parallel>1 may check agent_calls non-atomically, allowing up to (lenses-1) overshoot.
@@ -540,8 +566,6 @@ def _call(run, adapter_for, env, ticket, stage, attempt, wt, base, mode, results
     if exceeded:
         raise BudgetExhausted(reason)
 
-    tid = ticket["id"] if isinstance(ticket, dict) else ticket
-    target_adapter = adapter if adapter is not None else adapter_for(stage)
     res = calls.run_call(run, target_adapter, spec, stage=stage, ticket=tid, attempt=attempt, label=label)
     if res.limit is None:
         info = run.read_json("run.json", {})
