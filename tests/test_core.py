@@ -268,6 +268,7 @@ class TestAdapterCmds(Tmp):
         self.assertEqual(cmd[cmd.index("--permission-mode") + 1], "plan")
         self.assertNotIn("acceptEdits", cmd)
         self.assertNotIn("--disallowedTools", cmd)
+        self.assertNotIn("--settings", cmd)
 
     def test_claude_write_resume_model(self):
         cmd = adapters.ClaudeAdapter().build_cmd(self.spec(
@@ -280,6 +281,14 @@ class TestAdapterCmds(Tmp):
         for pair in (["--resume", "s1"], ["--model", "m"], ["--effort", "low"], ["--add-dir", "/d"]):
             self.assertIn(pair[0], cmd)
             self.assertEqual(cmd[cmd.index(pair[0]) + 1], pair[1])
+        self.assertNotIn("--settings", cmd)
+
+    def test_claude_settings(self):
+        cmd_without = adapters.ClaudeAdapter().build_cmd(self.spec())
+        self.assertNotIn("--settings", cmd_without)
+        cmd_with = adapters.ClaudeAdapter().build_cmd(self.spec(settings_path="/tmp/agent-settings.json"))
+        self.assertIn("--settings", cmd_with)
+        self.assertEqual(cmd_with[cmd_with.index("--settings") + 1], "/tmp/agent-settings.json")
 
     def test_agy_modes(self):
         a = adapters.AgyAdapter()

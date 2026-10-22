@@ -689,3 +689,32 @@ def scan_diff(cfg, diff_text, files, deleted_lines, run=None):
         }
         _event(run, "diff", res)
         return res
+
+
+def write_agent_settings(run):
+    """Write run-scoped claude agent-settings.json registering PreToolUse hook."""
+    import shlex
+    rid = getattr(run, "run_id", getattr(run, "id", None))
+    content = {
+        "hooks": {
+            "PreToolUse": [
+                {
+                    "matcher": "*",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "yoke guard tool --run %s --mode agent" % shlex.quote(str(rid)),
+                        }
+                    ],
+                }
+            ]
+        }
+    }
+    path = run.path("agent-settings.json")
+    if hasattr(run, "write_json"):
+        run.write_json("agent-settings.json", content)
+    else:
+        from . import state
+        state._write_atomic(path, json.dumps(content, indent=2, sort_keys=True) + "\n")
+    return path
+

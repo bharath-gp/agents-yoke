@@ -11,7 +11,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from . import adapters, calls, config, gitops, hooks, milestones, planreview, router, schema, state, tracker, usage
+from . import adapters, calls, config, gitops, guard, hooks, milestones, planreview, router, schema, state, tracker, usage
 
 PKG = os.path.dirname(os.path.abspath(__file__))
 
@@ -529,7 +529,8 @@ def _call(run, adapter_for, env, ticket, stage, attempt, wt, base, mode, results
         model=over.get("model"), effort=over.get("effort"), resume_session=resume,
         timeout_s=timeout, env=wenv,
         allowed_tools=tuple(cfg["agents"]["claude"]["write_allowed_tools"]),
-        web_tools=tuple(cfg["search"]["tools"]) if stage in WEB_STAGES else ())
+        web_tools=tuple(cfg["search"]["tools"]) if stage in WEB_STAGES else (),
+        settings_path=run.read_json("run.json").get("agent_settings"))
 
     _wait_pool(run)
     # Concurrent multi-lens calls under parallel>1 may check agent_calls non-atomically, allowing up to (lenses-1) overshoot.
@@ -913,6 +914,12 @@ def _attempt(run, adapter_for, env, ticket, st, wt, stages):
             if out["status"] == "fail":
                 return "QA failed:\n" + "\n".join(out["failures"] or [out["summary"]]), results, test_cmd, rerun_rc
             test_cmd = run.cfg.get("test_command") or out["test_command"]
+            chk = guard.check_command(run.cfg, test_cmd, wt, run)
+            if chk.get("decision") == "deny":
+                return ("Safety guard refused test command `%s`: %s" % (test_cmd, chk.get("reason")),
+                        results, test_cmd, rerun_rc)
+            if chk.get("decision") != "allow":
+                raise Escalate("safety guard: %s" % chk.get("reason"))
             rerun_rc, tail = _rerun(run, test_cmd, wt)
             if rerun_rc != 0:
                 return ("Runner re-ran `%s` and it exited %s (QA had reported pass):\n%s"
@@ -993,6 +1000,11 @@ def _close(run, adapter_for, ticket, st, wt, stages, results, test_cmd, rerun_rc
             return fb
         return "Close gate failed: " + ", ".join(k for k, v in gate.items() if (not v if k != "gate_hooks" else not all_hooks_ok))
     gitops.git(wt, "add", "-A")
+    scan = guard.scan_diff(cfg, *guard.diff_inputs(wt), run=run)
+    if scan.get("decision") == "deny":
+        return "Safety guard refused the commit: %s. Remove it and try again." % scan.get("reason")
+    if scan.get("decision") != "allow":
+        raise Escalate("safety guard: %s" % scan.get("reason"))
     stat = gitops.git(wt, "diff", "--cached", "--stat").stdout
     msg = router.commit_message(run, ticket, stat, adapter_for("router"))["result"]
     subject = msg["subject"] + ("\n\n" + msg["body"] if msg.get("body") else "")
