@@ -5,8 +5,10 @@ observed.usage token fields and observed.cost by stage, ticket, agent and model,
 plus totals and top 3 spenders. Missing cost (agy) is recorded as unreported, never 0.
 Writes usage.json atomically at ticket close and run end.
 """
+import datetime
 import json
 import os
+import re
 
 
 def _aggregate_bucket(calls):
@@ -41,8 +43,54 @@ def _aggregate_bucket(calls):
 
     for k, v in sorted(token_sums.items()):
         entry[k] = v
+    if calls:
+        # io_total is the headline figure; total_tokens (budget input) is left as the CLI reports it.
+        entry["io_total"] = token_sums.get("input_tokens", 0) + token_sums.get("output_tokens", 0)
+        entry["cache_total"] = (token_sums.get("cache_creation_input_tokens", 0)
+                                 + token_sums.get("cache_read_input_tokens", 0))
 
     return entry
+
+
+def merge(buckets):
+    """Sum bucket dicts (from _aggregate_bucket) across runs; unreported cost is never counted as 0."""
+    out = {}
+    cost = 0.0
+    reported = 0
+    unreported = 0
+    for b in buckets:
+        for k, v in b.items():
+            if k in ("cost", "unreported_calls"):
+                continue
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                out[k] = out.get(k, 0) + v
+        c = b.get("cost")
+        if isinstance(c, (int, float)) and not isinstance(c, bool):
+            cost += c
+            reported += 1
+        elif c == "unreported":
+            unreported += max(b.get("unreported_calls", 0), 1)
+        unreported += b.get("unreported_calls", 0) if c != "unreported" else 0
+    if reported == 0 and unreported:
+        out["cost"] = "unreported"
+    else:
+        out["cost"] = round(cost, 6)
+        if unreported:
+            out["unreported_calls"] = unreported
+    return out
+
+
+def project_summary(runs):
+    """Roll several runs' usage summaries up into totals and a per-agent split."""
+    runs = list(runs)
+    agents = {}
+    for u in runs:
+        for a, b in (u.get("by_agent") or {}).items():
+            agents.setdefault(a, []).append(b)
+    return {
+        "totals": merge(u.get("totals") or {} for u in runs),
+        "by_agent": {a: merge(bs) for a, bs in sorted(agents.items())},
+    }
 
 
 def summarize(run):
@@ -66,6 +114,8 @@ def summarize(run):
     ticket_groups = {}
     agent_groups = {}
     model_groups = {}
+    ticket_agent_groups = {}
+    session_ids = set()
 
     for mf in meta_files:
         try:
@@ -76,6 +126,9 @@ def summarize(run):
         if not isinstance(meta, dict):
             continue
 
+        sid = (meta.get("observed") or {}).get("session_id") if isinstance(meta.get("observed"), dict) else None
+        if sid:
+            session_ids.add(sid)
         stage = meta.get("stage") or "unknown"
         ticket = meta.get("ticket")
         agent = meta.get("agent") or "unknown"
@@ -121,9 +174,14 @@ def summarize(run):
 
         if ticket is not None:
             ticket_groups.setdefault(str(ticket), []).append(call_info)
+            ticket_agent_groups.setdefault(str(ticket), {}).setdefault(agent, []).append(call_info)
 
     by_stage = {s: _aggregate_bucket(c_list) for s, c_list in sorted(stage_groups.items())}
     by_ticket = {t: _aggregate_bucket(c_list) for t, c_list in sorted(ticket_groups.items())}
+    by_ticket_agent = {
+        t: {a: _aggregate_bucket(c) for a, c in sorted(ag.items())}
+        for t, ag in sorted(ticket_agent_groups.items())
+    }
     by_agent = {a: _aggregate_bucket(c_list) for a, c_list in sorted(agent_groups.items())}
     by_model = {m: _aggregate_bucket(c_list) for m, c_list in sorted(model_groups.items())}
     totals = _aggregate_bucket(all_calls)
@@ -156,9 +214,11 @@ def summarize(run):
         "by_stage": by_stage,
         "by_ticket": by_ticket,
         "by_agent": by_agent,
+        "by_ticket_agent": by_ticket_agent,
         "by_model": by_model,
         "totals": totals,
         "top_spenders": top_spenders,
+        "session_ids": sorted(session_ids),
     }
 
 
@@ -170,6 +230,7 @@ def empty_summary():
         "by_stage": {},
         "by_ticket": {},
         "by_agent": {},
+        "by_ticket_agent": {},
         "by_model": {},
     }
 
@@ -192,3 +253,122 @@ def write_usage(run):
     summary = summarize(run)
     run.write_json("usage.json", summary)
     return summary
+
+
+_TRANSCRIPTS = {}  # path -> (mtime, size, ({message_id: (timestamp, session_id, usage)}, session cost or None))
+_USAGE_KEYS = ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+
+
+def _parse_ts(ts):
+    try:
+        return datetime.datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _num(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _read_transcript(path):
+    st = os.stat(path)
+    hit = _TRANSCRIPTS.get(path)
+    if hit and hit[0] == st.st_mtime and hit[1] == st.st_size:
+        return hit[2]
+    msgs = {}
+    cost = None
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            try:
+                o = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(o, dict):
+                continue
+            if o.get("type") == "cost-state" and _num(o.get("totalCostUSD")):
+                cost = float(o["totalCostUSD"])  # running total: the last record wins
+                continue
+            m = o.get("message")
+            if o.get("type") != "assistant" or not isinstance(m, dict) or not isinstance(m.get("usage"), dict):
+                continue
+            # streamed messages repeat under one id; the last record has the final output count
+            msgs[m.get("id") or o.get("uuid")] = (o.get("timestamp"), o.get("sessionId"), m["usage"])
+    _TRANSCRIPTS[path] = (st.st_mtime, st.st_size, (msgs, cost))
+    return msgs, cost
+
+
+def interactive_messages(repo, start, end, exclude_sessions=(), claude_home=None):
+    """Assistant messages from interactive Claude Code sessions on repo within [start, end].
+
+    Sessions yoke itself spawned (exclude_sessions, from the run's meta.json) are skipped so
+    they are not counted twice. A session's recorded cost is per session, so each message
+    carries an equal share of it and a run gets the share of the messages inside its window.
+    Returns {message_id: {"sid", "usage", "cost" (share or None), "partial" (session cut by window)}}.
+    """
+    claude_home = claude_home or os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+    d = os.path.join(claude_home, "projects", re.sub(r"[^A-Za-z0-9]", "-", repo or ""))
+    lo, hi = _parse_ts(start), _parse_ts(end)
+    out = {}
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return out
+    for n in names:
+        path = os.path.join(d, n)
+        if not n.endswith(".jsonl"):
+            continue
+        try:
+            if lo and os.stat(path).st_mtime < lo.timestamp():
+                continue
+            msgs, cost = _read_transcript(path)
+        except OSError:
+            continue
+        inside = {}
+        for mid, (ts, sid, u) in msgs.items():
+            t = _parse_ts(ts)
+            if sid in exclude_sessions or t is None or (lo and t < lo) or (hi and t > hi):
+                continue
+            inside[mid] = (sid, u)
+        for mid, (sid, u) in inside.items():
+            out[mid] = {"sid": sid, "usage": u, "partial": len(inside) < len(msgs),
+                        "cost": cost / len(msgs) if cost is not None else None}
+    return out
+
+
+def interactive_bucket(msgs):
+    """Bucket for interactive messages, one call per session.
+
+    cost_partial counts sessions whose cost was pro-rated to the window (shown as ~).
+    """
+    sessions = {}
+    for m in msgs.values():
+        sessions.setdefault(m["sid"], []).append(m)
+    calls = []
+    partial = 0
+    for ms in sessions.values():
+        tokens = {}
+        for m in ms:
+            for k in _USAGE_KEYS:
+                if _num(m["usage"].get(k)):
+                    tokens[k] = tokens.get(k, 0) + m["usage"][k]
+        costs = [m["cost"] for m in ms if m["cost"] is not None]
+        cost = sum(costs) if costs else None
+        if cost is not None and ms[0]["partial"]:
+            partial += 1
+        calls.append({"tokens": tokens, "cost": cost})
+    b = _aggregate_bucket(calls)
+    if partial:
+        b["cost_partial"] = partial
+    return b
+
+
+def with_interactive(summary, msgs):
+    """Fold interactive messages into a usage summary as agent/stage 'interactive'."""
+    if not msgs:
+        return summary
+    b = interactive_bucket(msgs)
+    out = dict(summary)
+    out["totals"] = merge([summary.get("totals") or {}, b])
+    for k in ("by_agent", "by_stage"):
+        out[k] = dict(summary.get(k) or {}, interactive=b)
+    return out

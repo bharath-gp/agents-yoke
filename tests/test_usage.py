@@ -149,6 +149,8 @@ class TestUsageSummarize(UsageTestBase):
             "cost": 0.0475,
             "input_tokens": 710,
             "output_tokens": 270,
+            "io_total": 980,
+            "cache_total": 0,
         }
         self.assertEqual(summary["totals"], expected_totals)
 

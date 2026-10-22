@@ -698,6 +698,13 @@
         <span id="run-count">0</span>
       </div>
       <div id="run-picker-list" class="run-list"></div>
+      <details id="projects-card" style="margin-top: 12px; font-size: 12px;">
+        <summary>Projects (usage by repo)</summary>
+        <table class="ticket-table">
+          <thead><tr><th>Repo</th><th>Runs</th><th>Tokens</th><th>Cost</th><th>By agent</th></tr></thead>
+          <tbody id="projects-tbody"></tbody>
+        </table>
+      </details>
     </aside>
 
     <main class="main-content">
@@ -753,10 +760,25 @@
           <div class="usage-summary-row" id="usage-summary-row" style="display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 12px; font-size: 13px;">
             <div><strong>Cost:</strong> <span id="usage-cost-val">-</span></div>
             <div><strong>Total Tokens:</strong> <span id="usage-total-tokens-val">0</span></div>
+            <div style="color: var(--text-muted);"><strong>Cache:</strong> <span id="usage-cache-val">0</span></div>
             <div><strong>Input Tokens:</strong> <span id="usage-input-tokens-val">0</span></div>
             <div><strong>Output Tokens:</strong> <span id="usage-output-tokens-val">0</span></div>
           </div>
-          <div style="font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: 8px;">Top 3 Spenders</div>
+          <div style="font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: 8px;">By Agent</div>
+          <div class="table-container">
+            <table class="ticket-table">
+              <thead><tr><th>Agent</th><th>Cost</th><th>Tokens (in+out)</th><th>Cache</th><th>Share</th></tr></thead>
+              <tbody id="usage-agents-tbody"></tbody>
+            </table>
+          </div>
+          <div style="font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin: 12px 0 8px;">By Stage</div>
+          <div class="table-container">
+            <table class="ticket-table">
+              <thead><tr><th>Stage</th><th>Cost</th><th>Tokens (in+out)</th><th>Cache</th><th>Share</th></tr></thead>
+              <tbody id="usage-stages-tbody"></tbody>
+            </table>
+          </div>
+          <div style="font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin: 12px 0 8px;">Top 3 Spenders</div>
           <div class="table-container">
             <table class="ticket-table">
               <thead>
@@ -792,6 +814,9 @@
                   <th>Status</th>
                   <th>Stage / Agent</th>
                   <th>Attempts</th>
+                  <th>Tokens</th>
+                  <th>Cost</th>
+                  <th>By agent</th>
                   <th>Updated</th>
                 </tr>
               </thead>
@@ -855,12 +880,21 @@
         }
       }
 
-      function formatCost(rawCost, unreportedCalls) {
+      function fmtTok(n) {
+        n = Number(n) || 0;
+        const f = (v, u) => (v >= 100 ? Math.round(v) : Math.round(v * 10) / 10) + u;
+        if (n >= 1e9) return f(n / 1e9, 'B');
+        if (n >= 1e6) return f(n / 1e6, 'M');
+        if (n >= 1e3) return f(n / 1e3, 'K');
+        return String(n);
+      }
+
+      function formatCost(rawCost, unreportedCalls, partial) {
         let res;
         if (rawCost === 'unreported') {
           res = 'unreported';
         } else if (typeof rawCost === 'number') {
-          res = '$' + rawCost.toFixed(4);
+          res = (partial ? '~$' : '$') + rawCost.toFixed(2);
         } else if (rawCost !== undefined && rawCost !== null) {
           res = String(rawCost);
         } else {
@@ -893,6 +927,63 @@
         const now = new Date();
         const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
         document.getElementById('last-updated').textContent = 'Last updated: ' + timeStr;
+      }
+
+      function ioTokens(b) {
+        return b.io_total !== undefined ? b.io_total : (b.input_tokens || 0) + (b.output_tokens || 0);
+      }
+
+      function agentSplit(byAgent) {
+        if (!byAgent) return '-';
+        const parts = Object.keys(byAgent).map(a => a + ' ' + fmtTok(ioTokens(byAgent[a])));
+        return parts.length ? parts.join(' / ') : '-';
+      }
+
+      function renderAgentRows(tbody, byAgent, total) {
+        clearElement(tbody);
+        const names = Object.keys(byAgent);
+        if (names.length === 0) {
+          const tr = el('tr');
+          const td = el('td', 'empty-note', 'No agent usage recorded');
+          td.setAttribute('colspan', '5');
+          tr.appendChild(td);
+          tbody.appendChild(tr);
+          return;
+        }
+        names.forEach(a => {
+          const b = byAgent[a];
+          const n = ioTokens(b);
+          const tr = el('tr');
+          tr.appendChild(el('td', 'cell-id', a));
+          tr.appendChild(el('td', '', formatCost(b.cost, b.unreported_calls, b.cost_partial)));
+          tr.appendChild(el('td', '', fmtTok(n)));
+          tr.appendChild(el('td', '', fmtTok(b.cache_total)));
+          tr.appendChild(el('td', '', total > 0 ? Math.round(n / total * 100) + '%' : '-'));
+          tbody.appendChild(tr);
+        });
+      }
+
+      function renderProjects(projects) {
+        const tbody = document.getElementById('projects-tbody');
+        clearElement(tbody);
+        if (!projects || projects.length === 0) {
+          const tr = el('tr');
+          const td = el('td', 'empty-note', 'No projects');
+          td.setAttribute('colspan', '5');
+          tr.appendChild(td);
+          tbody.appendChild(tr);
+          return;
+        }
+        projects.forEach(p => {
+          const t = p.totals || {};
+          const tr = el('tr');
+          tr.appendChild(el('td', 'cell-id', p.repo));
+          tr.appendChild(el('td', '', String(p.runs)));
+          tr.appendChild(el('td', '', fmtTok(ioTokens(t))));
+          tr.appendChild(el('td', '', formatCost(t.cost, t.unreported_calls, t.cost_partial)));
+          tr.appendChild(el('td', '', agentSplit(p.by_agent)));
+          tbody.appendChild(tr);
+        });
       }
 
       function renderRunPicker(runs) {
@@ -1047,21 +1138,23 @@
         // Usage totals and top 3 spenders
         const usageData = d.usage || (d.status && d.status.usage) || {};
         const usageTotals = usageData.totals || {};
-        const costDisplay = formatCost(usageTotals.cost, usageTotals.unreported_calls);
+        const costDisplay = formatCost(usageTotals.cost, usageTotals.unreported_calls, usageTotals.cost_partial);
 
-        const totalTokens = usageTotals.total_tokens !== undefined ? usageTotals.total_tokens :
-          ((usageTotals.input_tokens || 0) + (usageTotals.output_tokens || 0));
+        const totalTokens = ioTokens(usageTotals);
+        document.getElementById('usage-cache-val').textContent = fmtTok(usageTotals.cache_total);
+        renderAgentRows(document.getElementById('usage-agents-tbody'), usageData.by_agent || {}, totalTokens);
+        renderAgentRows(document.getElementById('usage-stages-tbody'), usageData.by_stage || {}, totalTokens);
         const inputTokens = usageTotals.input_tokens || 0;
         const outputTokens = usageTotals.output_tokens || 0;
 
         document.getElementById('usage-cost-val').textContent = costDisplay;
-        document.getElementById('usage-total-tokens-val').textContent = String(totalTokens);
-        document.getElementById('usage-input-tokens-val').textContent = String(inputTokens);
-        document.getElementById('usage-output-tokens-val').textContent = String(outputTokens);
+        document.getElementById('usage-total-tokens-val').textContent = fmtTok(totalTokens);
+        document.getElementById('usage-input-tokens-val').textContent = fmtTok(inputTokens);
+        document.getElementById('usage-output-tokens-val').textContent = fmtTok(outputTokens);
 
         const usageElem = document.getElementById('detail-usage');
         if (usageElem) {
-          usageElem.textContent = 'Usage: ' + costDisplay + ' (' + totalTokens + ' tokens)';
+          usageElem.textContent = 'Usage: ' + costDisplay + ' (' + fmtTok(totalTokens) + ' tokens)';
         }
 
         const spendersTbody = document.getElementById('usage-spenders-tbody');
@@ -1079,11 +1172,10 @@
             const tdTicket = el('td', 'cell-id', sp.ticket || '-');
             const tdCost = el('td', '', formatCost(sp.cost, sp.unreported_calls));
 
-            const spTotal = sp.total_tokens !== undefined ? sp.total_tokens :
-              ((sp.input_tokens || 0) + (sp.output_tokens || 0));
-            const tdTotal = el('td', '', String(spTotal));
-            const tdIn = el('td', '', String(sp.input_tokens || 0));
-            const tdOut = el('td', '', String(sp.output_tokens || 0));
+            const spTotal = ioTokens(sp);
+            const tdTotal = el('td', '', fmtTok(spTotal));
+            const tdIn = el('td', '', fmtTok(sp.input_tokens));
+            const tdOut = el('td', '', fmtTok(sp.output_tokens));
 
             tr.appendChild(tdTicket);
             tr.appendChild(tdCost);
@@ -1122,12 +1214,14 @@
         }
 
         // Ticket table with status chips and waiting-for notes
+        const byTicket = usageData.by_ticket || {};
+        const byTicketAgent = usageData.by_ticket_agent || {};
         const tbody = document.getElementById('ticket-tbody');
         clearElement(tbody);
         if (!d.tickets || d.tickets.length === 0) {
           const tr = el('tr');
           const td = el('td', 'empty-note', 'No tickets in this run');
-          td.setAttribute('colspan', '7');
+          td.setAttribute('colspan', '10');
           tr.appendChild(td);
           tbody.appendChild(tr);
         } else {
@@ -1162,7 +1256,15 @@
             tr.appendChild(tdMilestone);
             tr.appendChild(tdStatus);
             tr.appendChild(tdStageAgent);
+            const tu = byTicket[t.id] || {};
+            const tdTok = el('td', '', tu.io_total !== undefined ? fmtTok(tu.io_total) : '-');
+            const tdCost = el('td', '', tu.cost !== undefined ? formatCost(tu.cost, tu.unreported_calls) : '-');
+            const tdSplit = el('td', '', agentSplit(byTicketAgent[t.id]));
+
             tr.appendChild(tdAttempts);
+            tr.appendChild(tdTok);
+            tr.appendChild(tdCost);
+            tr.appendChild(tdSplit);
             tr.appendChild(tdUpdated);
 
             tbody.appendChild(tr);
@@ -1247,6 +1349,8 @@
           }
           runsList = await runsRes.json();
           renderRunPicker(runsList);
+          const projRes = await fetch('/api/projects');
+          if (projRes.ok) renderProjects(await projRes.json());
 
           const selectedId = getSelectedRunId(runsList);
           if (selectedId) {
