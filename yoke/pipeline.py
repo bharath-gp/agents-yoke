@@ -869,11 +869,11 @@ def _run_gate_hook_stage(run, wt, ticket, attempt, stage_name, hook_list, env=No
     return None, (last_res[1] if last_res else None)
 
 
-def _attempt(run, adapter_for, env, ticket, st, wt, stages):
-    """Run the stages once. Returns (feedback or None, results, test_cmd, qa_rc)."""
+def _attempt_body(run, adapter_for, env, ticket, st, wt, stages, start_idx, results, test_cmd, rerun_rc):
+    """Execute stages starting at start_idx with seeded results and test state."""
     tid, attempt, base = ticket["id"], st["attempt"], st["base_sha"]
     st["gate_hooks"] = {}
-    if "review" in stages:
+    if "review" in stages[start_idx:]:
         st["review"] = {"rounds": 0, "unresolved": []}
         save_state(run, tid, st)
     feedback = _read_feedback(run, tid, attempt)
@@ -883,8 +883,7 @@ def _attempt(run, adapter_for, env, ticket, st, wt, stages):
         write_feedback(run, tid, attempt, nudge_str, append=True)
         feedback = _read_feedback(run, tid, attempt)
     since = gitops.head_sha(wt)
-    results, test_cmd, rerun_rc = {}, None, None
-    for stage in stages:
+    for stage in stages[start_idx:]:
         if stage in ("review", "validate"):
             gitops.git(wt, "add", "-A")  # new files become visible to `git diff <base>`
         if stage == "review":
@@ -922,8 +921,22 @@ def _attempt(run, adapter_for, env, ticket, st, wt, stages):
                 raise Escalate("safety guard: %s" % chk.get("reason"))
             rerun_rc, tail = _rerun(run, test_cmd, wt)
             if rerun_rc != 0:
-                return ("Runner re-ran `%s` and it exited %s (QA had reported pass):\n%s"
-                        % (test_cmd, rerun_rc, tail)), results, test_cmd, rerun_rc
+                d = router.test_failure_category(run, ticket, test_cmd, tail)
+                cat = d["result"] if d.get("source") == "ollama" else None
+                if cat == "environment" and not st.get("env_rerun"):
+                    st["env_rerun"] = True
+                    save_state(run, tid, st)
+                    rerun_rc, tail = _rerun(run, test_cmd, wt)
+                    if rerun_rc != 0:
+                        raise Escalate("environment failure running `%s`: %s" % (test_cmd, tail[-500:]))
+                elif cat == "testware":
+                    st["start_stage"] = "qa"
+                    return ("Decision: testware failure, QA reruns.\n"
+                            + ("Runner re-ran `%s` and it exited %s (QA had reported pass):\n%s"
+                               % (test_cmd, rerun_rc, tail)), results, test_cmd, rerun_rc)
+                else:
+                    return ("Runner re-ran `%s` and it exited %s (QA had reported pass):\n%s"
+                            % (test_cmd, rerun_rc, tail)), results, test_cmd, rerun_rc
             qa_hooks = ((run.cfg.get("gate_hooks") or {}).get("after_stage") or {}).get("qa") or []
             fb, info = _run_gate_hook_stage(run, wt, ticket, attempt, "qa", qa_hooks, env=env)
             if info:
@@ -950,6 +963,37 @@ def _attempt(run, adapter_for, env, ticket, st, wt, stages):
                 parts += ["%s %s: %s" % (i["severity"], i["file"], i["description"]) for i in out["issues"]]
                 return "\n".join(p for p in parts if p), results, test_cmd, rerun_rc
     return None, results, test_cmd, rerun_rc
+
+
+def _attempt(run, adapter_for, env, ticket, st, wt, stages):
+    """Run stages with start_stage resolution and persistence of last_results, last_test_cmd, last_rerun_rc.
+
+    Returns (feedback or None, results, test_cmd, qa_rc).
+    """
+    tid = ticket["id"] if isinstance(ticket, dict) else ticket
+    st["env_rerun"] = False
+    ss = st.pop("start_stage", None)
+    last = st.get("last_results") or {}
+    if ss in stages and all(s in last for s in stages[:stages.index(ss)]):
+        start_idx = stages.index(ss)
+        results = {s: last[s] for s in stages[:start_idx]}
+        if "qa" in stages[:start_idx]:
+            test_cmd, rerun_rc = st.get("last_test_cmd"), st.get("last_rerun_rc")
+        else:
+            test_cmd, rerun_rc = None, None
+        run.event("stage_skip", ticket=tid, attempt=st["attempt"], start_stage=ss)
+    else:
+        start_idx = 0
+        results, test_cmd, rerun_rc = {}, None, None
+    save_state(run, tid, st)
+    fb, results, test_cmd, rerun_rc = _attempt_body(
+        run, adapter_for, env, ticket, st, wt, stages, start_idx, results, test_cmd, rerun_rc
+    )
+    st["last_results"] = dict(results)
+    st["last_test_cmd"] = test_cmd
+    st["last_rerun_rc"] = rerun_rc
+    save_state(run, tid, st)
+    return fb, results, test_cmd, rerun_rc
 
 
 def _gate(stages, results, rerun_rc):

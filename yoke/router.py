@@ -178,6 +178,29 @@ def format_triage_hint(triage_res):
     return "Triage hint (advisory only): category=%s, retryable=%s" % (cat, ret)
 
 
+def test_failure_category(run, ticket, cmd, tail):
+    """Classify test command failure category via Ollama decision point 'test_failure'.
+
+    Returns a decision dict with result set to 'product', 'testware', or 'environment'
+    when Ollama confidence meets router.thresholds.test_failure, or source 'none'.
+    """
+    q = {
+        "category": {
+            "type": "choice",
+            "instructions": "Why did this test command fail?",
+            "criteria": {
+                "product": "the code under test is wrong",
+                "testware": "the tests or fixtures themselves are wrong",
+                "environment": "missing tool, network, port, flaky timing",
+            },
+        }
+    }
+    title = ticket.get("title", "") if isinstance(ticket, dict) else str(ticket)
+    state = ("Ticket: %s\nCommand: %s\nOutput tail:\n%s" % (title, cmd, tail))[-STATE_CHARS:]
+    parse = lambda a: (a["category"]["choice"], a["category"]["confidence"])
+    return decide(run.cfg, "test_failure", state, q, parse, run)
+
+
 def assert_check(run, claim, evidence, adapter=None):
     state = ("Evidence:\n%s" % evidence)[-STATE_CHARS:]
 
