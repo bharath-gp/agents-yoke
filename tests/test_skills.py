@@ -1,9 +1,12 @@
+import json
 import os
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 
-from yoke import skills
+from tests.test_pipeline import PipeBase, ticket, resp, CODE, REV, val
+from yoke import router, skills
 
 os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
 
@@ -257,6 +260,431 @@ class SkillsCase(unittest.TestCase):
 
         res = skills.discover([root1, root2])
         self.assertEqual([s["name"] for s in res], ["alpha", "beta"])
+
+    def test_pick_skills_empty_catalog(self):
+        run = mock.MagicMock()
+        run.cfg = {"router": {"model": "tev1:4b", "thresholds": {"skill": 0.6}}, "skills": {"max": 3}}
+        ticket_data = {"title": "Test ticket"}
+        with mock.patch("yoke.router._ollama") as mock_ollama:
+            picked = router.pick_skills(run, ticket_data, "code", [])
+            self.assertEqual(picked, [])
+            mock_ollama.assert_not_called()
+
+    def test_pick_skills_bare_number_and_missing_key(self):
+        catalog = [
+            {"name": "n0", "description": "d0", "path": "/p0"},
+            {"name": "n1", "description": "d1", "path": "/p1"},
+            {"name": "n2", "description": "d2", "path": "/p2"},
+        ]
+        cfg = {"router": {"model": "tev1:4b", "thresholds": {"skill": 0.6}}, "skills": {"max": 3}}
+        run = mock.MagicMock()
+        run.cfg = cfg
+        ticket_data = {"title": "Test ticket"}
+        answers = {
+            "s0": 0.85,  # bare float
+            # s1 is missing
+            "s2": {"noul": 0.7},
+        }
+        with mock.patch("yoke.router._ollama", return_value=answers):
+            picked = router.pick_skills(run, ticket_data, "code", catalog)
+            self.assertEqual([s["name"] for s in picked], ["n0", "n2"])
+
+    def test_pick_skills_threshold_and_cap(self):
+        catalog = [
+            {"name": "n0", "description": "d0", "path": "/p0"},
+            {"name": "n1", "description": "d1", "path": "/p1"},
+            {"name": "n2", "description": "d2", "path": "/p2"},
+            {"name": "n3", "description": "d3", "path": "/p3"},
+            {"name": "n4", "description": "d4", "path": "/p4"},
+        ]
+        cfg = {
+            "router": {
+                "model": "tev1:4b",
+                "thresholds": {"skill": 0.6},
+            },
+            "skills": {"max": 3},
+        }
+        run = mock.MagicMock()
+        run.cfg = cfg
+        ticket_data = {"title": "Test ticket", "description": "desc", "exit_criteria": []}
+
+        ollama_answers = {
+            "s0": {"noul": 0.9},
+            "s1": {"noul": 0.2},
+            "s2": {"noul": 0.8},
+            "s3": {"noul": 0.7},
+            "s4": {"noul": 0.95},
+        }
+        with mock.patch("yoke.router._ollama", return_value=ollama_answers) as mock_ollama:
+            picked = router.pick_skills(run, ticket_data, "code", catalog)
+            mock_ollama.assert_called_once()
+            names = [s["name"] for s in picked]
+            self.assertEqual(names, ["n4", "n0", "n2"])
+            self.assertEqual([s["path"] for s in picked], ["/p4", "/p0", "/p2"])
+            run.event.assert_called_once()
+            kwargs = run.event.call_args[1]
+            self.assertEqual(kwargs.get("point"), "skill")
+            self.assertEqual(kwargs.get("fn"), "skill")
+            self.assertEqual(kwargs.get("source"), "ollama")
+            self.assertEqual(kwargs.get("choice"), "n4,n0,n2")
+
+    def test_pick_skills_down_returns_empty(self):
+        catalog = [{"name": "n0", "description": "d0", "path": "/p0"}]
+        cfg = {"router": {"model": "tev1:4b", "thresholds": {"skill": 0.6}}, "skills": {"max": 3}}
+        run = mock.MagicMock()
+        run.cfg = cfg
+        ticket_data = {"title": "Test ticket"}
+        with mock.patch("yoke.router._ollama", side_effect=OSError("connection refused")):
+            picked = router.pick_skills(run, ticket_data, "code", catalog)
+            self.assertEqual(picked, [])
+            run.event.assert_called_once()
+            kwargs = run.event.call_args[1]
+            self.assertEqual(kwargs.get("source"), "none")
+            self.assertEqual(kwargs.get("point"), "skill")
+            self.assertIn("ollama failed", kwargs.get("fallback_reason", ""))
+
+    def test_pick_skills_boundary_and_caps(self):
+        catalog = [
+            {"name": "n_exact", "description": "exact threshold", "path": "/pe"},
+            {"name": "n_below", "description": "below threshold", "path": "/pb"},
+            {"name": "n_above", "description": "above threshold", "path": "/pa"},
+        ]
+        cfg = {
+            "router": {
+                "model": "tev1:4b",
+                "thresholds": {"skill": 0.6},
+            },
+            "skills": {"max": 3},
+        }
+        run = mock.MagicMock()
+        run.cfg = cfg
+        ticket_data = {"title": "Test ticket"}
+        answers = {
+            "s0": {"noul": 0.6},
+            "s1": {"noul": 0.599},
+            "s2": {"noul": 0.75},
+        }
+        with mock.patch("yoke.router._ollama", return_value=answers):
+            picked = router.pick_skills(run, ticket_data, "code", catalog)
+            self.assertEqual([s["name"] for s in picked], ["n_above", "n_exact"])
+
+    def test_pick_skills_caps_at_64_candidates_and_truncates_description(self):
+        long_desc = "x" * 300
+        catalog = [{"name": "skill_%d" % i, "description": long_desc, "path": "/p%d" % i} for i in range(70)]
+        cfg = {
+            "router": {"model": "tev1:4b", "thresholds": {"skill": 0.6}},
+            "skills": {"max": 5},
+        }
+        run = mock.MagicMock()
+        run.cfg = cfg
+        with mock.patch("yoke.router._ollama", return_value={"s0": {"noul": 0.8}}) as mock_ollama:
+            picked = router.pick_skills(run, {"title": "T"}, "code", catalog)
+            mock_ollama.assert_called_once()
+            called_q = mock_ollama.call_args[0][2]
+            self.assertEqual(len(called_q), 64)
+            self.assertIn("s0", called_q)
+            self.assertIn("s63", called_q)
+            self.assertNotIn("s64", called_q)
+            self.assertIn("x" * 200, called_q["s0"]["instructions"])
+            self.assertNotIn("x" * 201, called_q["s0"]["instructions"])
+            self.assertEqual([s["name"] for s in picked], ["skill_0"])
+
+    def test_pick_skills_down_truncates_fallback_reason(self):
+        catalog = [{"name": "n0", "description": "d0", "path": "/p0"}]
+        cfg = {"router": {"model": "tev1:4b", "thresholds": {"skill": 0.6}}, "skills": {"max": 3}}
+        run = mock.MagicMock()
+        run.cfg = cfg
+        ticket_data = {"title": "Test ticket"}
+        long_err = "error_" + ("z" * 500)
+        with mock.patch("yoke.router._ollama", side_effect=OSError(long_err)):
+            picked = router.pick_skills(run, ticket_data, "code", catalog)
+            self.assertEqual(picked, [])
+            kwargs = run.event.call_args[1]
+            self.assertLessEqual(len(kwargs.get("fallback_reason", "")), 200)
+
+
+class TestSkillPipelineInjection(PipeBase):
+    def test_call_injects_skills_into_prompt(self):
+        fixture_dir = os.path.join(self.tmp, "fixture_skills")
+        skill_dir = os.path.join(fixture_dir, "demo")
+        os.makedirs(skill_dir, exist_ok=True)
+        with open(os.path.join(skill_dir, "SKILL.md"), "w", encoding="utf-8") as f:
+            f.write("---\nname: demo\ndescription: demo skill description\n---\nDemo skill body\n")
+
+        with open(os.path.join(self.tmp, "config.json"), "w") as f:
+            json.dump({"skills": {"allowlist": ["demo"], "roots": [fixture_dir]}}, f)
+
+        cfg = dict(self.run_.cfg)
+        cfg["skills"] = {"allowlist": ["demo"], "roots": [fixture_dir], "max": 3, "agy_mode": "inline"}
+        self.run_.update(config=cfg)
+
+        self.setup_tickets(
+            [ticket(1, type_="chore")],
+            {
+                "code": [resp(CODE, "c1", write={"f1.txt": "x"})],
+                "review": [resp(REV)],
+                "validate": [resp(val())],
+                "router": [{"exit": 1}],
+            },
+        )
+
+        with mock.patch("yoke.router._ollama", return_value={"s0": {"noul": 0.9}}):
+            status = self.go()
+
+        self.assertEqual(status, "done")
+        prompt_path = self.run_.path("tickets/T-001/attempt-1/code/prompt.md")
+        self.assertTrue(os.path.exists(prompt_path), "Expected %s to exist" % prompt_path)
+        with open(prompt_path, "r", encoding="utf-8") as f:
+            prompt_content = f.read()
+        self.assertIn("demo", prompt_content)
+        self.assertIn("demo skill description", prompt_content)
+        self.assertIn("## Skills", prompt_content)
+        self.assertNotIn("## Skills\n\n(none)", prompt_content)
+
+    def test_call_allowed_tools_appends_skill_for_claude_when_picked(self):
+        from yoke import adapters, pipeline
+        fixture_dir = os.path.join(self.tmp, "fixture_skills")
+        skill_dir = os.path.join(fixture_dir, "demo")
+        os.makedirs(skill_dir, exist_ok=True)
+        with open(os.path.join(skill_dir, "SKILL.md"), "w", encoding="utf-8") as f:
+            f.write("---\nname: demo\ndescription: demo skill description\n---\nDemo skill body\n")
+
+        cfg = dict(self.run_.cfg)
+        cfg["skills"] = {"allowlist": ["demo"], "roots": [fixture_dir], "max": 3, "agy_mode": "inline"}
+        self.run_.update(config=cfg)
+
+        t = ticket(1, type_="feature")
+
+        class DummyClaudeAdapter(adapters.Adapter):
+            name = "claude"
+
+        dummy_adapter = DummyClaudeAdapter()
+
+        with mock.patch("yoke.router._ollama", return_value={"s0": {"noul": 0.9}}):
+            with mock.patch("yoke.calls.run_call") as mock_rc:
+                mock_rc.return_value = adapters.CallResult(structured_output={"status": "done"}, session_id="s1")
+                pipeline._call(
+                    self.run_,
+                    adapter_for=lambda role: dummy_adapter,
+                    env={},
+                    ticket=t,
+                    stage="code",
+                    attempt=1,
+                    wt=self.repo,
+                    base="HEAD",
+                    mode="write",
+                    results={},
+                    feedback="",
+                    adapter=dummy_adapter,
+                )
+                self.assertTrue(mock_rc.called)
+                spec = mock_rc.call_args[0][2]
+                self.assertIn("Skill", spec.allowed_tools)
+
+    def test_call_allowed_tools_no_skill_for_non_claude_adapter(self):
+        from yoke import adapters, pipeline
+        fixture_dir = os.path.join(self.tmp, "fixture_skills")
+        skill_dir = os.path.join(fixture_dir, "demo")
+        os.makedirs(skill_dir, exist_ok=True)
+        with open(os.path.join(skill_dir, "SKILL.md"), "w", encoding="utf-8") as f:
+            f.write("---\nname: demo\ndescription: demo skill description\n---\nDemo skill body\n")
+
+        cfg = dict(self.run_.cfg)
+        cfg["skills"] = {"allowlist": ["demo"], "roots": [fixture_dir], "max": 3, "agy_mode": "inline"}
+        self.run_.update(config=cfg)
+
+        t = ticket(1, type_="feature")
+
+        class DummyAgyAdapter(adapters.Adapter):
+            name = "agy"
+
+        dummy_adapter = DummyAgyAdapter()
+
+        with mock.patch("yoke.router._ollama", return_value={"s0": {"noul": 0.9}}):
+            with mock.patch("yoke.calls.run_call") as mock_rc:
+                mock_rc.return_value = adapters.CallResult(structured_output={"status": "done"}, session_id="s1")
+                pipeline._call(
+                    self.run_,
+                    adapter_for=lambda role: dummy_adapter,
+                    env={},
+                    ticket=t,
+                    stage="code",
+                    attempt=1,
+                    wt=self.repo,
+                    base="HEAD",
+                    mode="write",
+                    results={},
+                    feedback="",
+                    adapter=dummy_adapter,
+                )
+                self.assertTrue(mock_rc.called)
+                spec = mock_rc.call_args[0][2]
+                self.assertNotIn("Skill", spec.allowed_tools)
+                self.assertIn("### demo", spec.prompt)
+                self.assertIn("Demo skill body", spec.prompt)
+
+    def test_call_allowed_tools_no_skill_when_empty_pick(self):
+        from yoke import adapters, pipeline
+        t = ticket(1, type_="feature")
+
+        class DummyClaudeAdapter(adapters.Adapter):
+            name = "claude"
+
+        dummy_adapter = DummyClaudeAdapter()
+        with mock.patch("yoke.router._ollama", return_value={}), mock.patch(
+            "yoke.router.pick_skills"
+        ) as mock_pick_skills:
+            with mock.patch("yoke.calls.run_call") as mock_rc:
+                mock_rc.return_value = adapters.CallResult(structured_output={"status": "done"}, session_id="s1")
+                pipeline._call(
+                    self.run_,
+                    adapter_for=lambda role: dummy_adapter,
+                    env={},
+                    ticket=t,
+                    stage="code",
+                    attempt=1,
+                    wt=self.repo,
+                    base="HEAD",
+                    mode="write",
+                    results={},
+                    feedback="",
+                    adapter=dummy_adapter,
+                )
+                self.assertTrue(mock_rc.called)
+                mock_pick_skills.assert_not_called()
+                spec = mock_rc.call_args[0][2]
+                self.assertNotIn("Skill", spec.allowed_tools)
+                self.assertIn("## Skills\n\n(none)", spec.prompt)
+
+    def test_call_injects_skills_into_qa_and_docs_prompts(self):
+        from yoke import adapters, pipeline
+        fixture_dir = os.path.join(self.tmp, "fixture_skills")
+        skill_dir = os.path.join(fixture_dir, "demo")
+        os.makedirs(skill_dir, exist_ok=True)
+        with open(os.path.join(skill_dir, "SKILL.md"), "w", encoding="utf-8") as f:
+            f.write("---\nname: demo\ndescription: demo skill description\n---\nDemo skill body\n")
+
+        cfg = dict(self.run_.cfg)
+        cfg["skills"] = {"allowlist": ["demo"], "roots": [fixture_dir], "max": 3, "agy_mode": "inline"}
+        self.run_.update(config=cfg)
+
+        t = ticket(1, type_="feature")
+
+        class DummyClaudeAdapter(adapters.Adapter):
+            name = "claude"
+
+        dummy_adapter = DummyClaudeAdapter()
+
+        for stg in ("qa", "docs"):
+            with mock.patch("yoke.router._ollama", return_value={"s0": {"noul": 0.9}}):
+                with mock.patch("yoke.calls.run_call") as mock_rc:
+                    mock_rc.return_value = adapters.CallResult(structured_output={"status": "done"}, session_id="s1")
+                    pipeline._call(
+                        self.run_,
+                        adapter_for=lambda role: dummy_adapter,
+                        env={},
+                        ticket=t,
+                        stage=stg,
+                        attempt=1,
+                        wt=self.repo,
+                        base="HEAD",
+                        mode="write",
+                        results={},
+                        feedback="",
+                        adapter=dummy_adapter,
+                    )
+                    self.assertTrue(mock_rc.called)
+                    spec = mock_rc.call_args[0][2]
+                    self.assertIn("Skill", spec.allowed_tools)
+                    self.assertIn("Relevant skills (invoke with the Skill tool):", spec.prompt)
+                    self.assertIn("- demo: demo skill description", spec.prompt)
+
+    def test_call_non_empty_catalog_all_low_scores_gives_no_skill_and_none_in_prompt(self):
+        from yoke import adapters, pipeline
+        fixture_dir = os.path.join(self.tmp, "fixture_skills")
+        skill_dir = os.path.join(fixture_dir, "demo")
+        os.makedirs(skill_dir, exist_ok=True)
+        with open(os.path.join(skill_dir, "SKILL.md"), "w", encoding="utf-8") as f:
+            f.write("---\nname: demo\ndescription: demo skill description\n---\nDemo skill body\n")
+
+        cfg = dict(self.run_.cfg)
+        cfg["skills"] = {"allowlist": ["demo"], "roots": [fixture_dir], "max": 3, "agy_mode": "inline"}
+        self.run_.update(config=cfg)
+
+        t = ticket(1, type_="feature")
+
+        class DummyClaudeAdapter(adapters.Adapter):
+            name = "claude"
+
+        dummy_adapter = DummyClaudeAdapter()
+
+        with mock.patch("yoke.router._ollama", return_value={"s0": {"noul": 0.1}}):
+            with mock.patch("yoke.calls.run_call") as mock_rc:
+                mock_rc.return_value = adapters.CallResult(structured_output={"status": "done"}, session_id="s1")
+                pipeline._call(
+                    self.run_,
+                    adapter_for=lambda role: dummy_adapter,
+                    env={},
+                    ticket=t,
+                    stage="code",
+                    attempt=1,
+                    wt=self.repo,
+                    base="HEAD",
+                    mode="write",
+                    results={},
+                    feedback="",
+                    adapter=dummy_adapter,
+                )
+                self.assertTrue(mock_rc.called)
+                spec = mock_rc.call_args[0][2]
+                self.assertNotIn("Skill", spec.allowed_tools)
+                self.assertIn("## Skills\n\n(none)", spec.prompt)
+
+    def test_call_read_only_stages_skip_skills(self):
+        from yoke import adapters, pipeline
+        fixture_dir = os.path.join(self.tmp, "fixture_skills")
+        skill_dir = os.path.join(fixture_dir, "demo")
+        os.makedirs(skill_dir, exist_ok=True)
+        with open(os.path.join(skill_dir, "SKILL.md"), "w", encoding="utf-8") as f:
+            f.write("---\nname: demo\ndescription: demo skill description\n---\nDemo skill body\n")
+
+        cfg = dict(self.run_.cfg)
+        cfg["skills"] = {"allowlist": ["demo"], "roots": [fixture_dir], "max": 3, "agy_mode": "inline"}
+        self.run_.update(config=cfg)
+
+        t = ticket(1, type_="feature")
+
+        class DummyClaudeAdapter(adapters.Adapter):
+            name = "claude"
+
+        dummy_adapter = DummyClaudeAdapter()
+
+        for ro_stage in ("review", "validate"):
+            with mock.patch("yoke.router.pick_skills") as mock_pick_skills, mock.patch(
+                "yoke.router._ollama", return_value={}
+            ), mock.patch(
+                "yoke.router.pick_tier_effort", return_value={"tier": None, "effort": None, "source": "none"}
+            ):
+                with mock.patch("yoke.calls.run_call") as mock_rc:
+                    mock_rc.return_value = adapters.CallResult(structured_output={"verdict": "approve"}, session_id="s1")
+                    pipeline._call(
+                        self.run_,
+                        adapter_for=lambda role: dummy_adapter,
+                        env={},
+                        ticket=t,
+                        stage=ro_stage,
+                        attempt=1,
+                        wt=self.repo,
+                        base="HEAD",
+                        mode="read",
+                        results={},
+                        feedback="",
+                        adapter=dummy_adapter,
+                    )
+                    mock_pick_skills.assert_not_called()
+                    spec = mock_rc.call_args[0][2]
+                    self.assertNotIn("Skill", spec.allowed_tools)
+                    self.assertNotIn("demo", spec.prompt)
 
 
 if __name__ == "__main__":

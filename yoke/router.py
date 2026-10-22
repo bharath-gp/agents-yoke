@@ -429,6 +429,99 @@ def pick_tier_effort(run, ticket, stage, attempt):
     return {"tier": picked["tier"], "effort": picked["effort"], "source": source}
 
 
+def pick_skills(run, ticket, stage, catalog):
+    """Pick skills from catalog for ticket and stage using Ollama noul scores.
+
+    Evaluates up to 64 catalog candidates. Filters by noul >= config.threshold(cfg, 'skill'),
+    sorts descending by score, caps at cfg['skills']['max'], and logs a router event.
+    Returns list of picked catalog entries ({name, description, path}).
+    """
+    if not catalog:
+        return []
+
+    cfg = getattr(run, "cfg", None)
+    if not isinstance(cfg, dict):
+        cfg = {}
+
+    cands = catalog[:64]
+    q = {
+        "s%d" % i: {
+            "type": "noul",
+            "instructions": "Is skill %s: %s useful for this %s step?" % (
+                c.get("name", ""),
+                str(c.get("description", ""))[:200],
+                stage,
+            ),
+        }
+        for i, c in enumerate(cands)
+    }
+
+    state = _ticket_text(ticket) if isinstance(ticket, dict) else str(ticket or "")
+    model = cfg.get("router", {}).get("model") if isinstance(cfg, dict) else None
+
+    try:
+        answers = _ollama(cfg, state[:STATE_CHARS], q)
+    except Exception as e:
+        thr = config.threshold(cfg, "skill")
+        if run is not None:
+            try:
+                run.event(
+                    "router",
+                    fn="skill",
+                    point="skill",
+                    source="none",
+                    choice=None,
+                    confidence=None,
+                    threshold=thr,
+                    fallback_reason=("ollama failed: %s" % e)[:200],
+                    model=model,
+                )
+            except Exception:
+                pass
+        return []
+
+    thr = config.threshold(cfg, "skill")
+    scored = []
+    for i, c in enumerate(cands):
+        key = "s%d" % i
+        ans = answers.get(key) if isinstance(answers, dict) else None
+        val = None
+        if isinstance(ans, dict):
+            val = ans.get("noul")
+        elif isinstance(ans, (int, float)) and not isinstance(ans, bool):
+            val = ans
+        if isinstance(val, (int, float)) and not isinstance(val, bool) and val >= thr:
+            scored.append((val, c))
+
+    scored.sort(key=lambda item: item[0], reverse=True)
+
+    skills_cfg = cfg.get("skills", {}) if isinstance(cfg, dict) else {}
+    max_skills = skills_cfg.get("max", 3) if isinstance(skills_cfg, dict) else 3
+    if isinstance(max_skills, int) and max_skills >= 0:
+        picked = [c for _, c in scored[:max_skills]]
+    else:
+        picked = [c for _, c in scored]
+
+    names = [c.get("name", "") for c in picked]
+    if run is not None:
+        try:
+            run.event(
+                "router",
+                fn="skill",
+                point="skill",
+                source="ollama",
+                choice=",".join(names)[:200],
+                confidence=scored[0][0] if scored else None,
+                threshold=thr,
+                fallback_reason=None,
+                model=model,
+            )
+        except Exception:
+            pass
+
+    return picked
+
+
 def assert_check(run, claim, evidence, adapter=None):
     state = ("Evidence:\n%s" % evidence)[-STATE_CHARS:]
 

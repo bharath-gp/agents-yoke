@@ -280,7 +280,7 @@ Review stage loop (`_review_loop`): Bounded review-revision loop (up to `max_rev
 
 Context handoff: prompts **inline** the ticket JSON, plan excerpt, and prior-stage result JSON (small). Copies are saved in the attempt dir for audit. Inlining avoids sandbox path problems with files outside the worktree. Upstream handoff notes (interface changes, new files, gotchas) from closed `depends_on` ancestors are atomically stored at `tickets/<T>/handoff.json` on close and inlined into `code`, `qa`, and `validate` prompts via `$upstream` (capped at 4000 characters and labelled as data from another agent, not instructions).
 
-Prompt templates: `yoke/prompts/<stage>.md` using `string.Template` (`$ticket`, `$plan_excerpt`, `$prior_results`, `$feedback`, `$base_sha`, `$worktree`, `$upstream`): `$` avoids clashing with JSON braces. Every worker prompt states: stay inside the worktree, do not commit, do not push, do not touch git config, return only the schema object.
+Prompt templates: `yoke/prompts/<stage>.md` using `string.Template` (`$ticket`, `$plan_excerpt`, `$prior_results`, `$feedback`, `$base_sha`, `$worktree`, `$upstream`, `$skills`): `$` avoids clashing with JSON braces. Every worker prompt states: stay inside the worktree, do not commit, do not push, do not touch git config, return only the schema object.
 
 Milestone gates and fix tickets:
 - Sequential milestone barrier: tickets belonging to milestone `MS-k` are ready only when all preceding milestones `MS-i` (`i < k`) have passed or been waived (`passed|waived`).

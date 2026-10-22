@@ -139,7 +139,7 @@ def render(picked, agent, cfg=None):
         return "(none)"
 
     skills_cfg = (cfg or {}).get("skills", {})
-    if agent == "agy" and skills_cfg.get("agy_mode") == "inline":
+    if agent == "agy" and skills_cfg.get("agy_mode", "inline") == "inline":
         chunks = []
         inline_chars = skills_cfg.get("inline_chars", 4000)
         current_len = 0

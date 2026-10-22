@@ -369,6 +369,8 @@ Yoke discovers available `SKILL.md` files and provides them to agents based on t
   - `claude`: lists relevant skill names and descriptions (`Relevant skills (invoke with the Skill tool):\n- name: description`).
   - `agy`: when `skills.agy_mode` is `"inline"`, inlines skill markdown bodies stripped of YAML frontmatter (`### name\n<body>`), truncated to `skills.inline_chars` total length. When `skills.agy_mode` is set to any other value, falls back to the Claude-style name list.
   - When no skills match or are picked, renders `(none)`.
+- **Dynamic skill picking**: For `code`, `qa`, and `docs` stages, yoke evaluates discovered skills using Ollama via `router.pick_skills`. Up to 64 candidate skills are queried in a single batched call with `noul` relevance questions (`s0..sN`). Candidates with scores meeting or exceeding `router.thresholds.skill` (default: 0.6) are sorted descending by score and capped at `skills.max` (default: 3). If Ollama fails, skill picking fails closed and returns an empty list. Read-only stages (`review`, `validate`) skip skill picking entirely.
+- **Prompt injection and tool permissions**: In `code`, `qa`, and `docs` stages, picked skills are rendered into the `$skills` prompt variable under `## Skills`. If no skills are picked or available, `(none)` is injected. When picked skills are non-empty and the active agent is `claude`, the `Skill` tool is dynamically appended to `write_allowed_tools`.
 
 
 ## Typical flow

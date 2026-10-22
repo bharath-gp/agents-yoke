@@ -11,7 +11,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from . import adapters, calls, config, gitops, guard, hooks, milestones, planreview, router, schema, state, tracker, usage
+from . import adapters, calls, config, gitops, guard, hooks, milestones, planreview, router, schema, skills, state, tracker, usage
 
 PKG = os.path.dirname(os.path.abspath(__file__))
 
@@ -510,12 +510,24 @@ def _call(run, adapter_for, env, ticket, stage, attempt, wt, base, mode, results
     ppath = os.path.join(PKG, "prompts", pname + ".md")
     if not os.path.isfile(ppath):
         ppath = os.path.join(PKG, "prompts", stage + ".md")
+    target_adapter = adapter if adapter is not None else adapter_for(stage)
+    agent_name = getattr(target_adapter, "name", None)
+    skills_text = "(none)"
+    tools = tuple(cfg["agents"]["claude"]["write_allowed_tools"])
+    if stage in ("code", "qa", "docs"):
+        repo = run.read_json("run.json", {}).get("repo")
+        cat = skills.catalog(cfg, repo)
+        if cat:
+            picked = router.pick_skills(run, ticket, stage, cat)
+            skills_text = skills.render(picked, agent_name, cfg)
+            if picked and agent_name == "claude" and "Skill" not in tools:
+                tools += ("Skill",)
     subs = dict(
         ticket=json.dumps(ticket, indent=2),
         plan_excerpt=ticket.get("plan_excerpt", "") if isinstance(ticket, dict) else "",
         destination=dest, out_of_scope=oos,
         prior_results=json.dumps(results, indent=2), feedback=feedback or "(none)",
-        base_sha=base, worktree=wt, upstream=upstream, **_vars(cfg, ticket))
+        base_sha=base, worktree=wt, upstream=upstream, skills=skills_text, **_vars(cfg, ticket))
     if extra_vars:
         subs.update(extra_vars)
     with open(ppath) as f:
@@ -525,13 +537,11 @@ def _call(run, adapter_for, env, ticket, stage, attempt, wt, base, mode, results
     wenv = dict(env or {}, GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="core.hooksPath", GIT_CONFIG_VALUE_0=hooks)
     timeout = cfg["timeouts_s"][stage]
     tid = ticket["id"] if isinstance(ticket, dict) else ticket
-    target_adapter = adapter if adapter is not None else adapter_for(stage)
-    agent_name = getattr(target_adapter, "name", None)
     spec = adapters.CallSpec(
         prompt=prompt, schema_path=schema.schema_path(stage), cwd=wt, mode=mode,
         model=over.get("model"), effort=over.get("effort"), resume_session=resume,
         timeout_s=timeout, env=wenv,
-        allowed_tools=tuple(cfg["agents"]["claude"]["write_allowed_tools"]),
+        allowed_tools=tools,
         web_tools=tuple(cfg["search"]["tools"]) if stage in WEB_STAGES else (),
         settings_path=run.read_json("run.json").get("agent_settings"))
 
