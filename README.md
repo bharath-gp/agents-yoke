@@ -347,6 +347,29 @@ The decision router evaluates routing and safety triage via local Ollama models 
   - `yoke guard check-diff [--run R]`: Runs safety analysis on repository diffs via `guard.scan_diff` and outputs JSON results, loading configuration from the specified run or local repository settings.
   - **PreToolUse chat hook**: `hooks/hooks.json` registers a `PreToolUse` hook running `command -v yoke >/dev/null 2>&1 && yoke guard tool --active --mode chat || true` with a 10-second timeout, protecting host agent sessions during active runs without blocking tool execution.
 
+### Skill catalog and discovery
+
+Yoke discovers available `SKILL.md` files and provides them to agents based on the `skills` configuration:
+
+```json
+{
+  "skills": {
+    "allowlist": [],
+    "max": 3,
+    "agy_mode": "inline",
+    "inline_chars": 4000,
+    "roots": []
+  }
+}
+```
+
+- **Skill discovery roots**: By default, yoke searches `~/.claude/skills`, `<repo>/.claude/skills`, and cached plugin directories under `~/.claude/plugins/cache/*/*/*/skills` (selecting the newest version per plugin by directory modification time and prefixing skill names as `<plugin>:<name>`). Custom roots can be specified in `skills.roots` to override default locations.
+- **Allowlist filtering**: `skills.allowlist` defines glob patterns (using `fnmatch`) matched against skill names. Skills are only exposed if they match at least one pattern. An empty allowlist (`[]`, the default) returns no skills.
+- **Agent rendering**: Discovered skills are formatted for agent prompts:
+  - `claude`: lists relevant skill names and descriptions (`Relevant skills (invoke with the Skill tool):\n- name: description`).
+  - `agy`: when `skills.agy_mode` is `"inline"`, inlines skill markdown bodies stripped of YAML frontmatter (`### name\n<body>`), truncated to `skills.inline_chars` total length. When `skills.agy_mode` is set to any other value, falls back to the Claude-style name list.
+  - When no skills match or are picked, renders `(none)`.
+
 
 ## Typical flow
 
