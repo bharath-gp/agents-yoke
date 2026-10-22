@@ -55,6 +55,11 @@ Status legend per milestone: `[ ]` todo, `[~]` in progress, `[x]` done. Update t
    | [M22](#m22) | Rate limit detection, pause, and retry | [2.6](#s2-6), [2.8](#s2-8), [2.11](#s2-11), [2.12](#s2-12) |
    | [M23](#m23) | Detailed plans and design-carrying tickets | [2.5](#s2-5), [2.7](#s2-7) |
    | [M24](#m24) | Dashboard usage breakdown | [2.2](#s2-2), [2.12](#s2-12), [2.13](#s2-13) |
+   | [M25](#m25) | Decision points and safety guard | [2.6](#s2-6), [2.8](#s2-8), [2.10](#s2-10), [2.15](#s2-15) |
+   | [M26](#m26) | Branch-point decisions | [2.8](#s2-8), [2.10](#s2-10) |
+   | [M27](#m27) | Model and effort pick | [2.4](#s2-4), [2.6](#s2-6), [2.10](#s2-10) |
+   | [M28](#m28) | Skill pick | [2.4](#s2-4), [2.10](#s2-10) |
+   | [M29](#m29) | Browser e2e stage | [2.6](#s2-6), [2.8](#s2-8), [2.10](#s2-10) |
 4. [Verification matrix](#s4)
 5. [Out of scope](#s5)
 - [Appendix A: Topic index](#appA)
@@ -303,6 +308,7 @@ Milestone gates and fix tickets:
 - **Default decision model: `tev1:4b`.** 10/10 on 10 ticket-type classifications at ~0.75 s each (first call ~2.9 s load), 4/5 on failure triage (the miss was an ambiguous sample). `nimble-v3:9b-mxfp8`: same scores, ~1.6 s, and **CC BY-NC 4.0 (noncommercial only)**, so keep it as an optional config override, not the default. `tev1:4b` runs with `num_ctx` 2048 (its readme: keep state short, longest trained input ~1.5k tokens): truncate `state` to ~1500 tokens, tail-biased for logs. Use `probabilities`/`confidence` for `min_confidence`; noul values are not calibrated (retryable read 0.28-0.44 on failures), so threshold them on your own data. Neither model supports `/api/chat` (HTTP 400).
 - **Fallback chain for decision functions, never blocks:** Ollama unreachable / HTTP error / invalid JSON / schema-invalid / `confidence < min_confidence` → small primary-LLM call (`claude -p --model claude-haiku-5-5 --effort low --json-schema ...`, audited like any call) → if that fails too → deterministic default (`classify`: `feature`; `triage`: `retryable=true, category=other`; `summary`: truncation; `commit_message`: `T-xxx: title`; `assert`: escalate as "unknown"). Every fallback logged with reason.
 - `route_ticket` is deterministic: `routing[type]` + role map + per-stage model/effort. No LLM.
+- Planned (M25-M29): named decision points with per-point thresholds that act when confident, a safety guard, branch points, model/effort pick, skill pick and a browser e2e stage. See [M25](#m25) and `docs/research/decision-models.md`.
 - `mcp_server.py`: stdlib JSON-RPC 2.0 over stdio implementing MCP `initialize`, `notifications/initialized`, `tools/list`, `tools/call`, `ping`. Exposes the router functions as tools `yoke_classify_ticket`, `yoke_triage_failure`, `yoke_summarize`, `yoke_commit_message`, `yoke_assert`, `yoke_health`, plus read-only `yoke_status` (run summary). The runner imports `router.py` directly (no MCP hop); MCP is for agent sessions.
 
 <a id="s2-11"></a>
@@ -655,6 +661,81 @@ Files: `yoke/usage.py`, `yoke/dashboard.py`, `yoke/dashboard.html`, `tests/test_
 - Limits: attribution is by time window, so unrelated chats on the same repo during a run are counted; subagent transcripts (`<session>/subagents/`) are not read; planning done in the chat is inside `interactive`, not a separate stage.
 - Notes: Built in `usage.py`, `dashboard.py`, `dashboard.html`, bumped to 0.10.2.
 
+<a id="m25"></a>
+### M25: Decision points and safety guard `[ ]`
+Files: `yoke/router.py`, `yoke/guard.py`, `yoke/cli.py`, `yoke/adapters.py`, `yoke/pipeline.py`, `yoke/config.py`, `yoke/defaults.json`, `yoke/schemas/router-safety.json`, `hooks/hooks.json`, `yoke/dashboard.py`, `yoke/dashboard.html`, `tests/test_guard.py`, `tests/test_router.py`, `README.md`.
+- Why: Ollama is reachable, but none of the three router paths that use it fire in a normal run. Every `router` event in recent runs is `commit_message` from the Haiku fallback. Design and the full use-case list are in `docs/research/decision-models.md`. This milestone lays the shared plumbing and ships the safety guard first.
+- Shared plumbing (`router.py`):
+  - `decide(run_or_cfg, point, state, questions, parse, default)` generalises `_decide` to any named decision point.
+  - Per-point thresholds: `router.thresholds.<point>`, falling back to `router.min_confidence`.
+  - The Haiku fallback is optional per point (`fallback: false` for latency-bound callers such as hooks).
+  - Every call logs a `router` event with `point`, `choice`, `confidence`, `threshold`, `source` and `fallback_reason`.
+  - Policy is act immediately: at or above threshold the model's answer is used; below it, the caller's existing logic runs.
+- Guard core (`yoke/guard.py`), one function per target, each returning `{decision: allow|deny|ask|escalate, reason, source, confidence}`:
+  - **Fast path**: Grep, Glob, and Read of non-secret paths inside the repo or worktree are allowed with no model call.
+  - **Denylist** (deterministic, always deny): reads of `.env*`, `~/.ssh`, `~/.aws`, `*.pem` and key files; `rm -rf` outside the worktree; `curl|wget ... | sh`; writes to `.git/hooks`; outbound uploads (`curl -d @file`, `scp`, `nc`).
+  - **Grey zone**: one Ollama call with three `noul` questions (`reads_secrets`, `destructive`, `exfiltrates`). Any value >= `thresholds.safety` denies. Ollama down or below threshold returns `ask` (chat) or no opinion (runner agents, whose tool allowlist still applies).
+  - Denylist, allowlist and `thresholds.safety` are user-config only (`~/.yoke/config.json`), like `gate_hooks`. A repo `.yoke.json` cannot loosen them.
+- Four targets:
+  1. **Pre-commit diff scan** (`pipeline.py`, before the runner commits a ticket): deterministic checks for added secrets (key/token regexes, high-entropy strings), touched `.env`/credential files, deletions over `guard.max_deleted_lines`, changed CI/hook files, and new network calls. A grey-zone hit asks the model. Deny feeds the reason back to the coder as retry feedback; grey zone escalates the ticket. Covers agy, which has no shell.
+  2. **Runner agent tool calls**: claude calls get a run-scoped settings file (`--settings <run dir>/agent-settings.json`) with a PreToolUse hook running `yoke guard tool`. Verify that `--settings` merges hooks without dropping the existing tool allowlist.
+  3. **Chat session**: the plugin's `hooks/hooks.json` adds a PreToolUse hook. It runs `yoke guard tool --active`, which is silent (no decision) unless a run is active for the cwd's repo.
+  4. **QA `test_command`**: scored before the runner executes it. Deny fails QA with the reason.
+- `yoke guard tool` reads the Claude Code PreToolUse JSON on stdin and prints `hookSpecificOutput.permissionDecision` (`allow` / `deny` / `ask`) with a reason. It never raises: any internal error prints nothing and exits 0.
+- Visibility: `guard` events per flag. The dashboard shows a decisions card (per point: count by source, flags with reasons).
+- Exit criteria: `.env` read and `rm -rf /` denied without a model call; a fake grey-zone call goes to `FakeOllama`; a repo config cannot override the denylist; a diff adding an AWS-style key is refused before commit; hook p50 latency on `tev1:4b` recorded in Notes.
+- Notes:
+
+<a id="m26"></a>
+### M26: Branch-point decisions `[ ]`
+Files: `yoke/router.py`, `yoke/pipeline.py`, `yoke/scheduler.py`, `yoke/milestones.py`, `yoke/schemas/router-*.json`, `yoke/defaults.json`, `tests/test_branch_points.py`.
+- Depends on [M25](#m25) plumbing. Each point below acts when confidence >= its threshold; otherwise today's behaviour is unchanged.
+- **Test failure category** (runner re-run of `test_command` fails): `choice` over `product`, `testware` and `environment`.
+  - `product`: feedback to the coder.
+  - `testware`: send back to QA.
+  - `environment`: rerun once, then escalate.
+  - Replaces the implicit "rerun on flake" path and feeds `triage_failure` categories.
+- **After a failed attempt**: `choice` over `retry`, `split`, `replan` and `escalate`.
+  - `split` and `replan` escalate with the recommendation (the runner does not rewrite tickets; that needs a new ticket approval).
+  - `escalate` stops burning the remaining attempts.
+- **Milestone gate failure**: `choice` over `fix_ticket` (today's `F-xxx`) and `escalate` (spec gap or cross-ticket design).
+- **Validator reject**: `choice` over `coder`, `qa`, `docs` and `escalate`, picking which stage reruns instead of always restarting at code.
+- State per point is pruned to `STATE_CHARS` (tail of the failing log plus ticket title and exit criteria).
+- Exit criteria: each point tested with `FakeOllama` above and below threshold; below threshold matches pre-M26 behaviour; events record point and choice.
+- Notes:
+
+<a id="m27"></a>
+### M27: Model and effort pick `[ ]`
+Files: `yoke/router.py`, `yoke/pipeline.py`, `yoke/config.py`, `yoke/defaults.json`, `tests/test_model_pick.py`.
+- Per ticket and stage, two `choice` questions: tier (`cheap` or `plan`, from `yoke models`) and effort (`low`, `medium` or `high`), from ticket design, steps, risks and `files_hint` size.
+- The agent CLI stays fixed by `routing`. Explicit `routing.<type>.overrides` and `yoke models` pins always win over the model.
+- A retry after failure bumps tier or effort one step, deterministically, on top of the pick.
+- The pick is recorded in the call's `requested` audit fields and the `router` event.
+- Exit criteria: overrides beat the pick; the bump on retry is tested; below threshold uses today's config values.
+- Notes:
+
+<a id="m28"></a>
+### M28: Skill pick `[ ]`
+Files: `yoke/skills.py`, `yoke/router.py`, `yoke/pipeline.py`, `yoke/prompts/{code,qa,docs}.md`, `yoke/defaults.json`, `tests/test_skill_pick.py`.
+- Catalog: scan `~/.claude/skills`, installed plugin skills and the repo's `.claude/skills` for name plus description (SKILL.md frontmatter). Filter by `skills.allowlist` (user config).
+- Pick: one `noul` relevance question per candidate per ticket and stage, batched in one Ollama call (up to 64 questions). Take the top 0-3 at or above `thresholds.skill`.
+- Prompts gain `$skills`, which names the picked skills and tells the agent to use them.
+- agy: `agy --help` shows skill expansion is on in print mode, and `agy plugin install` loads plugin skills ([M7](#m7) notes). First ticket: verify a headless agy call invokes a named skill. If it cannot, inline the SKILL.md body into agy's prompt instead (capped).
+- Exit criteria: catalog discovery tested on a fixture tree; allowlist filtering; agy invocation verified or the inline fallback built and noted.
+- Notes:
+
+<a id="m29"></a>
+### M29: Browser e2e stage `[ ]`
+Files: `yoke/e2e.py`, `yoke/pipeline.py`, `yoke/config.py`, `yoke/defaults.json`, `yoke/schemas/e2e.json`, `pyproject.toml`, `tests/test_e2e_stage.py`.
+- New optional `e2e` stage after `qa` for web tickets. Playwright is an optional extra (`pip install yoke[e2e]`) and imported lazily, so core stays stdlib. Without it the stage is skipped with an `e2e_skipped` event.
+- Web tickets: routing opt-in (`routing.<type>.stages` includes `e2e`) plus `e2e.url` (dev server URL) and `e2e.start_command` in config.
+- Picker: each step prunes the accessibility tree to ~20 candidate elements (role, name, ref) within `STATE_CHARS`. A `choice` question picks the next action against the exit criterion being tested.
+- Verdict: after each step, a `noul` question asks whether the page shows the expected outcome. The stage passes when every exit criterion's verdict is at or above `thresholds.e2e_verdict`.
+- A low-confidence pick or verdict hands that step to a claude agent with a screenshot and the pruned tree.
+- Bounded by `e2e.max_steps` per criterion. The model never types secrets; credentials come from project fixtures only. Pages are served from localhost only.
+- Exit criteria: picker and verdict tested with `FakeOllama` and a stub page driver; skip path tested without Playwright; one real run against a local sample app recorded in Notes.
+- Notes:
+
 ---
 
 <a id="s4"></a>
@@ -694,6 +775,8 @@ Files: `yoke/usage.py`, `yoke/dashboard.py`, `yoke/dashboard.html`, `tests/test_
 | Crash recovery, `--resume` | [2.11](#s2-11), [M9](#m9) |
 | Escalation, `unblock` | [2.8](#s2-8), [2.16](#s2-16), [M4](#m4) |
 | Fallback chain (Ollama → small Claude → default) | [2.10](#s2-10) |
+| Decision points, per-point thresholds | [2.10](#s2-10), [M25](#m25)–[M29](#m29) |
+| Safety guard (diff scan, tool calls, test command) | [M25](#m25) |
 | GitHub issues and PR | [2.14](#s2-14), [M8](#m8) |
 | Human gates (plan, tickets, escalation, final) | [2.3](#s2-3), [M7](#m7) |
 | Install (Claude plugin, agy, CLI) | [2.15](#s2-15) |
@@ -739,4 +822,7 @@ Files: `yoke/usage.py`, `yoke/dashboard.py`, `yoke/dashboard.html`, `tests/test_
 | `yoke/hooks.py` | hook runner with process-group kill on timeout | [2.6](#s2-6), [2.8](#s2-8) | [M17](#m17) |
 | `yoke/dashboard.py`, `yoke/dashboard.html` | read-only dashboard server and UI | [2.16](#s2-16) | [M15](#m15) |
 | `yoke/limits.py` | limit pattern matching, timestamp parsing, pool pause & retry | [2.6](#s2-6), [2.12](#s2-12) | [M22](#m22) |
+| `yoke/guard.py` | safety guard: diff scan, tool-call and test-command checks (planned) | [2.10](#s2-10) | [M25](#m25) |
+| `yoke/skills.py` | skill catalog discovery for skill pick (planned) | [2.10](#s2-10) | [M28](#m28) |
+| `yoke/e2e.py` | browser e2e stage (planned, optional Playwright) | [2.8](#s2-8) | [M29](#m29) |
 | `tests/fake_cli.py`, `tests/test_*.py`, `tests/e2e.sh` | fake CLI, unit + e2e tests | [4](#s4) | [M1](#m1)–[M9](#m9) |
