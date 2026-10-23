@@ -1,4 +1,5 @@
 """E2E driver protocol, Playwright driver, localhost checker, and server harness."""
+import json
 import os
 import signal
 import subprocess
@@ -6,6 +7,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+
+from . import router
 
 SELECTOR = "a,button,[role=button],[role=link],input,select,textarea,[role=tab],[role=menuitem]"
 STATE_CHARS = 6000
@@ -227,3 +230,170 @@ def stop_server(proc, grace=5) -> None:
         proc.wait(timeout=5)
     except Exception:
         pass
+
+
+def run_stage(run, ticket, wt, adapter_for, attempt, driver=None, env=None, base=None):
+    """Run E2E verification stage for ticket exit criteria.
+
+    Drives a browser Driver instance (PlaywrightDriver by default) against a local
+    target URL to verify each exit criterion of the ticket.
+
+    Step lifecycle per criterion:
+      1. Verdict: evaluates page text with Ollama decision point e2e_verdict.
+      2. Picker: if verdict below threshold, picks interactive candidate elements
+         (excluding text inputs) with Ollama decision point e2e_pick to click.
+      3. Fallback: on step exhaustion or low-confidence picker, captures screenshot
+         and invokes read-mode agent with e2e prompt schema.
+
+    Returns dict:
+        {"status": "pass"|"fail"|"blocked", "criteria": [...], "summary": str}
+    """
+    tid = ticket.get("id", "T-e2e") if isinstance(ticket, dict) else str(ticket)
+    cfg = (run.cfg.get("e2e") or {}) if hasattr(run, "cfg") and isinstance(run.cfg, dict) else {}
+    url = cfg.get("url")
+    if not url or not is_local_url(url):
+        reason = "unset e2e url" if not url else "non-local e2e url: %s" % url
+        return {"status": "blocked", "criteria": [], "summary": reason}
+
+    if driver is None:
+        try:
+            driver = PlaywrightDriver()
+        except ImportError:
+            run.event("e2e_skipped", ticket=tid, reason="playwright not installed")
+            return {"status": "pass", "criteria": [], "summary": "skipped: playwright not installed"}
+
+    proc = None
+    try:
+        start_cmd = cfg.get("start_command")
+        if start_cmd:
+            ready_timeout_s = cfg.get("ready_timeout_s", 60)
+            proc = start_server(start_cmd, wt, url, ready_timeout_s)
+        driver.open(url)
+
+        criteria_results = []
+        exit_criteria = ticket.get("exit_criteria") or []
+        max_steps = int(cfg.get("max_steps", 12))
+        num_candidates = int(cfg.get("candidates", 20))
+
+        for n, c in enumerate(exit_criteria):
+            c_name = c if isinstance(c, str) else c.get("criterion", str(c))
+            met = False
+            evidence = ""
+            for step in range(max_steps):
+                text = driver.text()
+                state = "Criterion: %s\nPage:\n%s" % (c_name, text)
+                v = router.decide(
+                    run.cfg,
+                    "e2e_verdict",
+                    state,
+                    {"met": {"type": "noul", "instructions": "Does the page show that this criterion is met?"}},
+                    lambda a: (a["met"]["noul"], a["met"]["noul"]),
+                    run,
+                )
+                if v.get("source") == "ollama":
+                    met = True
+                    conf = v.get("confidence")
+                    evidence = "model verdict %.2f" % (conf if conf is not None else v.get("result", 1.0))
+                    break
+
+                cands = [
+                    x for x in driver.candidates(num_candidates)
+                    if (x.get("role") or "").lower().strip() not in ("input", "textarea", "select", "textbox", "combobox")
+                ]
+                crit = {x["ref"]: "%s %s" % (x.get("role", ""), x.get("name", "")) for x in cands}
+                crit["none"] = "no candidate helps"
+                p = router.decide(
+                    run.cfg,
+                    "e2e_pick",
+                    state,
+                    {
+                        "action": {
+                            "type": "choice",
+                            "instructions": "Which element should be clicked next to check this criterion?",
+                            "criteria": crit,
+                        }
+                    },
+                    lambda a: (a["action"]["choice"], a["action"]["confidence"]),
+                    run,
+                )
+                if p.get("source") == "ollama" and p.get("result") != "none" and p.get("result") in crit:
+                    driver.click(p["result"])
+                    run.event(
+                        "e2e_step",
+                        ticket=tid,
+                        criterion=c_name,
+                        step=step,
+                        action=p["result"],
+                        source=p.get("source"),
+                        confidence=p.get("confidence"),
+                    )
+                    continue
+                else:
+                    break
+
+            if not met:
+                from . import pipeline
+                base_sha = base
+                if base_sha is None:
+                    try:
+                        base_sha = pipeline.ticket_state(run, tid).get("base_sha")
+                    except Exception:
+                        base_sha = None
+                shot = os.path.join(run.path("tickets/%s" % tid), "e2e-%d.png" % n)
+                try:
+                    os.makedirs(os.path.dirname(shot), exist_ok=True)
+                    driver.screenshot(shot)
+                except Exception:
+                    pass
+                t_call = dict(ticket) if isinstance(ticket, dict) else {"id": str(ticket)}
+                t_call.setdefault("id", tid)
+                t_call.setdefault("title", tid)
+                t_call.setdefault("description", "")
+                t_call.setdefault("type", "chore")
+                res = pipeline._call_retry(
+                    run,
+                    adapter_for,
+                    env,
+                    t_call,
+                    "e2e",
+                    attempt,
+                    wt,
+                    base_sha,
+                    "read",
+                    {},
+                    "",
+                    prompt_name="e2e",
+                    extra_vars={
+                        "criterion": c_name,
+                        "candidates": json.dumps(driver.candidates(num_candidates), indent=2),
+                        "page_text": driver.text(),
+                        "screenshot": shot,
+                    },
+                )
+                if res.ok and isinstance(res.structured_output, dict) and res.structured_output.get("criteria"):
+                    first = res.structured_output["criteria"][0]
+                    met = bool(first.get("met", False))
+                    evidence = first.get("evidence", "")
+                else:
+                    met = False
+                    evidence = getattr(res, "error", None) or "agent fallback failed"
+
+            criteria_results.append({"criterion": c_name, "met": met, "evidence": evidence})
+
+        all_met = all(c["met"] for c in criteria_results) if criteria_results else True
+        met_count = sum(1 for c in criteria_results if c["met"])
+        total_count = len(criteria_results)
+        status = "pass" if all_met else "fail"
+        summary = "%d/%d criteria met" % (met_count, total_count)
+        return {"status": status, "criteria": criteria_results, "summary": summary}
+    finally:
+        if driver is not None:
+            try:
+                driver.close()
+            except Exception:
+                pass
+        if proc is not None:
+            try:
+                stop_server(proc)
+            except Exception:
+                pass

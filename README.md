@@ -372,6 +372,32 @@ Yoke discovers available `SKILL.md` files and provides them to agents based on t
 - **Dynamic skill picking**: For `code`, `qa`, and `docs` stages, yoke evaluates discovered skills using Ollama via `router.pick_skills`. Up to 64 candidate skills are queried in a single batched call with `noul` relevance questions (`s0..sN`). Candidates with scores meeting or exceeding `router.thresholds.skill` (default: 0.6) are sorted descending by score and capped at `skills.max` (default: 3). If Ollama fails, skill picking fails closed and returns an empty list. Read-only stages (`review`, `validate`) skip skill picking entirely.
 - **Prompt injection and tool permissions**: In `code`, `qa`, and `docs` stages, picked skills are rendered into the `$skills` prompt variable under `## Skills`. If no skills are picked or available, `(none)` is injected. When picked skills are non-empty and the active agent is `claude`, the `Skill` tool is dynamically appended to `write_allowed_tools`.
 
+### Browser E2E verification stage
+
+Yoke supports an optional automated browser end-to-end verification stage (`e2e`) driven by Playwright and guided by Ollama with agent fallback:
+
+```json
+{
+  "e2e": {
+    "url": "http://localhost:3000",
+    "start_command": "npm run dev",
+    "ready_timeout_s": 60,
+    "max_steps": 12,
+    "candidates": 20
+  }
+}
+```
+
+- **Opt-in pipeline stage**: Add `e2e` to `routing.<ticket_type>.stages` (for example, `["code", "review", "qa", "e2e", "validate", "docs"]`).
+- **Optional dependency**: Requires `pip install yoke[e2e]` or `playwright`. If Playwright is not installed, the stage is skipped cleanly with status `pass`, summary `skipped: playwright not installed`, and an `e2e_skipped` audit event (`ticket`, `reason`).
+- **Localhost safety**: Target URLs must resolve to loopback (`localhost`, `127.0.0.1`, `::1`, or `*.localhost`). Non-local URLs are rejected immediately with status `blocked`.
+- **Server lifecycle**: If `e2e.start_command` is specified, yoke launches the server in a separate process group and polls `e2e.url` until responsive (`HTTP < 500`) within `ready_timeout_s`. The driver and server process group are always cleanly terminated in a `finally` block.
+- **Criteria evaluation loop**: For each criterion in `ticket.exit_criteria`, yoke attempts verification across up to `e2e.max_steps` (default 12):
+  - **Verdict (`e2e_verdict`)**: Evaluates page text against criterion using Ollama (`noul` question). If score meets or exceeds `router.thresholds.e2e_verdict` (default 0.8), the criterion is marked met.
+  - **Picker (`e2e_pick`)**: If verdict is not reached, collects up to `candidates` interactive elements (filtering out text inputs: `input`, `textarea`, `select`, `textbox`, `combobox`) and queries Ollama to select next action or `"none"`. On confident pick (`thresholds.e2e_pick`, default 0.6), clicks element and logs an `e2e_step` event.
+  - **Agent fallback**: If criteria remain unmet after step exhaustion or low-confidence picks, yoke captures a screenshot and invokes an agent in read mode (`e2e` role, default primary `claude`) using `e2e.json` schema and prompt `e2e.md` with candidate elements, page text, and screenshot path.
+- **Pipeline integration & close gate**: On failure, `e2e` returns retry feedback (`e2e failed:\n- <criterion>: <evidence>`); blocked runs raise an escalation. When `e2e` is in stages, `close_gate` verifies `results["e2e"]["status"] == "pass"`.
+
 
 ## Typical flow
 

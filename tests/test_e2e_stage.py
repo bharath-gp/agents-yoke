@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import signal
@@ -10,7 +11,8 @@ import unittest
 import urllib.error
 from unittest import mock
 
-from yoke import e2e, schema
+from tests.test_pipeline import FAKE_CLI, PipeBase, CODE, val, resp, ticket
+from yoke import adapters, e2e, pipeline, planreview, router, schema
 
 os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
 
@@ -281,6 +283,618 @@ class HarnessTest(unittest.TestCase):
             mock_pw.stop.assert_called_once()
             self.assertIsNone(driver.browser)
             self.assertIsNone(driver._pw)
+
+
+class FakeDriver(e2e.Driver):
+    def __init__(self, states):
+        self.states = states
+        self.idx = 0
+        self.clicks = []
+        self.closed = False
+        self.opened_urls = []
+        self.screenshots = []
+
+    def open(self, url: str) -> None:
+        self.opened_urls.append(url)
+
+    def candidates(self, limit: int = 20) -> list:
+        cur = self.states[min(self.idx, len(self.states) - 1)]
+        c = cur.get("candidates", [])
+        return c[:limit] if limit is not None else c
+
+    def click(self, ref: str) -> None:
+        self.clicks.append(ref)
+        if self.idx + 1 < len(self.states):
+            self.idx += 1
+
+    def text(self) -> str:
+        cur = self.states[min(self.idx, len(self.states) - 1)]
+        return cur.get("text", "")
+
+    def screenshot(self, path: str) -> None:
+        self.screenshots.append(path)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class StageTest(PipeBase):
+    def _read_events(self):
+        with open(self.run_.path("events.jsonl")) as f:
+            return [json.loads(line) for line in f if line.strip()]
+
+    def test_picker_clicks_until_verdict_pass(self):
+        cfg = dict(self.run_.cfg)
+        cfg["e2e"] = {"url": "http://localhost:1", "candidates": 20, "max_steps": 12}
+        self.run_.update(config=cfg)
+
+        states = [
+            {
+                "candidates": [{"ref": "e0", "role": "button", "name": "Next"}],
+                "text": "state 0 text",
+            },
+            {
+                "candidates": [],
+                "text": "state 1 text",
+            },
+        ]
+        driver = FakeDriver(states)
+
+        def fake_ollama(cfg, state, questions, timeout=60):
+            res = {}
+            if "met" in questions:
+                res["met"] = {"noul": 0.1 if "state 0" in state else 0.9}
+            if "action" in questions:
+                res["action"] = {"type": "choice", "choice": "e0", "confidence": 0.9}
+            return res
+
+        t = dict(ticket(1), exit_criteria=["state 1 text visible"])
+        adapter_for = lambda role: adapters.FakeAdapter(FAKE_CLI)
+        with mock.patch("yoke.router._ollama", side_effect=fake_ollama):
+            out = e2e.run_stage(self.run_, t, self.tmp, adapter_for, 1, driver=driver)
+
+        self.assertEqual(out["status"], "pass")
+        self.assertEqual(len(driver.clicks), 1)
+        self.assertEqual(driver.clicks, ["e0"])
+        self.assertTrue(driver.closed)
+
+        events = self._read_events()
+        step_events = [e for e in events if e.get("kind") == "e2e_step"]
+        self.assertEqual(len(step_events), 1)
+        self.assertEqual(step_events[0]["ticket"], "T-001")
+        self.assertEqual(step_events[0]["criterion"], "state 1 text visible")
+        self.assertEqual(step_events[0]["step"], 0)
+        self.assertEqual(step_events[0]["action"], "e0")
+        self.assertEqual(step_events[0]["source"], "ollama")
+        self.assertEqual(step_events[0]["confidence"], 0.9)
+
+    def test_low_confidence_falls_back_to_agent(self):
+        cfg = dict(self.run_.cfg)
+        cfg["e2e"] = {"url": "http://localhost:1", "candidates": 20, "max_steps": 12}
+        self.run_.update(config=cfg)
+
+        states = [
+            {
+                "candidates": [{"ref": "e0", "role": "button", "name": "Button"}],
+                "text": "page text",
+            }
+        ]
+        driver = FakeDriver(states)
+
+        def fake_ollama(cfg, state, questions, timeout=60):
+            res = {}
+            if "met" in questions:
+                res["met"] = {"noul": 0.1}
+            if "action" in questions:
+                res["action"] = {"type": "choice", "choice": "none", "confidence": 0.9}
+            return res
+
+        agent_result = {
+            "status": "pass",
+            "criteria": [
+                {
+                    "criterion": "submit succeeded",
+                    "met": True,
+                    "evidence": "agent verified the submission",
+                }
+            ],
+            "summary": "verified by agent",
+        }
+        with open(self.script, "w") as f:
+            json.dump({"e2e": [resp(agent_result)]}, f)
+
+        t = dict(ticket(1), exit_criteria=["submit succeeded"])
+        adapter_for = lambda role: adapters.FakeAdapter(FAKE_CLI)
+        with mock.patch("yoke.router._ollama", side_effect=fake_ollama):
+            out = e2e.run_stage(self.run_, t, self.tmp, adapter_for, 1, driver=driver, env=self.env)
+
+        self.assertEqual(out["status"], "pass")
+        self.assertEqual(len(out["criteria"]), 1)
+        self.assertTrue(out["criteria"][0]["met"])
+        self.assertEqual(out["criteria"][0]["evidence"], "agent verified the submission")
+        self.assertTrue(driver.closed)
+
+    def test_bounded_by_max_steps_falls_back_to_agent(self):
+        cfg = dict(self.run_.cfg)
+        cfg["e2e"] = {"url": "http://localhost:1", "candidates": 20, "max_steps": 3}
+        self.run_.update(config=cfg)
+
+        states = [
+            {
+                "candidates": [{"ref": "e0", "role": "button", "name": "Loop"}],
+                "text": "loop text",
+            }
+        ]
+        driver = FakeDriver(states)
+
+        def fake_ollama(cfg, state, questions, timeout=60):
+            res = {}
+            if "met" in questions:
+                res["met"] = {"noul": 0.1}
+            if "action" in questions:
+                res["action"] = {"type": "choice", "choice": "e0", "confidence": 0.9}
+            return res
+
+        agent_result = {
+            "status": "pass",
+            "criteria": [
+                {
+                    "criterion": "loop broken",
+                    "met": True,
+                    "evidence": "agent handled it after budget spent",
+                }
+            ],
+            "summary": "agent pass",
+        }
+        with open(self.script, "w") as f:
+            json.dump({"e2e": [resp(agent_result)]}, f)
+
+        t = dict(ticket(1), exit_criteria=["loop broken"])
+        adapter_for = lambda role: adapters.FakeAdapter(FAKE_CLI)
+        with mock.patch("yoke.router._ollama", side_effect=fake_ollama):
+            out = e2e.run_stage(self.run_, t, self.tmp, adapter_for, 1, driver=driver, env=self.env)
+
+        self.assertEqual(out["status"], "pass")
+        self.assertEqual(len(driver.clicks), 3)
+        self.assertEqual(driver.clicks, ["e0", "e0", "e0"])
+        self.assertTrue(out["criteria"][0]["met"])
+        self.assertEqual(out["criteria"][0]["evidence"], "agent handled it after budget spent")
+        self.assertTrue(driver.closed)
+
+    def test_run_stage_fails_when_agent_returns_unmet(self):
+        cfg = dict(self.run_.cfg)
+        cfg["e2e"] = {"url": "http://localhost:1", "candidates": 20, "max_steps": 1}
+        self.run_.update(config=cfg)
+
+        driver = FakeDriver([{"candidates": [], "text": "bad page"}])
+
+        def fake_ollama(cfg, state, questions, timeout=60):
+            res = {}
+            if "met" in questions:
+                res["met"] = {"noul": 0.1}
+            return res
+
+        agent_result = {
+            "status": "fail",
+            "criteria": [
+                {
+                    "criterion": "criterion 1",
+                    "met": False,
+                    "evidence": "element not found on page",
+                }
+            ],
+            "summary": "failed to find element",
+        }
+        with open(self.script, "w") as f:
+            json.dump({"e2e": [resp(agent_result)]}, f)
+
+        t = dict(ticket(1), exit_criteria=["criterion 1"])
+        adapter_for = lambda role: adapters.FakeAdapter(FAKE_CLI)
+        with mock.patch("yoke.router._ollama", side_effect=fake_ollama):
+            out = e2e.run_stage(self.run_, t, self.tmp, adapter_for, 1, driver=driver, env=self.env)
+
+        self.assertEqual(out["status"], "fail")
+        self.assertFalse(out["criteria"][0]["met"])
+        self.assertEqual(out["criteria"][0]["evidence"], "element not found on page")
+
+    def test_text_input_candidates_excluded_from_picker(self):
+        cfg = dict(self.run_.cfg)
+        cfg["e2e"] = {"url": "http://localhost:1", "candidates": 20, "max_steps": 12}
+        self.run_.update(config=cfg)
+
+        states = [
+            {
+                "candidates": [
+                    {"ref": "e0", "role": "textbox", "name": "Username"},
+                    {"ref": "e1", "role": "textarea", "name": "Bio"},
+                    {"ref": "e2", "role": "select", "name": "Country"},
+                    {"ref": "e3", "role": "combobox", "name": "State"},
+                    {"ref": "e4", "role": "input", "name": "Email"},
+                    {"ref": "e5", "role": "button", "name": "Submit"},
+                ],
+                "text": "state 0 text",
+            },
+            {
+                "candidates": [],
+                "text": "state 1 text",
+            },
+        ]
+        driver = FakeDriver(states)
+
+        captured_questions = []
+
+        def fake_ollama(cfg, state, questions, timeout=60):
+            captured_questions.append(questions)
+            res = {}
+            if "met" in questions:
+                res["met"] = {"noul": 0.1 if "state 0" in state else 0.9}
+            if "action" in questions:
+                res["action"] = {"type": "choice", "choice": "e5", "confidence": 0.9}
+            return res
+
+        t = dict(ticket(1), exit_criteria=["state 1 text visible"])
+        adapter_for = lambda role: adapters.FakeAdapter(FAKE_CLI)
+        with mock.patch("yoke.router._ollama", side_effect=fake_ollama):
+            out = e2e.run_stage(self.run_, t, self.tmp, adapter_for, 1, driver=driver)
+
+        self.assertEqual(out["status"], "pass")
+        self.assertEqual(driver.clicks, ["e5"])
+        action_q = next(q["action"] for q in captured_questions if "action" in q)
+        criteria = action_q["criteria"]
+        self.assertEqual(set(criteria.keys()), {"e5", "none"})
+        self.assertEqual(criteria["e5"], "button Submit")
+        self.assertEqual(criteria["none"], "no candidate helps")
+
+    def test_cleanup_in_finally_on_exception(self):
+        cfg = dict(self.run_.cfg)
+        cfg["e2e"] = {
+            "url": "http://localhost:1",
+            "start_command": "echo start",
+            "ready_timeout_s": 5,
+        }
+        self.run_.update(config=cfg)
+
+        class ExplodingDriver(FakeDriver):
+            def open(self, url: str) -> None:
+                super().open(url)
+                raise RuntimeError("open failed")
+
+        driver = ExplodingDriver([{"candidates": [], "text": ""}])
+        mock_proc = mock.MagicMock()
+
+        t = dict(ticket(1), exit_criteria=["c"])
+        adapter_for = lambda role: adapters.FakeAdapter(FAKE_CLI)
+        with mock.patch("yoke.e2e.start_server", return_value=mock_proc) as mock_start:
+            with mock.patch("yoke.e2e.stop_server") as mock_stop:
+                with self.assertRaises(RuntimeError) as ctx:
+                    e2e.run_stage(self.run_, t, self.tmp, adapter_for, 1, driver=driver)
+                self.assertIn("open failed", str(ctx.exception))
+                mock_start.assert_called_once_with("echo start", self.tmp, "http://localhost:1", 5)
+                mock_stop.assert_called_once_with(mock_proc)
+        self.assertTrue(driver.closed)
+
+    def test_picker_unknown_ref_breaks_to_fallback(self):
+        cfg = dict(self.run_.cfg)
+        cfg["e2e"] = {"url": "http://localhost:1", "candidates": 20, "max_steps": 12}
+        self.run_.update(config=cfg)
+
+        states = [
+            {
+                "candidates": [{"ref": "e0", "role": "button", "name": "Button"}],
+                "text": "page text",
+            }
+        ]
+        driver = FakeDriver(states)
+
+        def fake_ollama(cfg, state, questions, timeout=60):
+            res = {}
+            if "met" in questions:
+                res["met"] = {"noul": 0.1}
+            if "action" in questions:
+                res["action"] = {"type": "choice", "choice": "e99", "confidence": 0.9}
+            return res
+
+        agent_result = {
+            "status": "pass",
+            "criteria": [
+                {
+                    "criterion": "fallback criterion",
+                    "met": True,
+                    "evidence": "recovered by fallback",
+                }
+            ],
+            "summary": "pass",
+        }
+        with open(self.script, "w") as f:
+            json.dump({"e2e": [resp(agent_result)]}, f)
+
+        t = dict(ticket(1), exit_criteria=["fallback criterion"])
+        adapter_for = lambda role: adapters.FakeAdapter(FAKE_CLI)
+        with mock.patch("yoke.router._ollama", side_effect=fake_ollama):
+            out = e2e.run_stage(self.run_, t, self.tmp, adapter_for, 1, driver=driver, env=self.env)
+
+        self.assertEqual(out["status"], "pass")
+        self.assertEqual(driver.clicks, [])
+        self.assertTrue(out["criteria"][0]["met"])
+        self.assertEqual(out["criteria"][0]["evidence"], "recovered by fallback")
+        self.assertTrue(driver.closed)
+
+    def test_agent_fallback_failure_sets_met_false(self):
+        cfg = dict(self.run_.cfg)
+        cfg["e2e"] = {"url": "http://localhost:1", "candidates": 20, "max_steps": 1}
+        self.run_.update(config=cfg)
+
+        driver = FakeDriver([{"candidates": [], "text": "error page"}])
+
+        def fake_ollama(cfg, state, questions, timeout=60):
+            res = {}
+            if "met" in questions:
+                res["met"] = {"noul": 0.1}
+            return res
+
+        t = dict(ticket(1), exit_criteria=["crit"])
+        adapter_for = lambda role: adapters.FakeAdapter(FAKE_CLI)
+        fail_res = adapters.CallResult(error="agent connection timed out")
+        with mock.patch("yoke.router._ollama", side_effect=fake_ollama):
+            with mock.patch("yoke.pipeline._call_retry", return_value=fail_res):
+                out = e2e.run_stage(self.run_, t, self.tmp, adapter_for, 1, driver=driver, env=self.env)
+
+        self.assertEqual(out["status"], "fail")
+        self.assertFalse(out["criteria"][0]["met"])
+        self.assertEqual(out["criteria"][0]["evidence"], "agent connection timed out")
+
+    def test_run_stage_with_minimal_ticket_dict(self):
+        cfg = dict(self.run_.cfg)
+        cfg["e2e"] = {"url": "http://localhost:1", "candidates": 20, "max_steps": 1}
+        self.run_.update(config=cfg)
+
+        driver = FakeDriver([{"candidates": [], "text": "minimal"}])
+
+        def fake_ollama(cfg, state, questions, timeout=60):
+            return {"met": {"noul": 0.1}}
+
+        agent_result = {
+            "status": "pass",
+            "criteria": [{"criterion": "c1", "met": True, "evidence": "ok"}],
+            "summary": "pass",
+        }
+        with open(self.script, "w") as f:
+            json.dump({"e2e": [resp(agent_result)]}, f)
+
+        t = {"id": "T-999", "exit_criteria": ["c1"]}
+        adapter_for = lambda role: adapters.FakeAdapter(FAKE_CLI)
+        with mock.patch("yoke.router._ollama", side_effect=fake_ollama):
+            out = e2e.run_stage(self.run_, t, self.tmp, adapter_for, 1, driver=driver, env=self.env)
+        self.assertEqual(out["status"], "pass")
+        self.assertTrue(out["criteria"][0]["met"])
+
+    def test_non_local_url_blocked(self):
+        cfg = dict(self.run_.cfg)
+        cfg["e2e"] = {"url": "https://example.com"}
+        self.run_.update(config=cfg)
+
+        t = dict(ticket(1), exit_criteria=["c"])
+        adapter_for = lambda role: adapters.FakeAdapter(FAKE_CLI)
+        with mock.patch("yoke.e2e.PlaywrightDriver") as mock_pw:
+            out = e2e.run_stage(self.run_, t, self.tmp, adapter_for, 1)
+            mock_pw.assert_not_called()
+
+        self.assertEqual(out["status"], "blocked")
+        self.assertIn("non-local", out["summary"])
+
+    def test_missing_playwright_skips_with_event(self):
+        cfg = dict(self.run_.cfg)
+        cfg["e2e"] = {"url": "http://localhost:3000"}
+        self.run_.update(config=cfg)
+
+        t = dict(ticket(1), exit_criteria=["c"])
+        adapter_for = lambda role: adapters.FakeAdapter(FAKE_CLI)
+        with mock.patch("yoke.e2e.PlaywrightDriver", side_effect=ImportError("no playwright")):
+            out = e2e.run_stage(self.run_, t, self.tmp, adapter_for, 1)
+
+        self.assertEqual(out["status"], "pass")
+        self.assertTrue(out["summary"].startswith("skipped"))
+
+        events = self._read_events()
+        skip_events = [e for e in events if e.get("kind") == "e2e_skipped"]
+        self.assertEqual(len(skip_events), 1)
+        self.assertEqual(skip_events[0]["ticket"], "T-001")
+        self.assertEqual(skip_events[0]["reason"], "playwright not installed")
+
+    def test_pipeline_e2e_stage_gate(self):
+        cfg = dict(self.run_.cfg)
+        cfg.setdefault("routing", {})["chore"] = {"stages": ["code", "e2e", "validate"]}
+        cfg["e2e"] = {"url": "http://localhost:1", "candidates": 20, "max_steps": 12}
+        self.run_.update(config=cfg)
+
+        fake_driver = FakeDriver([{"candidates": [], "text": "success page"}])
+
+        def fake_ollama(cfg, state, questions, timeout=60):
+            res = {}
+            if "met" in questions:
+                res["met"] = {"noul": 0.9}
+            if "tier" in questions:
+                res["tier"] = {"choice": "cheap", "confidence": 0.9}
+            if "effort" in questions:
+                res["effort"] = {"choice": "low", "confidence": 0.9}
+            return res
+
+        self.setup_tickets(
+            [ticket(1)],
+            {
+                "code": [resp(CODE, "c1", write={"f1.txt": "x"})],
+                "validate": [resp(val())],
+                # commit_message falls back to default subject when router call exits non-zero
+                "router": [{"exit": 1}],
+            },
+        )
+        with mock.patch("yoke.e2e.PlaywrightDriver", return_value=fake_driver):
+            with mock.patch("yoke.router._ollama", side_effect=fake_ollama):
+                self.assertEqual(self.go(), "done")
+
+        self.assertEqual(self.tstate(1)["status"], "closed")
+        gates = [e for e in self._read_events() if e.get("kind") == "close_gate"]
+        self.assertEqual(len(gates), 1)
+        gate_dict = gates[0]["gate"]
+        self.assertIn("e2e", gate_dict)
+        self.assertTrue(gate_dict["e2e"])
+        self.assertTrue(gates[0]["ok"])
+
+    def test_pipeline_e2e_fail_returns_formatted_feedback(self):
+        cfg = dict(self.run_.cfg)
+        cfg.setdefault("routing", {})["chore"] = {"stages": ["code", "e2e", "validate"]}
+        cfg["e2e"] = {"url": "http://localhost:1", "candidates": 20, "max_steps": 1}
+        self.run_.update(config=cfg)
+
+        fake_driver = FakeDriver([{"candidates": [], "text": "failure page"}])
+
+        def fake_ollama(cfg, state, questions, timeout=60):
+            res = {}
+            if "met" in questions:
+                res["met"] = {"noul": 0.1}
+            if "tier" in questions:
+                res["tier"] = {"choice": "cheap", "confidence": 0.9}
+            if "effort" in questions:
+                res["effort"] = {"choice": "low", "confidence": 0.9}
+            return res
+
+        agent_fail = {
+            "status": "fail",
+            "criteria": [
+                {
+                    "criterion": "check title",
+                    "met": False,
+                    "evidence": "title was missing",
+                }
+            ],
+            "summary": "failed",
+        }
+        agent_pass = {
+            "status": "pass",
+            "criteria": [{"criterion": "check title", "met": True, "evidence": "title found"}],
+            "summary": "pass",
+        }
+        self.setup_tickets(
+            [dict(ticket(1), exit_criteria=["check title"])],
+            {
+                "code": [
+                    resp(CODE, "c1", write={"f1.txt": "x"}),
+                    resp(CODE, "c1", write={"f1.txt": "y"}),
+                ],
+                "e2e": [resp(agent_fail), resp(agent_pass)],
+                "validate": [resp(val())],
+                "router": [{"exit": 1}] * 4,
+            },
+        )
+        with mock.patch("yoke.e2e.PlaywrightDriver", return_value=fake_driver):
+            with mock.patch("yoke.router._ollama", side_effect=fake_ollama):
+                self.assertEqual(self.go(), "done")
+
+        self.assertEqual(self.tstate(1)["attempt"], 2)
+        with open(self.run_.path("tickets/T-001/attempt-2/feedback.md")) as f:
+            fb = f.read()
+        self.assertIn("e2e failed:\n- check title: title was missing", fb)
+
+    def test_pipeline_e2e_blocked_escalates(self):
+        cfg = dict(self.run_.cfg)
+        cfg.setdefault("routing", {})["chore"] = {"stages": ["code", "e2e", "validate"]}
+        cfg["e2e"] = {"url": "https://example.com"}
+        self.run_.update(config=cfg)
+
+        self.setup_tickets(
+            [ticket(1)],
+            {
+                "code": [resp(CODE, "c1", write={"f1.txt": "x"})],
+                "validate": [resp(val())],
+                "router": [{"exit": 1}],
+            },
+        )
+        self.assertEqual(self.go(), "needs_user")
+        self.assertEqual(self.tstate(1)["status"], "blocked")
+        esc = self.run_.read_json("escalations.json")
+        self.assertTrue(any("e2e blocked" in e["reason"] for e in esc))
+
+    def test_gate_e2e_false_when_failed(self):
+        g = pipeline._gate(["e2e"], {"e2e": {"status": "fail"}}, 0)
+        self.assertIn("e2e", g)
+        self.assertFalse(g["e2e"])
+
+        g_pass = pipeline._gate(["e2e"], {"e2e": {"status": "pass"}}, 0)
+        self.assertTrue(g_pass["e2e"])
+
+        g_no_e2e = pipeline._gate(["code"], {"code": {"status": "done"}}, 0)
+        self.assertNotIn("e2e", g_no_e2e)
+
+    def test_run_stage_with_start_command_success_stops_server(self):
+        cfg = dict(self.run_.cfg)
+        cfg["e2e"] = {
+            "url": "http://localhost:1",
+            "start_command": "echo start",
+            "ready_timeout_s": 5,
+        }
+        self.run_.update(config=cfg)
+
+        driver = FakeDriver([{"candidates": [], "text": "ok"}])
+        mock_proc = mock.MagicMock()
+
+        def fake_ollama(cfg, state, questions, timeout=60):
+            return {"met": {"noul": 0.9}}
+
+        t = dict(ticket(1), exit_criteria=["c"])
+        adapter_for = lambda role: adapters.FakeAdapter(FAKE_CLI)
+        with mock.patch("yoke.e2e.start_server", return_value=mock_proc) as mock_start:
+            with mock.patch("yoke.e2e.stop_server") as mock_stop:
+                with mock.patch("yoke.router._ollama", side_effect=fake_ollama):
+                    out = e2e.run_stage(self.run_, t, self.tmp, adapter_for, 1, driver=driver)
+                self.assertEqual(out["status"], "pass")
+                mock_start.assert_called_once_with("echo start", self.tmp, "http://localhost:1", 5)
+                mock_stop.assert_called_once_with(mock_proc)
+        self.assertTrue(driver.closed)
+
+    def test_route_ticket_missing_and_unknown_type(self):
+        cfg = self.run_.cfg
+        route_empty = router.route_ticket(cfg, {})
+        self.assertEqual(route_empty["type"], "chore")
+        self.assertTrue(any(s["stage"] == "code" for s in route_empty["stages"]))
+
+        route_unknown = router.route_ticket(cfg, {"type": "nonexistent_type"})
+        self.assertEqual(route_unknown["type"], "nonexistent_type")
+        self.assertTrue(any(s["stage"] == "code" for s in route_unknown["stages"]))
+
+    def test_multiple_criteria_and_empty_criteria(self):
+        cfg = dict(self.run_.cfg)
+        cfg["e2e"] = {"url": "http://localhost:1", "candidates": 20, "max_steps": 1}
+        self.run_.update(config=cfg)
+
+        adapter_for = lambda role: adapters.FakeAdapter(FAKE_CLI)
+
+        # Empty criteria
+        driver_empty = FakeDriver([{"candidates": [], "text": ""}])
+        t_empty = dict(ticket(1), exit_criteria=[])
+        out_empty = e2e.run_stage(self.run_, t_empty, self.tmp, adapter_for, 1, driver=driver_empty)
+        self.assertEqual(out_empty["status"], "pass")
+        self.assertEqual(out_empty["criteria"], [])
+        self.assertEqual(out_empty["summary"], "0/0 criteria met")
+
+        # Two criteria: one met, one unmet -> fail
+        driver_mixed = FakeDriver([{"candidates": [], "text": "crit1_ok crit2_fail"}])
+
+        def fake_ollama(cfg, state, questions, timeout=60):
+            res = {}
+            if "met" in questions:
+                res["met"] = {"noul": 0.9 if "Criterion: crit1" in state else 0.1}
+            return res
+
+        t_mixed = dict(ticket(1), exit_criteria=["crit1", "crit2"])
+        fail_res = adapters.CallResult(error="crit2 agent fail")
+        with mock.patch("yoke.router._ollama", side_effect=fake_ollama):
+            with mock.patch("yoke.pipeline._call_retry", return_value=fail_res):
+                out_mixed = e2e.run_stage(self.run_, t_mixed, self.tmp, adapter_for, 1, driver=driver_mixed, env=self.env)
+        self.assertEqual(out_mixed["status"], "fail")
+        self.assertEqual(len(out_mixed["criteria"]), 2)
+        self.assertTrue(out_mixed["criteria"][0]["met"])
+        self.assertFalse(out_mixed["criteria"][1]["met"])
+        self.assertEqual(out_mixed["summary"], "1/2 criteria met")
 
 
 if __name__ == "__main__":

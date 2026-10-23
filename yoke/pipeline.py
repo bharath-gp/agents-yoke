@@ -323,13 +323,17 @@ def doc_path_for(cfg, ticket):
     """Repo-relative path of a research ticket's document (ticket["doc_path"] overrides)."""
     if ticket.get("doc_path"):
         return ticket["doc_path"]
-    slug = re.sub(r"[^a-z0-9]+", "-", ("%s %s" % (ticket["id"], ticket["title"])).lower()).strip("-")[:60]
+    title = ticket.get("title", "") if isinstance(ticket, dict) else ""
+    tid = ticket.get("id", "T-000") if isinstance(ticket, dict) else str(ticket)
+    slug = re.sub(r"[^a-z0-9]+", "-", ("%s %s" % (tid, title)).lower()).strip("-")[:60]
     return "%s/%s.md" % (cfg["research"]["doc_dir"], slug)
 
 
 def _vars(cfg, ticket):
     depth = cfg["research"]["depths"][cfg["research"]["default_depth"]]
-    return dict(topic="\n".join(x for x in (ticket["title"], ticket.get("description")) if x),
+    title = ticket.get("title", "") if isinstance(ticket, dict) else ""
+    desc = ticket.get("description", "") if isinstance(ticket, dict) else ""
+    return dict(topic="\n".join(x for x in (title, desc) if x),
                 doc_path=doc_path_for(cfg, ticket), search_tools=", ".join(cfg["search"]["tools"]),
                 max_sources=depth["max_sources"], search_rounds=depth["search_rounds"])
 
@@ -925,6 +929,18 @@ def _attempt_body(run, adapter_for, env, ticket, st, wt, stages, start_idx, resu
             if fb:
                 return fb, results, test_cmd, rerun_rc
             continue
+        if stage == "e2e":
+            from . import e2e
+            out = results["e2e"] = e2e.run_stage(run, ticket, wt, adapter_for, attempt, env=env, base=base)
+            if out["status"] == "blocked":
+                raise Escalate("e2e blocked: " + out["summary"])
+            if out["status"] == "fail":
+                unmet = [c for c in out.get("criteria", []) if not c.get("met")]
+                lines = "\n".join("- %s: %s" % (c["criterion"], c.get("evidence", "")) for c in unmet)
+                if not lines:
+                    lines = "- " + out.get("summary", "failed")
+                return "e2e failed:\n" + lines, results, test_cmd, rerun_rc
+            continue
         mode = "read" if stage in READ_STAGES else "write"
         call = _call if stage == "code" else _call_retry  # a failed code call restarts the attempt anyway
         res = call(run, adapter_for, env, ticket, stage, attempt, wt, base, mode, results, feedback,
@@ -1049,6 +1065,8 @@ def _gate(stages, results, rerun_rc):
         g["code"] = results["code"]["status"] == "done"
     if "qa" in stages:
         g["qa"] = results["qa"]["status"] == "pass" and rerun_rc == 0
+    if "e2e" in stages:
+        g["e2e"] = results["e2e"]["status"] == "pass"
     if "validate" in stages:
         v = results["validate"]
         g["validate"] = v["verdict"] == "approve" and all(c["met"] for c in v["exit_criteria"])

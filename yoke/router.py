@@ -554,14 +554,15 @@ def commit_message(run, ticket, diffstat="", adapter=None):
 
 def route_ticket(cfg, ticket):
     """Deterministic: stages for the ticket type, each with agent + optional model/effort overrides."""
-    route = cfg["routing"][ticket["type"]]
+    ttype = ticket.get("type", "chore") if isinstance(ticket, dict) else "chore"
+    route = cfg["routing"].get(ttype) or cfg["routing"]["chore"]
     over = route.get("overrides", {})
     stages = []
-    for st in route["stages"]:
+    for st in route.get("stages", []):
         s = {"stage": st, "agent": config.agent_for(cfg, st)}
         s.update(over.get(st, {}))
         stages.append(s)
-    return {"type": ticket["type"], "stages": stages}
+    return {"type": ttype, "stages": stages}
 
 
 def health(cfg):
