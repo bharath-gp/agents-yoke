@@ -5,6 +5,8 @@ import unittest
 from tests.test_pipeline import PipeBase, ticket, resp, CODE, REV, val, qa
 from yoke import pipeline, schema
 
+os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
+
 
 class TestHandoffSchema(unittest.TestCase):
     def setUp(self):

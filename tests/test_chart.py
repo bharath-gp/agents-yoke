@@ -9,6 +9,8 @@ from unittest.mock import patch
 from tests.test_core import FAKE_CLI, Tmp
 from yoke import adapters, chart, cli, milestones, planreview, schema, state
 
+os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
+
 VALID_CHART = {
     "destination": "complete project build",
     "out_of_scope": ["unrelated features"],

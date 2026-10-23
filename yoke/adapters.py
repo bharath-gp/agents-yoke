@@ -24,6 +24,7 @@ class CallSpec:
     env: dict = field(default_factory=dict)
     allowed_tools: tuple = ()  # claude write mode allowlist (config agents.claude.write_allowed_tools)
     web_tools: tuple = ()  # claude read mode extras for web stages (config search.tools)
+    settings_path: str = None
 
 
 @dataclass
@@ -103,6 +104,8 @@ class ClaudeAdapter(Adapter):
             cmd += ["--effort", call.effort]
         for d in call.extra_dirs:
             cmd += ["--add-dir", d]
+        if call.settings_path:
+            cmd += ["--settings", call.settings_path]
         return _guard(cmd)
 
     def parse(self, stdout, exit_code, cfg=None):

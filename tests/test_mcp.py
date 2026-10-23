@@ -9,6 +9,8 @@ import unittest
 
 from yoke import config, state
 
+os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 

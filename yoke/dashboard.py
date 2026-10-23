@@ -293,12 +293,47 @@ def list_projects(home=None):
     return out
 
 
+def decisions_summary(events):
+    """Summarise router and guard events into decision points and guard counts."""
+    points = {}
+    guard = {"deny": 0, "ask": 0, "escalate": 0, "recent": []}
+    recent_guard = []
+
+    for e in (events or []):
+        if not isinstance(e, dict):
+            continue
+        kind = e.get("kind")
+        if kind == "router":
+            p = e.get("point") or e.get("fn")
+            if not isinstance(p, str):
+                continue
+            counts = points.setdefault(p, {"ollama": 0, "none": 0, "default": 0, "fallback": 0})
+            src = e.get("source")
+            if isinstance(src, str):
+                counts[src] = counts.get(src, 0) + 1
+        elif kind == "guard":
+            dec = e.get("decision")
+            if dec in ("deny", "ask", "escalate"):
+                guard[dec] = guard.get(dec, 0) + 1
+                recent_guard.append({
+                    "at": e.get("at") or e.get("ts"),
+                    "target": e.get("target"),
+                    "decision": dec,
+                    "reason": e.get("reason"),
+                    "ticket": e.get("ticket"),
+                })
+
+    guard["recent"] = recent_guard[-10:]
+    return {"points": points, "guard": guard}
+
+
 def run_detail(run):
     """Return complete run detail dictionary from existing readers only.
 
     All reads are tolerant: missing or half-written files give empty values or null, never an exception.
     Includes status, runner liveness, stage, milestones, tickets, progress, escalations, events,
-    decisions log, usage totals with top spenders, and active waiting_limit state.
+    decisions log, decision points and guard flags summary, usage totals with top spenders,
+    and active waiting_limit state.
     """
     if isinstance(run, str):
         run = state.Run(run)
@@ -487,6 +522,7 @@ def run_detail(run):
         "escalations": escalations,
         "events": events,
         "decisions": decisions,
+        "decision_points": decisions_summary(recent_events),
         "usage": usage_data,
         "waiting_limit": status_info.get("waiting_limit"),
     }

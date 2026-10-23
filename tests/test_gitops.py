@@ -5,6 +5,8 @@ import unittest
 from tests.test_core import Tmp
 from yoke import gitops
 
+os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
+
 ENV = {
     "GIT_AUTHOR_NAME": "t",
     "GIT_AUTHOR_EMAIL": "t@t",

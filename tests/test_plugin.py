@@ -11,6 +11,8 @@ from unittest import mock
 
 from yoke import cli, config, state
 
+os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SKILLS = ("setup", "grill", "plan", "tickets", "run", "resume", "status", "finish", "go", "models", "dashboard")
 
@@ -24,10 +26,10 @@ class TestPackaging(unittest.TestCase):
     def test_manifests(self):
         p = load(".claude-plugin/plugin.json")
         self.assertEqual(p["name"], "yoke")
-        self.assertEqual(p["version"], "0.10.2")
+        self.assertEqual(p["version"], "0.11.0")
         with open(os.path.join(ROOT, "pyproject.toml")) as f:
             pyproject_ver = re.search(r'version\s*=\s*"([^"]+)"', f.read()).group(1)
-        self.assertEqual(pyproject_ver, "0.10.2")
+        self.assertEqual(pyproject_ver, "0.11.0")
         self.assertEqual(p["version"], pyproject_ver)
         m = load(".claude-plugin/marketplace.json")
         self.assertEqual(m["name"], "yoke")
@@ -38,6 +40,18 @@ class TestPackaging(unittest.TestCase):
         h = load("hooks/hooks.json")["hooks"]["SessionStart"][0]
         self.assertEqual(h["matcher"], "startup|resume|compact")
         self.assertIn("yoke status --brief --active", h["hooks"][0]["command"])
+
+    def test_pretooluse_hook_registered(self):
+        hooks = load("hooks/hooks.json")["hooks"]
+        session_start = hooks["SessionStart"][0]
+        self.assertEqual(session_start["matcher"], "startup|resume|compact")
+        self.assertIn("yoke status --brief --active", session_start["hooks"][0]["command"])
+        pre_tool = hooks["PreToolUse"][0]
+        self.assertEqual(pre_tool["matcher"], "*")
+        cmd = pre_tool["hooks"][0]["command"]
+        self.assertIn("yoke guard tool --active", cmd)
+        self.assertIn("|| true", cmd)
+        self.assertEqual(pre_tool["hooks"][0].get("timeout"), 10)
 
     def test_skills(self):
         for name in SKILLS:
@@ -56,7 +70,7 @@ class TestPackaging(unittest.TestCase):
             with open(os.path.join(ROOT, "skills", name, "SKILL.md")) as f:
                 subs.update(re.findall(r"`yoke ([a-z-]+)", f.read()))
         known = {"setup", "init", "review-plan", "approve", "tickets", "run", "wait", "status", "escalations",
-                 "unblock", "stop", "pr", "route", "doctor", "models", "runs", "map", "dashboard", "nudge"}
+                 "unblock", "stop", "pr", "route", "doctor", "models", "runs", "map", "dashboard", "nudge", "guard"}
         self.assertFalse(subs - known, subs - known)
 
 

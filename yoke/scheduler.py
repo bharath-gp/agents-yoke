@@ -8,7 +8,7 @@ import signal
 import threading
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
-from . import config, gitops, milestones, pipeline, planreview, state, tracker, usage
+from . import config, gitops, guard, milestones, pipeline, planreview, router, state, tracker, usage
 
 
 class LockError(Exception):
@@ -149,6 +149,10 @@ def run(run_, adapter_for=None, env=None):
         info = run_.read_json("run.json")
         gitops.ensure_feature_branch(info["repo"], info["branch"], info["base_sha"],
                                      run_.path("worktrees/_integration"))
+        if (run_.cfg.get("guard") or {}).get("enabled", True):
+            run_.update(agent_settings=guard.write_agent_settings(run_))
+        else:
+            run_.update(agent_settings=None)
         run_.update(state="running", runner_pid=os.getpid())
         final = _loop(run_, adapter_for, env)
         return final
@@ -301,6 +305,16 @@ def _loop(run_, adapter_for, env):
                                 tracker.close_milestone(run_, m_id)
                                 continue
                             else:
+                                d = router.gate_failure_route(run_, m_id, exit_check, tail)
+                                if d["source"] == "ollama" and d["result"] == "escalate":
+                                    ms_states[m_id]["status"] = "failed"
+                                    milestones.save_states(run_, ms_states)
+                                    pipeline.escalate(
+                                        run_,
+                                        m_id,
+                                        "milestone %s gate failed; decision model escalated: %s" % (m_id, tail),
+                                    )
+                                    return "needs_user"
                                 fix_count = ms_states[m_id].get("fix_count", 0)
                                 max_fixes = run_.cfg.get("max_fix_tickets_per_milestone", 2)
                                 if fix_count < max_fixes:

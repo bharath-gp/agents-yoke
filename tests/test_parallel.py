@@ -6,6 +6,8 @@ from tests.test_gitops import git
 from tests.test_pipeline import CODE, PipeBase, REV, resp, ticket, val
 from yoke import gitops
 
+os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
+
 
 class TestParallel(PipeBase):
     def cfg(self, n):

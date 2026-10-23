@@ -12,6 +12,8 @@ import unittest
 
 from yoke import cli, config, dashboard, milestones, runcmds, state
 
+os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
+
 
 class TestDashboard(unittest.TestCase):
     def setUp(self):
@@ -48,6 +50,10 @@ class TestDashboard(unittest.TestCase):
         self.assertEqual(detail["tickets"], [])
         self.assertEqual(detail["escalations"], [])
         self.assertEqual(detail["decisions"], "")
+        self.assertEqual(detail["decision_points"], {
+            "points": {},
+            "guard": {"deny": 0, "ask": 0, "escalate": 0, "recent": []},
+        })
         self.assertEqual(detail["progress"]["total"], 0)
         self.assertEqual(detail["progress"]["closed"], 0)
         self.assertEqual(detail["progress"]["remaining"], 0)
@@ -740,6 +746,121 @@ class TestServe(unittest.TestCase):
         self.assertIn("8765", text)
         self.assertNotIn("--host", text)
         self.assertNotIn("--run", text)
+
+
+class DecisionsTest(unittest.TestCase):
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.addCleanup(self._td.cleanup)
+        self.tmp = os.path.realpath(self._td.name)
+        os.environ["YOKE_HOME"] = self.tmp
+        self.addCleanup(os.environ.pop, "YOKE_HOME", None)
+        self.repo_dir = os.path.join(self.tmp, "repo")
+        os.makedirs(self.repo_dir)
+        self.cfg = config.load(home=self.tmp, overrides={
+            "max_tickets": 40,
+            "kill_grace_s": 1,
+            "router": {"ollama_url": "http://127.0.0.1:1"}
+        })
+
+    def _create_run(self):
+        return state.Run.create(self.repo_dir, self.cfg, home=self.tmp)
+
+    def test_summary_counts(self):
+        events = [
+            {"kind": "router", "point": "safety", "source": "ollama"},
+            {"kind": "router", "fn": "classify_ticket", "source": "default"},
+            {"kind": "guard", "decision": "deny", "target": "shell", "reason": "unsafe", "ticket": "T-1", "at": "2026-10-22T00:00:00Z"},
+            {"kind": "guard", "decision": "allow", "target": "git", "ticket": "T-1"},
+        ]
+        res = dashboard.decisions_summary(events)
+        self.assertEqual(res["points"]["safety"]["ollama"], 1)
+        self.assertEqual(res["points"]["safety"]["none"], 0)
+        self.assertEqual(res["points"]["safety"]["default"], 0)
+        self.assertEqual(res["points"]["safety"]["fallback"], 0)
+        self.assertEqual(res["points"]["classify_ticket"]["default"], 1)
+        self.assertEqual(res["guard"]["deny"], 1)
+        self.assertEqual(res["guard"]["ask"], 0)
+        self.assertEqual(res["guard"]["escalate"], 0)
+        self.assertEqual(len(res["guard"]["recent"]), 1)
+        self.assertEqual(res["guard"]["recent"][0]["at"], "2026-10-22T00:00:00Z")
+        self.assertEqual(res["guard"]["recent"][0]["target"], "shell")
+        self.assertEqual(res["guard"]["recent"][0]["decision"], "deny")
+        self.assertEqual(res["guard"]["recent"][0]["reason"], "unsafe")
+        self.assertEqual(res["guard"]["recent"][0]["ticket"], "T-1")
+
+        # Sources outside the four keys are added as their own key
+        extra_events = [
+            {"kind": "router", "point": "routing", "source": "custom_agent"}
+        ]
+        res_extra = dashboard.decisions_summary(extra_events)
+        self.assertEqual(res_extra["points"]["routing"]["custom_agent"], 1)
+
+        # Retain last 10 flagged guard events
+        events_15 = [
+            {"kind": "guard", "decision": "deny", "ticket": "T-%d" % i, "at": "2026-10-22T00:00:%02dZ" % i}
+            for i in range(15)
+        ]
+        res_15 = dashboard.decisions_summary(events_15)
+        self.assertEqual(res_15["guard"]["deny"], 15)
+        self.assertEqual(len(res_15["guard"]["recent"]), 10)
+        self.assertEqual(res_15["guard"]["recent"][0]["ticket"], "T-5")
+        self.assertEqual(res_15["guard"]["recent"][-1]["ticket"], "T-14")
+
+        # Defensive branches: non-dict events, missing point/fn, missing source, ts fallback, None/empty
+        defensive_events = [
+            None,
+            "not-a-dict",
+            {"kind": "router"},
+            {"kind": "router", "point": ["not", "a", "str"], "source": "ollama"},
+            {"kind": "router", "point": "routing", "source": ["not-a-str"]},
+            {"kind": "guard", "decision": "ask", "ts": "2026-10-22T01:00:00Z"},
+        ]
+        res_defensive = dashboard.decisions_summary(defensive_events)
+        self.assertEqual(res_defensive["points"]["routing"]["ollama"], 0)
+        self.assertEqual(res_defensive["guard"]["ask"], 1)
+        self.assertEqual(len(res_defensive["guard"]["recent"]), 1)
+        self.assertEqual(res_defensive["guard"]["recent"][0]["at"], "2026-10-22T01:00:00Z")
+        self.assertEqual(res_defensive["guard"]["recent"][0]["decision"], "ask")
+
+        self.assertEqual(dashboard.decisions_summary([]), {
+            "points": {},
+            "guard": {"deny": 0, "ask": 0, "escalate": 0, "recent": []},
+        })
+        self.assertEqual(dashboard.decisions_summary(None), {
+            "points": {},
+            "guard": {"deny": 0, "ask": 0, "escalate": 0, "recent": []},
+        })
+
+    def test_run_detail_has_decisions(self):
+        run = self._create_run()
+        run.event("router", point="safety", source="ollama")
+        run.event("guard", decision="deny", target="x", reason="r", ticket="T-1")
+        detail = dashboard.run_detail(run)
+        self.assertIn("decision_points", detail)
+        self.assertIn("points", detail["decision_points"])
+        self.assertIn("safety", detail["decision_points"]["points"])
+        self.assertEqual(detail["decision_points"]["points"]["safety"]["ollama"], 1)
+        self.assertEqual(detail["decision_points"]["guard"]["deny"], 1)
+        self.assertEqual(len(detail["decision_points"]["guard"]["recent"]), 1)
+        self.assertEqual(detail["decision_points"]["guard"]["recent"][0]["target"], "x")
+
+    def test_html_has_decision_points_card(self):
+        pkg_dir = os.path.dirname(dashboard.__file__)
+        dash_html_path = os.path.join(pkg_dir, "dashboard.html")
+        with open(dash_html_path, "r", encoding="utf-8") as f:
+            html = f.read()
+
+        self.assertIn("decision-points", html)
+        self.assertIn("Decision models", html)
+        self.assertIn("decisions-tbody", html)
+        self.assertIn("guard-recent-list", html)
+        self.assertIn("guard-counts", html)
+        self.assertNotIn("http://", html)
+        self.assertNotIn("https://", html)
+        self.assertNotIn("innerHTML", html)
+        self.assertNotIn("outerHTML", html)
+        self.assertNotIn("insertAdjacentHTML", html)
 
 
 if __name__ == "__main__":

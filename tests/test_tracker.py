@@ -12,6 +12,8 @@ from tests.test_gitops import ENV, git
 from tests.test_planreview import Base
 from yoke import cli, pipeline, planreview, tracker
 
+os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
+
 # fake gh: logs argv as a JSON line to $FAKE_GH_LOG; FAKE_GH_FAIL=<subcmd> makes that subcommand exit 1
 SHIM = """#!%s
 import json, os, sys

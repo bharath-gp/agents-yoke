@@ -11,7 +11,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from . import adapters, calls, config, gitops, hooks, milestones, planreview, router, schema, state, tracker, usage
+from . import adapters, calls, config, gitops, guard, hooks, milestones, planreview, router, schema, skills, state, tracker, usage
 
 PKG = os.path.dirname(os.path.abspath(__file__))
 
@@ -323,13 +323,17 @@ def doc_path_for(cfg, ticket):
     """Repo-relative path of a research ticket's document (ticket["doc_path"] overrides)."""
     if ticket.get("doc_path"):
         return ticket["doc_path"]
-    slug = re.sub(r"[^a-z0-9]+", "-", ("%s %s" % (ticket["id"], ticket["title"])).lower()).strip("-")[:60]
+    title = ticket.get("title", "") if isinstance(ticket, dict) else ""
+    tid = ticket.get("id", "T-000") if isinstance(ticket, dict) else str(ticket)
+    slug = re.sub(r"[^a-z0-9]+", "-", ("%s %s" % (tid, title)).lower()).strip("-")[:60]
     return "%s/%s.md" % (cfg["research"]["doc_dir"], slug)
 
 
 def _vars(cfg, ticket):
     depth = cfg["research"]["depths"][cfg["research"]["default_depth"]]
-    return dict(topic="\n".join(x for x in (ticket["title"], ticket.get("description")) if x),
+    title = ticket.get("title", "") if isinstance(ticket, dict) else ""
+    desc = ticket.get("description", "") if isinstance(ticket, dict) else ""
+    return dict(topic="\n".join(x for x in (title, desc) if x),
                 doc_path=doc_path_for(cfg, ticket), search_tools=", ".join(cfg["search"]["tools"]),
                 max_sources=depth["max_sources"], search_rounds=depth["search_rounds"])
 
@@ -510,12 +514,24 @@ def _call(run, adapter_for, env, ticket, stage, attempt, wt, base, mode, results
     ppath = os.path.join(PKG, "prompts", pname + ".md")
     if not os.path.isfile(ppath):
         ppath = os.path.join(PKG, "prompts", stage + ".md")
+    target_adapter = adapter if adapter is not None else adapter_for(stage)
+    agent_name = getattr(target_adapter, "name", None)
+    skills_text = "(none)"
+    tools = tuple(cfg["agents"]["claude"]["write_allowed_tools"])
+    if stage in ("code", "qa", "docs"):
+        repo = run.read_json("run.json", {}).get("repo")
+        cat = skills.catalog(cfg, repo)
+        if cat:
+            picked = router.pick_skills(run, ticket, stage, cat)
+            skills_text = skills.render(picked, agent_name, cfg)
+            if picked and agent_name == "claude" and "Skill" not in tools:
+                tools += ("Skill",)
     subs = dict(
         ticket=json.dumps(ticket, indent=2),
         plan_excerpt=ticket.get("plan_excerpt", "") if isinstance(ticket, dict) else "",
         destination=dest, out_of_scope=oos,
         prior_results=json.dumps(results, indent=2), feedback=feedback or "(none)",
-        base_sha=base, worktree=wt, upstream=upstream, **_vars(cfg, ticket))
+        base_sha=base, worktree=wt, upstream=upstream, skills=skills_text, **_vars(cfg, ticket))
     if extra_vars:
         subs.update(extra_vars)
     with open(ppath) as f:
@@ -524,12 +540,37 @@ def _call(run, adapter_for, env, ticket, stage, attempt, wt, base, mode, results
     hooks = os.path.join(PKG, "githooks")  # push protection for workers (PLAN 2.9)
     wenv = dict(env or {}, GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="core.hooksPath", GIT_CONFIG_VALUE_0=hooks)
     timeout = cfg["timeouts_s"][stage]
+    tid = ticket["id"] if isinstance(ticket, dict) else ticket
     spec = adapters.CallSpec(
         prompt=prompt, schema_path=schema.schema_path(stage), cwd=wt, mode=mode,
         model=over.get("model"), effort=over.get("effort"), resume_session=resume,
         timeout_s=timeout, env=wenv,
-        allowed_tools=tuple(cfg["agents"]["claude"]["write_allowed_tools"]),
-        web_tools=tuple(cfg["search"]["tools"]) if stage in WEB_STAGES else ())
+        allowed_tools=tools,
+        web_tools=tuple(cfg["search"]["tools"]) if stage in WEB_STAGES else (),
+        settings_path=run.read_json("run.json").get("agent_settings"))
+
+    if stage in ("code", "review", "qa", "validate", "docs") and not over.get("model") and not over.get("effort"):
+        pick = router.pick_tier_effort(run, ticket, stage, attempt)
+        default_tier = "plan" if stage in config.PLAN_ROLES else "cheap"
+        tier = pick["tier"] or default_tier
+        bumped = bool(cfg.get("router", {}).get("retry_bump", True) and attempt and attempt > 1)
+        if bumped:
+            model, tier_cfg_effort = config.model_for_tier(cfg, agent_name, tier)
+            starting_effort = pick["effort"] or tier_cfg_effort or "medium"
+            new_tier, effort = router.bump(tier, starting_effort, attempt)
+            if new_tier != tier:
+                tier = new_tier
+                model, tier_effort = config.model_for_tier(cfg, agent_name, tier)
+            else:
+                tier_effort = tier_cfg_effort
+        else:
+            effort = pick["effort"]
+            model, tier_effort = (config.model_for_tier(cfg, agent_name, tier)
+                                  if (pick["source"] != "none" or tier != default_tier)
+                                  else (None, None))
+        if pick["source"] != "none" or bumped or tier != default_tier:
+            spec.model = model
+            spec.effort = effort or tier_effort
 
     _wait_pool(run)
     # Concurrent multi-lens calls under parallel>1 may check agent_calls non-atomically, allowing up to (lenses-1) overshoot.
@@ -539,8 +580,6 @@ def _call(run, adapter_for, env, ticket, stage, attempt, wt, base, mode, results
     if exceeded:
         raise BudgetExhausted(reason)
 
-    tid = ticket["id"] if isinstance(ticket, dict) else ticket
-    target_adapter = adapter if adapter is not None else adapter_for(stage)
     res = calls.run_call(run, target_adapter, spec, stage=stage, ticket=tid, attempt=attempt, label=label)
     if res.limit is None:
         info = run.read_json("run.json", {})
@@ -868,11 +907,11 @@ def _run_gate_hook_stage(run, wt, ticket, attempt, stage_name, hook_list, env=No
     return None, (last_res[1] if last_res else None)
 
 
-def _attempt(run, adapter_for, env, ticket, st, wt, stages):
-    """Run the stages once. Returns (feedback or None, results, test_cmd, qa_rc)."""
+def _attempt_body(run, adapter_for, env, ticket, st, wt, stages, start_idx, results, test_cmd, rerun_rc):
+    """Execute stages starting at start_idx with seeded results and test state."""
     tid, attempt, base = ticket["id"], st["attempt"], st["base_sha"]
     st["gate_hooks"] = {}
-    if "review" in stages:
+    if "review" in stages[start_idx:]:
         st["review"] = {"rounds": 0, "unresolved": []}
         save_state(run, tid, st)
     feedback = _read_feedback(run, tid, attempt)
@@ -882,14 +921,25 @@ def _attempt(run, adapter_for, env, ticket, st, wt, stages):
         write_feedback(run, tid, attempt, nudge_str, append=True)
         feedback = _read_feedback(run, tid, attempt)
     since = gitops.head_sha(wt)
-    results, test_cmd, rerun_rc = {}, None, None
-    for stage in stages:
+    for stage in stages[start_idx:]:
         if stage in ("review", "validate"):
             gitops.git(wt, "add", "-A")  # new files become visible to `git diff <base>`
         if stage == "review":
             fb = _review_loop(run, adapter_for, env, ticket, st, wt, base, results, _clean_user_notes(feedback))
             if fb:
                 return fb, results, test_cmd, rerun_rc
+            continue
+        if stage == "e2e":
+            from . import e2e
+            out = results["e2e"] = e2e.run_stage(run, ticket, wt, adapter_for, attempt, env=env, base=base)
+            if out["status"] == "blocked":
+                raise Escalate("e2e blocked: " + out["summary"])
+            if out["status"] == "fail":
+                unmet = [c for c in out.get("criteria", []) if not c.get("met")]
+                lines = "\n".join("- %s: %s" % (c["criterion"], c.get("evidence", "")) for c in unmet)
+                if not lines:
+                    lines = "- " + out.get("summary", "failed")
+                return "e2e failed:\n" + lines, results, test_cmd, rerun_rc
             continue
         mode = "read" if stage in READ_STAGES else "write"
         call = _call if stage == "code" else _call_retry  # a failed code call restarts the attempt anyway
@@ -913,10 +963,30 @@ def _attempt(run, adapter_for, env, ticket, st, wt, stages):
             if out["status"] == "fail":
                 return "QA failed:\n" + "\n".join(out["failures"] or [out["summary"]]), results, test_cmd, rerun_rc
             test_cmd = run.cfg.get("test_command") or out["test_command"]
+            chk = guard.check_command(run.cfg, test_cmd, wt, run)
+            if chk.get("decision") == "deny":
+                return ("Safety guard refused test command `%s`: %s" % (test_cmd, chk.get("reason")),
+                        results, test_cmd, rerun_rc)
+            if chk.get("decision") != "allow":
+                raise Escalate("safety guard: %s" % chk.get("reason"))
             rerun_rc, tail = _rerun(run, test_cmd, wt)
             if rerun_rc != 0:
-                return ("Runner re-ran `%s` and it exited %s (QA had reported pass):\n%s"
-                        % (test_cmd, rerun_rc, tail)), results, test_cmd, rerun_rc
+                d = router.test_failure_category(run, ticket, test_cmd, tail)
+                cat = d["result"] if d.get("source") == "ollama" else None
+                if cat == "environment" and not st.get("env_rerun"):
+                    st["env_rerun"] = True
+                    save_state(run, tid, st)
+                    rerun_rc, tail = _rerun(run, test_cmd, wt)
+                    if rerun_rc != 0:
+                        raise Escalate("environment failure running `%s`: %s" % (test_cmd, tail[-500:]))
+                elif cat == "testware":
+                    st["start_stage"] = "qa"
+                    return ("Decision: testware failure, QA reruns.\n"
+                            + ("Runner re-ran `%s` and it exited %s (QA had reported pass):\n%s"
+                               % (test_cmd, rerun_rc, tail)), results, test_cmd, rerun_rc)
+                else:
+                    return ("Runner re-ran `%s` and it exited %s (QA had reported pass):\n%s"
+                            % (test_cmd, rerun_rc, tail)), results, test_cmd, rerun_rc
             qa_hooks = ((run.cfg.get("gate_hooks") or {}).get("after_stage") or {}).get("qa") or []
             fb, info = _run_gate_hook_stage(run, wt, ticket, attempt, "qa", qa_hooks, env=env)
             if info:
@@ -941,8 +1011,50 @@ def _attempt(run, adapter_for, env, ticket, st, wt, stages):
             if out["verdict"] != "approve" or unmet:
                 parts = [out["feedback_for_coder"]] + ["Unmet criterion: " + c for c in unmet]
                 parts += ["%s %s: %s" % (i["severity"], i["file"], i["description"]) for i in out["issues"]]
-                return "\n".join(p for p in parts if p), results, test_cmd, rerun_rc
+                fb = "\n".join(p for p in parts if p)
+                d = router.validator_route(run, ticket, out)
+                r = d["result"] if d.get("source") == "ollama" else None
+                if r == "escalate":
+                    summary = out.get("summary") or ""
+                    raise Escalate("validator reject, decision model escalated: " + summary[:500])
+                if r in ("qa", "docs") and r in stages and stages.index(r) < stages.index("validate"):
+                    st["start_stage"] = r
+                    fb = ("Decision: validator reject routed to %s.\n" % r) + fb
+                elif r == "docs":
+                    fb = "Decision: validator reject routed to docs.\n" + fb
+                return fb, results, test_cmd, rerun_rc
     return None, results, test_cmd, rerun_rc
+
+
+def _attempt(run, adapter_for, env, ticket, st, wt, stages):
+    """Run stages with start_stage resolution and persistence of last_results, last_test_cmd, last_rerun_rc.
+
+    Returns (feedback or None, results, test_cmd, qa_rc).
+    """
+    tid = ticket["id"] if isinstance(ticket, dict) else ticket
+    st["env_rerun"] = False
+    ss = st.pop("start_stage", None)
+    last = st.get("last_results") or {}
+    if ss in stages and all(s in last for s in stages[:stages.index(ss)]):
+        start_idx = stages.index(ss)
+        results = {s: last[s] for s in stages[:start_idx]}
+        if "qa" in stages[:start_idx]:
+            test_cmd, rerun_rc = st.get("last_test_cmd"), st.get("last_rerun_rc")
+        else:
+            test_cmd, rerun_rc = None, None
+        run.event("stage_skip", ticket=tid, attempt=st["attempt"], start_stage=ss)
+    else:
+        start_idx = 0
+        results, test_cmd, rerun_rc = {}, None, None
+    save_state(run, tid, st)
+    fb, results, test_cmd, rerun_rc = _attempt_body(
+        run, adapter_for, env, ticket, st, wt, stages, start_idx, results, test_cmd, rerun_rc
+    )
+    st["last_results"] = dict(results)
+    st["last_test_cmd"] = test_cmd
+    st["last_rerun_rc"] = rerun_rc
+    save_state(run, tid, st)
+    return fb, results, test_cmd, rerun_rc
 
 
 def _gate(stages, results, rerun_rc):
@@ -953,6 +1065,8 @@ def _gate(stages, results, rerun_rc):
         g["code"] = results["code"]["status"] == "done"
     if "qa" in stages:
         g["qa"] = results["qa"]["status"] == "pass" and rerun_rc == 0
+    if "e2e" in stages:
+        g["e2e"] = results["e2e"]["status"] == "pass"
     if "validate" in stages:
         v = results["validate"]
         g["validate"] = v["verdict"] == "approve" and all(c["met"] for c in v["exit_criteria"])
@@ -993,6 +1107,11 @@ def _close(run, adapter_for, ticket, st, wt, stages, results, test_cmd, rerun_rc
             return fb
         return "Close gate failed: " + ", ".join(k for k, v in gate.items() if (not v if k != "gate_hooks" else not all_hooks_ok))
     gitops.git(wt, "add", "-A")
+    scan = guard.scan_diff(cfg, *guard.diff_inputs(wt), run=run)
+    if scan.get("decision") == "deny":
+        return "Safety guard refused the commit: %s. Remove it and try again." % scan.get("reason")
+    if scan.get("decision") != "allow":
+        raise Escalate("safety guard: %s" % scan.get("reason"))
     stat = gitops.git(wt, "diff", "--cached", "--stat").stdout
     msg = router.commit_message(run, ticket, stat, adapter_for("router"))["result"]
     subject = msg["subject"] + ("\n\n" + msg["body"] if msg.get("body") else "")
@@ -1071,6 +1190,11 @@ def run_ticket(run, ticket, adapter_for=None, env=None, merge_lock=None):
                 except Exception as e:
                     run.event("usage_error", ticket=tid, error=str(e))
                 return "closed"
+            if st["attempt"] >= 1:
+                d = router.after_failure(run, ticket, st["attempt"], fb)
+                if d.get("source") == "ollama" and d.get("result") in ("split", "replan", "escalate"):
+                    choice = d["result"]
+                    raise Escalate("decision model recommends %s after attempt %d: %s" % (choice, st["attempt"], fb[:500]))
             if st["attempt"] + 1 > cfg["max_attempts_per_ticket"]:
                 raise Escalate("max attempts (%d) reached; last feedback:\n%s" % (st["attempt"], fb))
             st["attempt"] += 1

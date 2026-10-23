@@ -7,6 +7,8 @@ from tests.test_core import FAKE_CLI
 from tests.test_gitops import GitBase, git
 from yoke import adapters, pipeline, planreview, scheduler
 
+os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
+
 CODE = {"status": "done", "summary": "s", "files_changed": [], "assumptions": [], "open_questions": [],
         "notes_for_qa": ""}
 PASS_CMD = "test -f %s"

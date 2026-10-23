@@ -8,6 +8,8 @@ from tests.test_core import FAKE_CLI
 from tests.test_pipeline import PipeBase, ticket, resp, CODE, REV, val
 from yoke import adapters, cli, gitops, pipeline, planreview
 
+os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
+
 
 class TestNudge(PipeBase):
     def test_nudge_cli_and_state_validation(self):

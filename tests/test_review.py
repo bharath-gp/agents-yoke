@@ -7,6 +7,8 @@ from tests.test_gitops import git
 from tests.test_pipeline import CODE, DOCS, PipeBase, qa, resp, ticket, val
 from yoke import tracker
 
+os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
+
 REV_APPROVE = {"verdict": "approve", "findings": [], "summary": "looks good"}
 
 

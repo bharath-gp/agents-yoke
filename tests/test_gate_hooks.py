@@ -12,6 +12,8 @@ from unittest import mock
 from tests.test_pipeline import PipeBase, ticket, resp, CODE, REV, val, qa
 from yoke import config, hooks
 
+os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
+
 
 class TestHookRunner(unittest.TestCase):
     def test_exit_0_pass(self):
