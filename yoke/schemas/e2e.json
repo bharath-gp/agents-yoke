@@ -1,0 +1,25 @@
+{
+  "type": "object",
+  "required": ["status", "criteria", "summary"],
+  "additionalProperties": false,
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["pass", "fail", "blocked"]
+    },
+    "criteria": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["criterion", "met", "evidence"],
+        "additionalProperties": false,
+        "properties": {
+          "criterion": {"type": "string"},
+          "met": {"type": "boolean"},
+          "evidence": {"type": "string"}
+        }
+      }
+    },
+    "summary": {"type": "string"}
+  }
+}

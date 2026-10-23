@@ -543,6 +543,27 @@ class TestHypothesesPromptsAndSchema(unittest.TestCase):
         self.assertEqual(config.hypotheses_count(None), 0)
 
 
+class TestE2EPrompt(unittest.TestCase):
+    def test_e2e_prompt_renders_with_string_template(self):
+        import re
+        content = _read("e2e")
+        for expected in ("no shell", "read-only", "never type credentials"):
+            self.assertIn(expected, content.lower())
+        substitutions = {
+            "ticket": '{"id": "T-0093"}',
+            "criterion": "page loads",
+            "candidates": "[]",
+            "page_text": "sample text",
+            "screenshot": "/tmp/screenshot.png",
+        }
+        template = string.Template(content)
+        rendered = template.substitute(substitutions)
+        self.assertIn("page loads", rendered)
+        self.assertIn("/tmp/screenshot.png", rendered)
+        leftover = re.findall(r"\$[a-zA-Z_][a-zA-Z0-9_]*", rendered)
+        self.assertEqual(leftover, [])
+
+
 if __name__ == "__main__":
     unittest.main()
 

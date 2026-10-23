@@ -5,6 +5,9 @@ description = "Primary/secondary agent loop: Claude plans and validates, agy cod
 requires-python = ">=3.9"
 dependencies = []
 
+[project.optional-dependencies]
+e2e = ["playwright>=1.40"]
+
 [project.scripts]
 yoke = "yoke.cli:main"
 
