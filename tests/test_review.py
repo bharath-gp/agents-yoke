@@ -5,7 +5,7 @@ from unittest import mock
 
 from tests.test_gitops import git
 from tests.test_pipeline import CODE, DOCS, PipeBase, qa, resp, ticket, val
-from yoke import tracker
+from yoke import pipeline, tracker
 
 os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
 
@@ -37,6 +37,7 @@ class TestReviewStage(PipeBase):
         st = self.tstate(1)
         self.assertEqual(st["review"]["rounds"], 0)
         self.assertEqual(st["review"]["unresolved"], [])
+        self.assertEqual(st["review"]["overruled"], [])
         with open(self.run_.path("events.jsonl")) as f:
             rev_calls = [json.loads(l) for l in f
                          if json.loads(l).get("kind") == "call_start" and json.loads(l).get("stage") == "review"]
@@ -63,6 +64,7 @@ class TestReviewStage(PipeBase):
         self.assertEqual(cmd[cmd.index("--resume") + 1], self.tstate(1)["sessions"]["code"])
         self.assertEqual(self.tstate(1)["review"]["rounds"], 1)
         self.assertEqual(self.tstate(1)["review"]["unresolved"], [])
+        self.assertEqual(self.tstate(1)["review"]["overruled"], [])
         with open(self.run_.path("events.jsonl")) as f:
             rev_calls = [json.loads(l) for l in f
                          if json.loads(l).get("kind") == "call_start" and json.loads(l).get("stage") == "review"]
@@ -166,6 +168,7 @@ class TestReviewStage(PipeBase):
         st = self.tstate(1)
         self.assertEqual(st["review"]["rounds"], 0)
         self.assertEqual(st["review"]["unresolved"], [])
+        self.assertEqual(st["review"]["overruled"], [])
 
     def test_review_calls_increment_agent_calls_and_respect_max_agent_calls(self):
         self.setup_tickets(
@@ -272,6 +275,14 @@ class TestReviewStage(PipeBase):
         self.assertIn("Unresolved review findings", body_unresolved)
         self.assertIn("unhandled null pointer", body_unresolved)
         self.assertIn("check None before access", body_unresolved)
+
+    def test_review_state_resumed_from_disk_initialises_overruled(self):
+        st = {"attempt": 1, "status": "in_progress", "review": {"rounds": 0, "unresolved": []}}
+        with mock.patch("yoke.pipeline._call_retry") as mock_call:
+            mock_call.return_value = mock.MagicMock(ok=True, structured_output={"verdict": "approve", "findings": []})
+            pipeline._review_loop(self.run_, lambda r: None, {}, ticket(1), st, self.repo, "HEAD", {}, "")
+        self.assertIn("overruled", st["review"])
+        self.assertEqual(st["review"]["overruled"], [])
 
 
 class TestMultiLensReview(PipeBase):

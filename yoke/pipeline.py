@@ -16,8 +16,9 @@ from . import adapters, calls, config, gitops, guard, hooks, milestones, planrev
 PKG = os.path.dirname(os.path.abspath(__file__))
 
 
-READ_STAGES = ("validate", "review", "search", "factcheck")
+READ_STAGES = ("validate", "review", "search", "factcheck", "rebut", "reply", "judge")
 WEB_STAGES = ("search", "factcheck")
+STAGE_TIER = {"rebut": "cheap", "reply": "cheap", "judge": "plan"}
 
 
 class Escalate(Exception):
@@ -539,7 +540,7 @@ def _call(run, adapter_for, env, ticket, stage, attempt, wt, base, mode, results
     over = next((s for s in router.route_ticket(cfg, ticket)["stages"] if s["stage"] == stage), {})
     hooks = os.path.join(PKG, "githooks")  # push protection for workers (PLAN 2.9)
     wenv = dict(env or {}, GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="core.hooksPath", GIT_CONFIG_VALUE_0=hooks)
-    timeout = cfg["timeouts_s"][stage]
+    timeout = cfg["timeouts_s"].get(stage, 900) if stage in STAGE_TIER else cfg["timeouts_s"][stage]
     tid = ticket["id"] if isinstance(ticket, dict) else ticket
     spec = adapters.CallSpec(
         prompt=prompt, schema_path=schema.schema_path(stage), cwd=wt, mode=mode,
@@ -548,6 +549,10 @@ def _call(run, adapter_for, env, ticket, stage, attempt, wt, base, mode, results
         allowed_tools=tools,
         web_tools=tuple(cfg["search"]["tools"]) if stage in WEB_STAGES else (),
         settings_path=run.read_json("run.json").get("agent_settings"))
+
+    if stage in STAGE_TIER and not over.get("model") and not over.get("effort"):
+        model, effort = config.model_for_tier(cfg, agent_name, STAGE_TIER[stage])
+        spec.model, spec.effort = model, effort
 
     if stage in ("code", "review", "qa", "validate", "docs") and not over.get("model") and not over.get("effort"):
         pick = router.pick_tier_effort(run, ticket, stage, attempt)
@@ -754,7 +759,8 @@ def _review_loop(run, adapter_for, env, ticket, st, wt, base, results, feedback)
     highest severity. When review_lenses is empty, preserves legacy single-review loop.
     """
     tid, attempt = ticket["id"], st["attempt"]
-    st.setdefault("review", {"rounds": 0, "unresolved": []})
+    st.setdefault("review", {"rounds": 0, "unresolved": [], "overruled": []})
+    st["review"].setdefault("overruled", [])
     cfg = run.cfg
     lenses = config.review_lenses(cfg)
     max_rounds = cfg.get("max_review_rounds", 2)
@@ -912,7 +918,7 @@ def _attempt_body(run, adapter_for, env, ticket, st, wt, stages, start_idx, resu
     tid, attempt, base = ticket["id"], st["attempt"], st["base_sha"]
     st["gate_hooks"] = {}
     if "review" in stages[start_idx:]:
-        st["review"] = {"rounds": 0, "unresolved": []}
+        st["review"] = {"rounds": 0, "unresolved": [], "overruled": []}
         save_state(run, tid, st)
     feedback = _read_feedback(run, tid, attempt)
     nudges = consume_nudges(run, tid)
