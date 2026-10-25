@@ -564,6 +564,17 @@ class TestE2EPrompt(unittest.TestCase):
         self.assertEqual(leftover, [])
 
 
+class TestAdversarialPrompts(unittest.TestCase):
+    def test_review_prompts_demand_evidence(self):
+        prompts = ("review", "review_security", "review_performance", "review_tests", "plan_review")
+        for name in prompts:
+            content = _read(name)
+            self.assertIn("concrete", content, "%s missing 'concrete'" % name)
+            self.assertIn("judge", content, "%s missing 'judge'" % name)
+            self.assertIn("rebut", content, "%s missing 'rebut'" % name)
+            self.assertIn("minor at most", content, "%s missing 'minor at most'" % name)
+
+
 if __name__ == "__main__":
     unittest.main()
 
