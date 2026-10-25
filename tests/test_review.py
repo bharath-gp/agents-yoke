@@ -499,5 +499,467 @@ class TestMultiLensReview(PipeBase):
         self.assertNotIn("review-security", perf_prompt_r1)
 
 
+class TestAdversarialReview(PipeBase):
+    def setUp(self):
+        super().setUp()
+        self.run_.update(config=dict(self.run_.cfg, review_mode="adversarial"))
+
+    def _calls(self):
+        with open(self.run_.path("events.jsonl")) as f:
+            return [json.loads(l) for l in f if json.loads(l).get("kind") == "call_start"]
+
+    def script_dict(self, **overrides):
+        f = finding(severity="blocker", file="a.py", line=1, comment="blocker finding", suggestion="fix a.py")
+        d = {
+            "code": [resp(CODE, "c1", write={"f1.txt": "1"}), resp(CODE, "c1", write={"f1.txt": "2"})],
+            "review": [resp(rev_changes([f])), resp(REV_APPROVE)],
+            "rebut": [resp({"responses": [{"id": "f1", "stance": "concede", "argument": "ok", "evidence": "a.py:1"}], "summary": "conceding"})],
+            "reply": [resp({"replies": [{"id": "f1", "stance": "maintain", "argument": "still broken"}], "summary": "maintaining"})],
+            "judge": [resp({"rulings": [{"id": "f1", "ruling": "upheld", "reason": "finding upheld"}], "summary": "ruling"})],
+            "qa": [resp(qa("true"))],
+            "validate": [resp(val())],
+            "router": [{"exit": 1}],
+        }
+        d.update(overrides)
+        return d
+
+    def test_all_conceded_skips_judge_and_coder_fixes(self):
+        script = self.script_dict(
+            rebut=[resp({"responses": [{"id": "f1", "stance": "concede", "argument": "ok", "evidence": "a.py:1"}], "summary": "conceding"})],
+        )
+        self.setup_tickets([ticket(1)], script)
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+        calls = self._calls()
+        self.assertFalse(any(c.get("stage") == "judge" for c in calls))
+        self.assertTrue(os.path.isdir(self.run_.path("tickets/T-001/attempt-1/code-r1")))
+        with open(self.run_.path("tickets/T-001/attempt-1/code-r1/prompt.md")) as pfile:
+            code_prompt = pfile.read()
+        self.assertIn("blocker finding", code_prompt)
+
+    def test_disputed_overruled_ticket_closes_without_coder_round(self):
+        f = finding(severity="blocker", file="a.py", line=1, comment="overruled comment", suggestion="fix a.py")
+        script = self.script_dict(
+            review=[resp(rev_changes([f]))],
+            rebut=[resp({"responses": [{"id": "f1", "stance": "dispute", "argument": "not a bug", "evidence": "a.py:1"}], "summary": "disputing"})],
+            judge=[resp({"rulings": [{"id": "f1", "ruling": "overruled", "reason": "not a bug indeed"}], "summary": "ruling"})],
+        )
+        self.setup_tickets([ticket(1)], script)
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+        self.assertFalse(os.path.exists(self.run_.path("tickets/T-001/attempt-1/code-r1")))
+        st = self.tstate(1)
+        self.assertEqual(len(st["review"]["overruled"]), 1)
+        self.assertEqual(st["review"]["overruled"][0]["finding"]["comment"], "overruled comment")
+        self.assertEqual(st["review"]["overruled"][0]["reason"], "not a bug indeed")
+        self.assertTrue(os.path.isfile(self.run_.path("tickets/T-001/attempt-1/debate-r0.json")))
+        debate = self.run_.read_json("tickets/T-001/attempt-1/debate-r0.json")
+        self.assertEqual(set(debate.keys()), {"round", "findings", "transcript", "rulings", "upheld", "overruled"})
+        self.assertEqual(debate["round"], 0)
+        self.assertEqual(debate["upheld"], [])
+        self.assertEqual(len(debate["overruled"]), 1)
+        self.assertEqual(debate["overruled"][0]["finding"]["comment"], "overruled comment")
+        self.assertEqual(debate["overruled"][0]["reason"], "not a bug indeed")
+        with open(self.run_.path("events.jsonl")) as f:
+            deb_events = [json.loads(l) for l in f if json.loads(l).get("kind") == "review_debate"]
+        self.assertEqual(len(deb_events), 1)
+        self.assertEqual(deb_events[0]["ticket"], "T-001")
+        self.assertEqual(deb_events[0]["attempt"], 1)
+        self.assertEqual(deb_events[0]["round"], 0)
+        self.assertEqual(deb_events[0]["upheld"], 0)
+        self.assertEqual(deb_events[0]["overruled"], 1)
+
+    def test_disputed_upheld_triggers_coder_round(self):
+        f = finding(severity="blocker", file="a.py", line=1, comment="upheld bug comment", suggestion="fix a.py")
+        script = self.script_dict(
+            review=[resp(rev_changes([f])), resp(REV_APPROVE)],
+            rebut=[resp({"responses": [{"id": "f1", "stance": "dispute", "argument": "not a bug", "evidence": "a.py:1"}], "summary": "disputing"})],
+            judge=[resp({"rulings": [{"id": "f1", "ruling": "upheld", "reason": "it is a bug"}], "summary": "ruling"})],
+        )
+        self.setup_tickets([ticket(1)], script)
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+        self.assertTrue(os.path.isdir(self.run_.path("tickets/T-001/attempt-1/code-r1")))
+        with open(self.run_.path("tickets/T-001/attempt-1/code-r1/prompt.md")) as pfile:
+            code_prompt = pfile.read()
+        self.assertIn("upheld bug comment", code_prompt)
+        debate = self.run_.read_json("tickets/T-001/attempt-1/debate-r0.json")
+        self.assertEqual(set(debate.keys()), {"round", "findings", "transcript", "rulings", "upheld", "overruled"})
+        self.assertEqual(len(debate["upheld"]), 1)
+        self.assertNotIn("id", debate["upheld"][0])
+        self.assertEqual(debate["upheld"][0]["comment"], "upheld bug comment")
+        self.assertEqual(debate["overruled"], [])
+        with open(self.run_.path("events.jsonl")) as f:
+            deb_events = [json.loads(l) for l in f if json.loads(l).get("kind") == "review_debate"]
+        self.assertEqual(len(deb_events), 1)
+        self.assertEqual(deb_events[0]["ticket"], "T-001")
+        self.assertEqual(deb_events[0]["attempt"], 1)
+        self.assertEqual(deb_events[0]["round"], 0)
+        self.assertEqual(deb_events[0]["upheld"], 1)
+        self.assertEqual(deb_events[0]["overruled"], 0)
+
+    def test_debate_rounds_two_adds_reply_call(self):
+        self.run_.update(config=dict(self.run_.cfg, debate_rounds=2))
+        f = finding(severity="blocker", file="a.py", line=1, comment="issue", suggestion="fix a.py")
+        script = self.script_dict(
+            review=[resp(rev_changes([f])), resp(REV_APPROVE)],
+            rebut=[resp({"responses": [{"id": "f1", "stance": "dispute", "argument": "arg1", "evidence": "a.py:1"}], "summary": "d1"}),
+                   resp({"responses": [{"id": "f1", "stance": "dispute", "argument": "arg2", "evidence": "a.py:1"}], "summary": "d2"})],
+            reply=[resp({"replies": [{"id": "f1", "stance": "maintain", "argument": "still an issue"}], "summary": "m1"})],
+            judge=[resp({"rulings": [{"id": "f1", "ruling": "upheld", "reason": "upheld"}], "summary": "ruling"})],
+        )
+        self.setup_tickets([ticket(1)], script)
+        self.assertEqual(self.go(), "done")
+        stages = [c["stage"] for c in self._calls() if c["stage"] in ("rebut", "reply", "judge")]
+        self.assertEqual(stages, ["rebut", "reply", "rebut", "judge"])
+        labels = [c["dir"].split("/")[-1] for c in self._calls() if c["stage"] in ("rebut", "reply", "judge")]
+        self.assertEqual(labels, ["rebut-r0-1", "reply-r0-1", "rebut-r0-2", "judge-r0"])
+        self.assertTrue(os.path.isdir(self.run_.path("tickets/T-001/attempt-1/rebut-r0-1")))
+        self.assertTrue(os.path.isdir(self.run_.path("tickets/T-001/attempt-1/reply-r0-1")))
+        self.assertTrue(os.path.isdir(self.run_.path("tickets/T-001/attempt-1/rebut-r0-2")))
+        self.assertTrue(os.path.isdir(self.run_.path("tickets/T-001/attempt-1/judge-r0")))
+        debate = self.run_.read_json("tickets/T-001/attempt-1/debate-r0.json")
+        self.assertEqual(len(debate["transcript"]), 2)
+
+    def test_reply_withdraw_drops_finding_without_judge(self):
+        self.run_.update(config=dict(self.run_.cfg, debate_rounds=2))
+        f = finding(severity="blocker", file="a.py", line=1, comment="withdrawn finding", suggestion="fix a.py")
+        script = self.script_dict(
+            review=[resp(rev_changes([f]))],
+            rebut=[resp({"responses": [{"id": "f1", "stance": "dispute", "argument": "explanation", "evidence": "a.py:1"}], "summary": "dispute"})],
+            reply=[resp({"replies": [{"id": "f1", "stance": "withdraw", "argument": "explanation accepted"}], "summary": "withdraw"})],
+        )
+        self.setup_tickets([ticket(1)], script)
+        self.assertEqual(self.go(), "done")
+        calls = self._calls()
+        self.assertFalse(any(c.get("stage") == "judge" for c in calls))
+        self.assertFalse(os.path.exists(self.run_.path("tickets/T-001/attempt-1/code-r1")))
+        st = self.tstate(1)
+        self.assertEqual(len(st["review"]["overruled"]), 1)
+        self.assertEqual(st["review"]["overruled"][0]["finding"]["comment"], "withdrawn finding")
+        self.assertEqual(st["review"]["overruled"][0]["reason"], "withdrawn by reviewer")
+        debate = self.run_.read_json("tickets/T-001/attempt-1/debate-r0.json")
+        self.assertEqual(debate["round"], 0)
+        self.assertEqual(debate["upheld"], [])
+        self.assertEqual(len(debate["overruled"]), 1)
+        self.assertEqual(debate["overruled"][0]["finding"]["comment"], "withdrawn finding")
+        self.assertEqual(debate["overruled"][0]["reason"], "withdrawn by reviewer")
+        with open(self.run_.path("events.jsonl")) as f:
+            deb_events = [json.loads(l) for l in f if json.loads(l).get("kind") == "review_debate"]
+        self.assertEqual(len(deb_events), 1)
+        self.assertEqual(deb_events[0]["upheld"], 0)
+        self.assertEqual(deb_events[0]["overruled"], 1)
+
+    def test_reply_mixed_withdraw_and_maintain_sent_to_judge(self):
+        self.run_.update(config=dict(self.run_.cfg, debate_rounds=2))
+        f1 = finding(severity="blocker", file="a.py", line=1, comment="finding to withdraw", suggestion="fix a.py")
+        f2 = finding(severity="major", file="b.py", line=2, comment="finding to maintain", suggestion="fix b.py")
+        script = self.script_dict(
+            review=[resp(rev_changes([f1, f2])), resp(REV_APPROVE)],
+            rebut=[
+                resp({"responses": [
+                    {"id": "f1", "stance": "dispute", "argument": "arg a", "evidence": "a.py:1"},
+                    {"id": "f2", "stance": "dispute", "argument": "arg b", "evidence": "b.py:2"},
+                ], "summary": "disputing both"}),
+                resp({"responses": [
+                    {"id": "f2", "stance": "dispute", "argument": "still dispute b", "evidence": "b.py:2"},
+                ], "summary": "disputing f2"}),
+            ],
+            reply=[
+                resp({"replies": [
+                    {"id": "f1", "stance": "withdraw", "argument": "withdrawing a"},
+                    {"id": "f2", "stance": "maintain", "argument": "maintaining b"},
+                ], "summary": "mixed reply"}),
+            ],
+            judge=[
+                resp({"rulings": [
+                    {"id": "f2", "ruling": "upheld", "reason": "b is a valid bug"},
+                ], "summary": "judge ruling"}),
+            ],
+        )
+        self.setup_tickets([ticket(1)], script)
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+
+        debate = self.run_.read_json("tickets/T-001/attempt-1/debate-r0.json")
+        self.assertEqual(len(debate["upheld"]), 1)
+        self.assertEqual(debate["upheld"][0]["comment"], "finding to maintain")
+        self.assertEqual(len(debate["overruled"]), 1)
+        self.assertEqual(debate["overruled"][0]["finding"]["comment"], "finding to withdraw")
+        self.assertEqual(debate["overruled"][0]["reason"], "withdrawn by reviewer")
+
+        with open(self.run_.path("events.jsonl")) as f:
+            deb_events = [json.loads(l) for l in f if json.loads(l).get("kind") == "review_debate"]
+        self.assertEqual(len(deb_events), 1)
+        self.assertEqual(deb_events[0]["upheld"], 1)
+        self.assertEqual(deb_events[0]["overruled"], 1)
+
+        st = self.tstate(1)
+        self.assertEqual(len(st["review"]["overruled"]), 1)
+        self.assertEqual(st["review"]["overruled"][0]["finding"]["comment"], "finding to withdraw")
+        self.assertEqual(st["review"]["overruled"][0]["reason"], "withdrawn by reviewer")
+
+        self.assertTrue(os.path.isdir(self.run_.path("tickets/T-001/attempt-1/code-r1")))
+        with open(self.run_.path("tickets/T-001/attempt-1/code-r1/prompt.md")) as pfile:
+            code_prompt = pfile.read()
+        self.assertIn("finding to maintain", code_prompt)
+        self.assertNotIn("finding to withdraw", code_prompt)
+
+    def test_independent_mode_never_calls_rebut_or_judge(self):
+        self.run_.update(config=dict(self.run_.cfg, review_mode="independent"))
+        f = finding(severity="blocker", file="a.py", line=1, comment="blocker", suggestion="fix a.py")
+        script = self.script_dict(
+            review=[resp(rev_changes([f])), resp(REV_APPROVE)],
+        )
+        self.setup_tickets([ticket(1)], script)
+        self.assertEqual(self.go(), "done")
+        calls = self._calls()
+        self.assertFalse(any(c.get("stage") in ("rebut", "reply", "judge") for c in calls))
+        self.assertTrue(os.path.isdir(self.run_.path("tickets/T-001/attempt-1/code-r1")))
+
+    def test_minor_findings_skip_debate(self):
+        f = finding(severity="minor", file="a.py", line=1, comment="minor suggestion", suggestion="tidy a.py")
+        script = self.script_dict(
+            review=[resp(rev_changes([f]))],
+        )
+        self.setup_tickets([ticket(1)], script)
+        self.assertEqual(self.go(), "done")
+        calls = self._calls()
+        self.assertFalse(any(c.get("stage") in ("rebut", "reply", "judge") for c in calls))
+        self.assertFalse(os.path.exists(self.run_.path("tickets/T-001/attempt-1/code-r1")))
+
+    def test_rebut_falls_back_to_fresh_session(self):
+        f = finding(severity="blocker", file="a.py", line=1, comment="b", suggestion="fix a.py")
+        script = self.script_dict(
+            review=[resp(rev_changes([f])), resp(REV_APPROVE)],
+            **{
+                "rebut-r0-1": [{"exit": 1}],
+                "rebut": [resp({"responses": [{"id": "f1", "stance": "concede", "argument": "ok", "evidence": "a.py:1"}], "summary": "c"})],
+            }
+        )
+        self.setup_tickets([ticket(1)], script)
+        self.assertEqual(self.go(), "done")
+        self.assertTrue(os.path.isdir(self.run_.path("tickets/T-001/attempt-1/rebut-r0-1-fresh")))
+        self.assertEqual(self.tstate(1)["sessions"]["code"], "c1")
+        cmd_resumed = self.run_.read_json("tickets/T-001/attempt-1/rebut-r0-1/command.json")
+        self.assertIn("--resume", cmd_resumed)
+        self.assertIn("c1", cmd_resumed)
+        cmd_fresh = self.run_.read_json("tickets/T-001/attempt-1/rebut-r0-1-fresh/command.json")
+        self.assertNotIn("--resume", cmd_fresh)
+
+    def test_reply_call_failure_fails_attempt(self):
+        self.run_.update(config=dict(self.run_.cfg, debate_rounds=2, max_attempts_per_ticket=2))
+        f = finding(severity="blocker", file="a.py", line=1, comment="b", suggestion="fix a.py")
+        script = self.script_dict(
+            code=[resp(CODE, "c1", write={"f1.txt": "1"}),
+                  resp(CODE, "c1", write={"f1.txt": "2"})],
+            review=[resp(rev_changes([f])), resp(REV_APPROVE)],
+            rebut=[resp({"responses": [{"id": "f1", "stance": "dispute", "argument": "no", "evidence": "a.py:1"}], "summary": "d"})],
+            reply=[{"exit": 1}],
+        )
+        self.setup_tickets([ticket(1)], script)
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["attempt"], 2)
+        with open(self.run_.path("tickets/T-001/attempt-2/feedback.md")) as f:
+            fb = f.read()
+        self.assertTrue(fb.startswith("reply call failed"))
+
+    def test_judge_call_failure_fails_attempt(self):
+        self.run_.update(config=dict(self.run_.cfg, max_attempts_per_ticket=2))
+        f = finding(severity="blocker", file="a.py", line=1, comment="b", suggestion="fix a.py")
+        script = self.script_dict(
+            code=[resp(CODE, "c1", write={"f1.txt": "1"}),
+                  resp(CODE, "c1", write={"f1.txt": "2"})],
+            review=[resp(rev_changes([f])), resp(REV_APPROVE)],
+            rebut=[resp({"responses": [{"id": "f1", "stance": "dispute", "argument": "no", "evidence": "a.py:1"}], "summary": "d"})],
+            judge=[{"exit": 1}],
+        )
+        self.setup_tickets([ticket(1)], script)
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["attempt"], 2)
+        with open(self.run_.path("tickets/T-001/attempt-2/feedback.md")) as f:
+            fb = f.read()
+        self.assertTrue(fb.startswith("judge call failed"))
+
+    def test_missing_id_in_judge_treated_as_upheld(self):
+        f = finding(severity="blocker", file="a.py", line=1, comment="missing ruling finding", suggestion="fix a.py")
+        script = self.script_dict(
+            review=[resp(rev_changes([f])), resp(REV_APPROVE)],
+            rebut=[resp({"responses": [{"id": "f1", "stance": "dispute", "argument": "not a bug", "evidence": "a.py:1"}], "summary": "disputing"})],
+            judge=[resp({"rulings": [], "summary": "empty rulings"})],
+        )
+        self.setup_tickets([ticket(1)], script)
+        self.assertEqual(self.go(), "done")
+        calls = self._calls()
+        self.assertTrue(any(c.get("stage") == "judge" for c in calls))
+        self.assertTrue(os.path.isdir(self.run_.path("tickets/T-001/attempt-1/code-r1")))
+        debate = self.run_.read_json("tickets/T-001/attempt-1/debate-r0.json")
+        self.assertEqual(len(debate["upheld"]), 1)
+        self.assertEqual(debate["upheld"][0]["comment"], "missing ruling finding")
+
+    def test_mixed_findings_with_identity_filtering_and_minor_preservation(self):
+        f1 = finding(severity="blocker", file="dup.py", line=10, comment="duplicate finding", suggestion="fix dup")
+        f2 = finding(severity="major", file="b.py", line=20, comment="major finding", suggestion="fix b")
+        f3 = finding(severity="blocker", file="dup.py", line=10, comment="duplicate finding", suggestion="fix dup")
+        f_minor = finding(severity="minor", file="m.py", line=30, comment="minor suggestion", suggestion="clean")
+
+        self.assertEqual(f1, f3)
+        self.assertIsNot(f1, f3)
+
+        script = self.script_dict(
+            review=[resp({"verdict": "changes_requested", "findings": [f1, f2, f3, f_minor], "summary": "mixed"}),
+                    resp(REV_APPROVE)],
+            rebut=[resp({"responses": [
+                {"id": "f1", "stance": "concede", "argument": "agree", "evidence": "dup.py:10"},
+                {"id": "f2", "stance": "dispute", "argument": "disagree", "evidence": "b.py:20"},
+                {"id": "f3", "stance": "dispute", "argument": "disagree", "evidence": "dup.py:10"},
+            ], "summary": "rebuttal"})],
+            judge=[resp({"rulings": [
+                {"id": "f2", "ruling": "upheld", "reason": "judge upholds f2"},
+                {"id": "f3", "ruling": "overruled", "reason": "judge overrules f3"},
+            ], "summary": "rulings"})],
+        )
+        self.setup_tickets([ticket(1)], script)
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+
+        debate = self.run_.read_json("tickets/T-001/attempt-1/debate-r0.json")
+        self.assertEqual(set(debate.keys()), {"round", "findings", "transcript", "rulings", "upheld", "overruled"})
+        self.assertEqual(debate["round"], 0)
+        self.assertEqual(len(debate["upheld"]), 2)
+        for u in debate["upheld"]:
+            self.assertNotIn("id", u)
+        self.assertEqual(debate["upheld"][0]["file"], "dup.py")
+        self.assertEqual(debate["upheld"][0]["comment"], "duplicate finding")
+        self.assertEqual(debate["upheld"][1]["file"], "b.py")
+        self.assertEqual(debate["upheld"][1]["comment"], "major finding")
+
+        self.assertEqual(len(debate["overruled"]), 1)
+        self.assertEqual(debate["overruled"][0]["finding"]["file"], "dup.py")
+        self.assertEqual(debate["overruled"][0]["finding"]["comment"], "duplicate finding")
+        self.assertEqual(debate["overruled"][0]["reason"], "judge overrules f3")
+
+        with open(self.run_.path("events.jsonl")) as f:
+            deb_events = [json.loads(l) for l in f if json.loads(l).get("kind") == "review_debate"]
+        self.assertEqual(len(deb_events), 1)
+        self.assertEqual(deb_events[0]["ticket"], "T-001")
+        self.assertEqual(deb_events[0]["attempt"], 1)
+        self.assertEqual(deb_events[0]["round"], 0)
+        self.assertEqual(deb_events[0]["upheld"], 2)
+        self.assertEqual(deb_events[0]["overruled"], 1)
+
+        with open(self.run_.path("tickets/T-001/attempt-1/code-r1/prompt.md")) as pfile:
+            prompt_r1 = pfile.read()
+        self.assertIn("dup.py:10", prompt_r1)
+        self.assertIn("b.py:20", prompt_r1)
+        self.assertIn("m.py:30", prompt_r1)
+        self.assertIn("clean", prompt_r1)
+        self.assertEqual(prompt_r1.count("dup.py:10"), 1)
+
+        prior_section = prompt_r1.split("Results of earlier stages (JSON):\n")[1].split("\n\nFeedback from the previous attempt")[0]
+        prior_results = json.loads(prior_section)
+        review_findings = prior_results["review"]["findings"]
+        self.assertEqual(len(review_findings), 3)
+        self.assertEqual(review_findings, [f1, f2, f_minor])
+
+        st = self.tstate(1)
+        self.assertEqual(len(st["review"]["overruled"]), 1)
+        self.assertEqual(st["review"]["overruled"][0]["finding"]["file"], "dup.py")
+        self.assertEqual(st["review"]["overruled"][0]["reason"], "judge overrules f3")
+
+    def test_rebut_call_failure_fails_attempt(self):
+        self.run_.update(config=dict(self.run_.cfg, max_attempts_per_ticket=2))
+        f = finding(severity="blocker", file="a.py", line=1, comment="b", suggestion="fix a.py")
+        script = self.script_dict(
+            code=[resp(CODE, "c1", write={"f1.txt": "1"}),
+                  resp(CODE, "c1", write={"f1.txt": "2"})],
+            review=[resp(rev_changes([f])), resp(REV_APPROVE)],
+            rebut=[{"exit": 1}],
+        )
+        self.setup_tickets([ticket(1)], script)
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["attempt"], 2)
+        with open(self.run_.path("tickets/T-001/attempt-2/feedback.md")) as f:
+            fb = f.read()
+        self.assertTrue(fb.startswith("rebut call failed"))
+
+    def test_judge_call_counts_against_max_agent_calls_total(self):
+        self.run_.update(config=dict(self.run_.cfg, max_agent_calls_total=3))
+        f = finding(severity="blocker", file="a.py", line=1, comment="b", suggestion="fix a.py")
+        script = self.script_dict(
+            review=[resp(rev_changes([f]))],
+            rebut=[resp({"responses": [{"id": "f1", "stance": "dispute", "argument": "no", "evidence": "a.py:1"}], "summary": "d"})],
+            judge=[resp({"rulings": [{"id": "f1", "ruling": "upheld", "reason": "upheld"}], "summary": "r"})],
+        )
+        self.setup_tickets([ticket(1)], script)
+        self.assertEqual(self.go(), "needs_user")
+        esc = self.run_.read_json("escalations.json")
+        self.assertIn("budget", esc[0]["reason"])
+        self.assertIn("max_agent_calls_total", esc[0]["reason"])
+        self.assertEqual(self.run_.read_json("run.json")["agent_calls"], 3)
+        calls = self._calls()
+        stages = [c["stage"] for c in calls]
+        self.assertIn("rebut", stages)
+        self.assertNotIn("judge", stages)
+
+    def test_missing_id_in_rebut_treated_as_disputed(self):
+        f = finding(severity="blocker", file="a.py", line=1, comment="b", suggestion="fix a.py")
+        script = self.script_dict(
+            review=[resp(rev_changes([f])), resp(REV_APPROVE)],
+            rebut=[resp({"responses": [], "summary": "empty responses"})],
+            judge=[resp({"rulings": [{"id": "f1", "ruling": "upheld", "reason": "valid"}], "summary": "upheld"})],
+        )
+        self.setup_tickets([ticket(1)], script)
+        self.assertEqual(self.go(), "done")
+        calls = self._calls()
+        self.assertTrue(any(c.get("stage") == "judge" for c in calls))
+        self.assertTrue(os.path.isdir(self.run_.path("tickets/T-001/attempt-1/code-r1")))
+
+    def test_multiple_review_passes_unique_debate_files_and_labels(self):
+        f1 = finding(severity="blocker", file="a.py", line=1, comment="blocker pass 0", suggestion="fix a")
+        f2 = finding(severity="blocker", file="b.py", line=2, comment="blocker pass 1", suggestion="fix b")
+        script = self.script_dict(
+            code=[
+                resp(CODE, "c1", write={"f1.txt": "1"}),
+                resp(CODE, "c1", write={"f1.txt": "2"}),
+            ],
+            review=[resp(rev_changes([f1])), resp(rev_changes([f2]))],
+            rebut=[
+                resp({"responses": [{"id": "f1", "stance": "dispute", "argument": "arg 0", "evidence": "a.py:1"}], "summary": "d0"}),
+                resp({"responses": [{"id": "f1", "stance": "dispute", "argument": "arg 1", "evidence": "b.py:2"}], "summary": "d1"}),
+            ],
+            judge=[
+                resp({"rulings": [{"id": "f1", "ruling": "upheld", "reason": "pass 0 upheld"}], "summary": "j0"}),
+                resp({"rulings": [{"id": "f1", "ruling": "overruled", "reason": "pass 1 overruled"}], "summary": "j1"}),
+            ],
+        )
+        self.setup_tickets([ticket(1)], script)
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+
+        self.assertTrue(os.path.isfile(self.run_.path("tickets/T-001/attempt-1/debate-r0.json")))
+        self.assertTrue(os.path.isfile(self.run_.path("tickets/T-001/attempt-1/debate-r1.json")))
+        self.assertTrue(os.path.isdir(self.run_.path("tickets/T-001/attempt-1/rebut-r0-1")))
+        self.assertTrue(os.path.isdir(self.run_.path("tickets/T-001/attempt-1/judge-r0")))
+        self.assertTrue(os.path.isdir(self.run_.path("tickets/T-001/attempt-1/code-r1")))
+        self.assertTrue(os.path.isdir(self.run_.path("tickets/T-001/attempt-1/rebut-r1-1")))
+        self.assertTrue(os.path.isdir(self.run_.path("tickets/T-001/attempt-1/judge-r1")))
+
+        d0 = self.run_.read_json("tickets/T-001/attempt-1/debate-r0.json")
+        d1 = self.run_.read_json("tickets/T-001/attempt-1/debate-r1.json")
+        self.assertEqual(d0["round"], 0)
+        self.assertEqual(len(d0["upheld"]), 1)
+        self.assertEqual(d0["upheld"][0]["comment"], "blocker pass 0")
+        self.assertEqual(d1["round"], 1)
+        self.assertEqual(d1["upheld"], [])
+        self.assertEqual(len(d1["overruled"]), 1)
+        self.assertEqual(d1["overruled"][0]["finding"]["comment"], "blocker pass 1")
+
+        with open(self.run_.path("events.jsonl")) as f:
+            deb_events = [json.loads(l) for l in f if json.loads(l).get("kind") == "review_debate"]
+        self.assertEqual(len(deb_events), 2)
+        self.assertEqual([e["round"] for e in deb_events], [0, 1])
+
+
 if __name__ == "__main__":
     unittest.main()

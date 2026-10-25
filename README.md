@@ -108,6 +108,12 @@ Yoke supports adversarial review debates during ticket review and plan review:
 - **Debate rounds**: Configured via `debate_rounds` (default: `1`). Controls the number of debate exchanges, clamped to at least `1`.
 - **Debate timeouts**: Timeout limits in seconds under `timeouts_s`: `rebut` (900s), `reply` (900s), `judge` (900s), `plan_rebut` (900s), and `plan_judge` (900s).
 - **Debate schemas**: Governed by strict JSON schemas (`yoke/schemas/rebut.json`, `yoke/schemas/reply.json`, `yoke/schemas/judge.json`) validating structured responses (`concede` or `dispute`), replies (`maintain` or `withdraw`), and judge rulings (`upheld` or `overruled`).
+- **Ticket code review debate lifecycle**: When `review_mode` is `"adversarial"`, merged and deduplicated blocking findings (`blocker` and `major`) undergo an attack/rebut/(reply)/judge debate before any coder revision rounds:
+  - **Rebut (`rebut`)**: The coder agent evaluates blocking findings in read mode using prompt extra variables (`findings`, `transcript`). Rebut reuses the existing coder session via `--resume`; if the resumed call fails, it automatically retries with a fresh session (`rebut-r<n>-<k>-fresh`). Missing IDs default to `dispute`. Conceded findings exit the debate as upheld.
+  - **Reply (`reply`)**: When `debate_rounds > 1` and disputes remain, the reviewer agent evaluates the debate transcript in read mode (`maintain` or `withdraw`). Withdrawn findings exit as overruled (`"withdrawn by reviewer"`). Missing IDs default to `maintain`.
+  - **Judge (`judge`)**: Any disputed findings still open after exchange rounds proceed to an independent judge call in read mode (`judge-r<n>`). The judge issues rulings (`upheld` or `overruled` with reason). Missing rulings default to `upheld`. If all findings are conceded or withdrawn earlier, the judge call is skipped.
+  - **Rulings and fix rounds**: Only conceded or judge-upheld findings remain blocking and drive coder fix rounds. Overruled findings are excluded from coder feedback and appended to `st['review']['overruled']` (`finding` and `reason`).
+  - **Artifacts and audit**: For review pass `n`, the debate record is saved to `tickets/<tid>/attempt-<attempt>/debate-r<n>.json` (`{round, findings, transcript, rulings, upheld, overruled}`), and a `review_debate` audit event is emitted (`ticket`, `attempt`, `round`, `upheld`, `overruled`).
 
 ### Model selection and tiers
 
