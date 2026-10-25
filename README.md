@@ -86,6 +86,29 @@ During ticket execution, the `review` stage runs an iterative review loop (up to
 
 Each lens call counts against `max_agent_calls_total`. Blocker and major findings trigger coder revisions using the resumed session. If findings remain unresolved when reaching the revision cap, the ticket proceeds without failing: unresolved findings are recorded in ticket state, posted as issue comments, and surfaced in the `yoke pr` description under "Unresolved review findings".
 
+### Review mode and debate rounds
+
+Yoke supports adversarial review debates during ticket review and plan review:
+
+```json
+{
+  "review_mode": "adversarial",
+  "debate_rounds": 1,
+  "timeouts_s": {
+    "rebut": 900,
+    "reply": 900,
+    "judge": 900,
+    "plan_rebut": 900,
+    "plan_judge": 900
+  }
+}
+```
+
+- **Review mode**: Configured via `review_mode` (`"adversarial"` by default). Set to `"independent"` to run reviews without adversarial debate rounds. Any unknown or missing value defaults to `"adversarial"`.
+- **Debate rounds**: Configured via `debate_rounds` (default: `1`). Controls the number of debate exchanges, clamped to at least `1`.
+- **Debate timeouts**: Timeout limits in seconds under `timeouts_s`: `rebut` (900s), `reply` (900s), `judge` (900s), `plan_rebut` (900s), and `plan_judge` (900s).
+- **Debate schemas**: Governed by strict JSON schemas (`yoke/schemas/rebut.json`, `yoke/schemas/reply.json`, `yoke/schemas/judge.json`) validating structured responses (`concede` or `dispute`), replies (`maintain` or `withdraw`), and judge rulings (`upheld` or `overruled`).
+
 ### Model selection and tiers
 
 Models can be configured per agent across two tiers: `plan` (used for `requirements`, `planner`, `plan_review`, `wayfinder`) and `cheap` (used for all other execution stages such as `code`, `qa`, `docs`, `review`, and `validate`):
