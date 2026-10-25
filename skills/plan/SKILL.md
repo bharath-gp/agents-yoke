@@ -22,7 +22,7 @@ The run dir is `$YOKE_HOME/runs/<run_id>/` (default `~/.yoke/runs/<run_id>/`); `
    Be concrete enough that tickets can quote each work item verbatim.
 2. Review loop, at most the configured max rounds (default 2):
    - Run `yoke review-plan`. It asks the secondary agent for a read-only review, prints the round dir, verdict, finding count, and debate summary (`debate: U upheld, O overruled (see <path>)`) when debate occurred. Read `result.json` in that round dir.
-   - For EACH finding decide accept or reject and give a reason. Append the decisions to `plan-review/arbitration.md` in the run dir.
+   - When `plan-review/round-<n>/debate.json` exists, decide accept or reject for each finding in its `upheld` list. Note the overruled findings. If you override the judge (accept an overruled finding or reject an upheld one), record the reason. Without `debate.json` (independent mode), for EACH finding decide accept or reject and give a reason. Append everything to `plan-review/arbitration.md` in the run dir.
    - Revise `plan.md` for accepted findings. Stop early when the verdict is approve or no finding is accepted.
 3. Show the user the plan, plus every unresolved disagreement (rejected findings with your reason). Do not hide rejected findings.
 4. Only on the user's explicit yes, run `yoke approve plan`. It refuses when the Contents index is missing, links an anchor that does not exist, or leaves out a `##` section; fix the index and ask again. The approval is bound to the sha256 of `plan.md`; editing the plan afterwards voids it and you must ask again.
