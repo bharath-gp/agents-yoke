@@ -544,6 +544,179 @@ class TestPlanDebate(Base):
         self.assertIn("real issue", rebut_prompt)
         self.assertNotIn("minor nit", rebut_prompt)
 
+    def test_cli_prints_debate_summary(self):
+        self.plan()
+        changes = {
+            "verdict": "changes_requested",
+            "summary": "fix",
+            "findings": [
+                {"severity": "major", "section": "1", "issue": "first issue", "suggestion": "fix 1"},
+            ],
+        }
+        rebut = {
+            "responses": [
+                {"id": "p1", "stance": "dispute", "argument": "disputed", "evidence": "spec"},
+            ],
+            "summary": "disputed p1",
+        }
+        judge = {
+            "rulings": [
+                {"id": "p1", "ruling": "overruled", "reason": "dismissed"},
+            ],
+            "summary": "overruled p1",
+        }
+        script = {
+            "plan_review": [{"structured_output": changes, "session_id": "s"}],
+            "plan_rebut": [{"structured_output": rebut, "session_id": "s"}],
+            "plan_judge": [{"structured_output": judge, "session_id": "s"}],
+        }
+        with open(self.script, "w") as f:
+            json.dump(script, f)
+
+        buf = io.StringIO()
+        with mock.patch.dict(os.environ, {"YOKE_HOME": self.tmp, "FAKE_SCRIPT": self.script}), \
+             mock.patch("yoke.planreview.adapters.get", return_value=adapters.FakeAdapter(FAKE_CLI)), \
+             contextlib.redirect_stdout(buf):
+            rc = cli.main(["review-plan", "--run", self.run_.run_id])
+
+        self.assertEqual(rc, 0)
+        out = buf.getvalue()
+        self.assertIn("debate: 0 upheld, 1 overruled", out)
+        self.assertIn("debate.json", out)
+        expected = "debate: 0 upheld, 1 overruled (see %s)" % self.run_.path("plan-review/round-1/debate.json")
+        self.assertIn(expected, out)
+
+    def test_cli_prints_debate_summary_with_upheld_and_overruled(self):
+        self.plan()
+        changes = {
+            "verdict": "changes_requested",
+            "summary": "fix",
+            "findings": [
+                {"severity": "major", "section": "1", "issue": "first issue", "suggestion": "fix 1"},
+                {"severity": "major", "section": "2", "issue": "second issue", "suggestion": "fix 2"},
+            ],
+        }
+        rebut = {
+            "responses": [
+                {"id": "p1", "stance": "concede", "argument": "conceded", "evidence": "spec"},
+                {"id": "p2", "stance": "dispute", "argument": "disputed", "evidence": "spec"},
+            ],
+            "summary": "conceded p1, disputed p2",
+        }
+        judge = {
+            "rulings": [
+                {"id": "p2", "ruling": "overruled", "reason": "dismissed"},
+            ],
+            "summary": "overruled p2",
+        }
+        script = {
+            "plan_review": [{"structured_output": changes, "session_id": "s"}],
+            "plan_rebut": [{"structured_output": rebut, "session_id": "s"}],
+            "plan_judge": [{"structured_output": judge, "session_id": "s"}],
+        }
+        with open(self.script, "w") as f:
+            json.dump(script, f)
+
+        buf = io.StringIO()
+        with mock.patch.dict(os.environ, {"YOKE_HOME": self.tmp, "FAKE_SCRIPT": self.script}), \
+             mock.patch("yoke.planreview.adapters.get", return_value=adapters.FakeAdapter(FAKE_CLI)), \
+             contextlib.redirect_stdout(buf):
+            rc = cli.main(["review-plan", "--run", self.run_.run_id])
+
+        self.assertEqual(rc, 0)
+        out = buf.getvalue()
+        expected = "debate: 1 upheld, 1 overruled (see %s)" % self.run_.path("plan-review/round-1/debate.json")
+        self.assertIn(expected, out)
+
+    def test_cli_malformed_or_non_dict_debate_json_prints_no_debate_summary(self):
+        self.plan()
+        changes = {
+            "verdict": "changes_requested",
+            "summary": "fix",
+            "findings": [
+                {"severity": "major", "section": "1", "issue": "first issue", "suggestion": "fix 1"},
+            ],
+        }
+        rebut = {
+            "responses": [
+                {"id": "p1", "stance": "dispute", "argument": "disputed", "evidence": "spec"},
+            ],
+            "summary": "disputed p1",
+        }
+        judge = {
+            "rulings": [
+                {"id": "p1", "ruling": "overruled", "reason": "dismissed"},
+            ],
+            "summary": "overruled p1",
+        }
+        script = {
+            "plan_review": [{"structured_output": changes, "session_id": "s"}],
+            "plan_rebut": [{"structured_output": rebut, "session_id": "s"}],
+            "plan_judge": [{"structured_output": judge, "session_id": "s"}],
+        }
+        with open(self.script, "w") as f:
+            json.dump(script, f)
+
+        orig_read_json = state.Run.read_json
+
+        # Non-dict debate.json
+        def fake_non_dict(run_self, rel, default=None):
+            if "debate.json" in rel:
+                return ["not a dict"]
+            return orig_read_json(run_self, rel, default)
+
+        buf = io.StringIO()
+        with mock.patch.dict(os.environ, {"YOKE_HOME": self.tmp, "FAKE_SCRIPT": self.script}), \
+             mock.patch("yoke.planreview.adapters.get", return_value=adapters.FakeAdapter(FAKE_CLI)), \
+             mock.patch.object(state.Run, "read_json", fake_non_dict), \
+             contextlib.redirect_stdout(buf):
+            rc = cli.main(["review-plan", "--run", self.run_.run_id])
+
+        self.assertEqual(rc, 0)
+        self.assertNotIn("debate:", buf.getvalue())
+
+        # Corrupt / invalid json raising ValueError
+        def fake_corrupt(run_self, rel, default=None):
+            if "debate.json" in rel:
+                raise ValueError("corrupt json")
+            return orig_read_json(run_self, rel, default)
+
+        buf = io.StringIO()
+        with mock.patch.dict(os.environ, {"YOKE_HOME": self.tmp, "FAKE_SCRIPT": self.script}), \
+             mock.patch("yoke.planreview.adapters.get", return_value=adapters.FakeAdapter(FAKE_CLI)), \
+             mock.patch.object(state.Run, "read_json", fake_corrupt), \
+             contextlib.redirect_stdout(buf):
+            rc = cli.main(["review-plan", "--run", self.run_.run_id])
+
+        self.assertEqual(rc, 0)
+        self.assertNotIn("debate:", buf.getvalue())
+
+    def test_cli_independent_mode_prints_no_debate_summary(self):
+        self.run_.update(config=dict(self.run_.cfg, review_mode="independent"))
+        self.plan()
+        changes = {
+            "verdict": "changes_requested",
+            "summary": "fix",
+            "findings": [
+                {"severity": "major", "section": "1", "issue": "first issue", "suggestion": "fix 1"},
+            ],
+        }
+        script = {
+            "plan_review": [{"structured_output": changes, "session_id": "s"}],
+        }
+        with open(self.script, "w") as f:
+            json.dump(script, f)
+
+        buf = io.StringIO()
+        with mock.patch.dict(os.environ, {"YOKE_HOME": self.tmp, "FAKE_SCRIPT": self.script}), \
+             mock.patch("yoke.planreview.adapters.get", return_value=adapters.FakeAdapter(FAKE_CLI)), \
+             contextlib.redirect_stdout(buf):
+            rc = cli.main(["review-plan", "--run", self.run_.run_id])
+
+        self.assertEqual(rc, 0)
+        out = buf.getvalue()
+        self.assertNotIn("debate:", out)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -117,7 +117,7 @@ Yoke supports adversarial review debates during ticket review and plan review:
 - **Plan review debate lifecycle**: When `review_mode` is `"adversarial"`, blocking findings (`blocker` and `major`) identified during a plan review round (`review_round` / `yoke review-plan`) trigger an automated planner rebuttal and judge pass:
   - **Plan Rebut (`plan_rebut`)**: The planner agent evaluates blocking findings (numbered `p1..pn`) in read mode using the `rebut` schema and `plan_rebut.md` prompt. If the rebuttal call fails or schema validation fails, all blocking findings are treated as upheld (fail safe). Missing IDs default to disputed. Conceded findings exit as upheld.
   - **Plan Judge (`plan_judge`)**: Disputed IDs proceed to the plan review agent acting as judge in read mode using the `judge` schema and `plan_judge.md` prompt. The judge issues rulings (`upheld` or `overruled` with reason). A missing ruling or failed judge call defaults to upheld. If all findings are conceded during rebut, the judge call is skipped.
-  - **Artifacts and audit**: For plan review round `n`, debate details are saved to `plan-review/round-<n>/debate.json` (`{upheld, overruled, rebuttals, rulings}`), audit calls are logged to `plan-review/round-<n>/rebut` and `plan-review/round-<n>/judge`, and a `plan_debate` audit event is emitted (`round`, `upheld`, `overruled`). Nested directories preserve the round count in `next_round`.
+  - **Artifacts and audit**: For plan review round `n`, debate details are saved to `plan-review/round-<n>/debate.json` (`{upheld, overruled, rebuttals, rulings}`), audit calls are logged to `plan-review/round-<n>/rebut` and `plan-review/round-<n>/judge`, and a `plan_debate` audit event is emitted (`round`, `upheld`, `overruled`). When `debate.json` exists, `yoke review-plan` prints `debate: U upheld, O overruled (see <path>)` after the verdict line. Nested directories preserve the round count in `next_round`.
 
 ### Model selection and tiers
 
@@ -483,7 +483,7 @@ The skills run these for you; the raw commands below are for scripting and debug
 
 ```bash
 yoke init --requirements req.md   # prints run_id; write plan.md into ~/.yoke/runs/<run_id>/
-yoke review-plan                  # one read-only secondary review round
+yoke review-plan                  # one read-only secondary review round (prints debate summary when debate ran)
 yoke approve plan                 # also: tickets (creates GitHub milestones/issues if tracker=github), final
 yoke tickets chart [--feedback "note"] # map approved plan to milestones/tickets via wayfinder
                                   # ticket ids continue after the highest GitHub issue/PR number (T-0057 after #56)
