@@ -6,7 +6,7 @@ import subprocess
 import unittest
 from unittest import mock
 
-from tests.test_core import FAKE_CLI, Tmp
+from tests.test_core import FAKE_CLI, Tmp, slurp
 from yoke import adapters, cli, planreview, schema, state
 
 os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
@@ -25,7 +25,7 @@ class Base(Tmp):
         req = os.path.join(self.tmp, "req.md")
         with open(req, "w") as f:
             f.write("build a thing")
-        self.run_ = planreview.init_run(self.repo, req, {"max_plan_review_rounds": 2}, home=self.tmp)
+        self.run_ = planreview.init_run(self.repo, req, {"max_plan_review_rounds": 2, "review_mode": "independent"}, home=self.tmp)
         self.script = os.path.join(self.tmp, "script.json")
 
     def plan(self, text="the plan"):
@@ -197,6 +197,352 @@ class TestToc(Base):
         self.plan(GOOD_PLAN)
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(cli.main(["approve", "plan", "--run", self.run_.run_id]), 0)
+
+
+class TestPlanDebate(Base):
+    def setUp(self):
+        super().setUp()
+        self.run_.update(config=dict(self.run_.cfg, review_mode="adversarial"))
+
+    def debate(self, plan_review, plan_rebut=None, plan_judge=None):
+        script = {"plan_review": [{"structured_output": plan_review, "session_id": "s"}]}
+        if plan_rebut is not None:
+            script["plan_rebut"] = [{"structured_output": plan_rebut, "session_id": "s"}]
+        if plan_judge is not None:
+            script["plan_judge"] = [{"structured_output": plan_judge, "session_id": "s"}]
+        with open(self.script, "w") as f:
+            json.dump(script, f)
+        return planreview.review_round(self.run_, adapters.FakeAdapter(FAKE_CLI),
+                                       env={"FAKE_SCRIPT": self.script})
+
+    def test_debate_writes_transcript_and_upheld_only(self):
+        self.plan()
+        changes = {
+            "verdict": "changes_requested",
+            "summary": "fix",
+            "findings": [
+                {"severity": "major", "section": "1", "issue": "first issue", "suggestion": "fix 1"},
+                {"severity": "major", "section": "2", "issue": "second issue", "suggestion": "fix 2"},
+            ],
+        }
+        rebut = {
+            "responses": [
+                {"id": "p1", "stance": "concede", "argument": "good catch", "evidence": "spec"},
+                {"id": "p2", "stance": "dispute", "argument": "invalid finding", "evidence": "section 2.1"},
+            ],
+            "summary": "conceded p1, disputed p2",
+        }
+        judge = {
+            "rulings": [
+                {"id": "p2", "ruling": "overruled", "reason": "addressed in 2.1"},
+            ],
+            "summary": "p2 overruled",
+        }
+        n, res = self.debate(changes, plan_rebut=rebut, plan_judge=judge)
+        self.assertEqual(n, 1)
+        self.assertTrue(res.ok and res.schema_valid)
+
+        debate = self.run_.read_json("plan-review/round-1/debate.json")
+        self.assertEqual(len(debate["upheld"]), 1)
+        self.assertEqual(debate["upheld"][0]["issue"], "first issue")
+        self.assertEqual(len(debate["overruled"]), 1)
+        self.assertEqual(debate["overruled"][0]["finding"]["issue"], "second issue")
+        self.assertEqual(debate["overruled"][0]["reason"], "addressed in 2.1")
+        self.assertEqual(debate["rebuttals"], rebut["responses"])
+        self.assertEqual(debate["rulings"], judge["rulings"])
+
+        events = [json.loads(l) for l in slurp(self.run_.path("events.jsonl")).splitlines()]
+        debate_events = [e for e in events if e.get("kind") == "plan_debate"]
+        self.assertEqual(len(debate_events), 1)
+        self.assertEqual(debate_events[0]["round"], 1)
+        self.assertEqual(debate_events[0]["upheld"], 1)
+        self.assertEqual(debate_events[0]["overruled"], 1)
+
+        self.assertTrue(os.path.isdir(self.run_.path("plan-review/round-1/rebut")))
+        self.assertTrue(os.path.isdir(self.run_.path("plan-review/round-1/judge")))
+
+    def test_all_conceded_skips_judge(self):
+        self.plan()
+        changes = {
+            "verdict": "changes_requested",
+            "summary": "fix",
+            "findings": [
+                {"severity": "major", "section": "1", "issue": "first issue", "suggestion": "fix 1"},
+                {"severity": "major", "section": "2", "issue": "second issue", "suggestion": "fix 2"},
+            ],
+        }
+        rebut = {
+            "responses": [
+                {"id": "p1", "stance": "concede", "argument": "conceded 1", "evidence": "spec"},
+                {"id": "p2", "stance": "concede", "argument": "conceded 2", "evidence": "spec"},
+            ],
+            "summary": "conceded all",
+        }
+        n, res = self.debate(changes, plan_rebut=rebut)
+        self.assertEqual(n, 1)
+        self.assertFalse(os.path.exists(self.run_.path("plan-review/round-1/judge")))
+
+        debate = self.run_.read_json("plan-review/round-1/debate.json")
+        self.assertEqual(len(debate["upheld"]), 2)
+        self.assertEqual(len(debate["overruled"]), 0)
+        self.assertEqual([f["issue"] for f in debate["upheld"]], ["first issue", "second issue"])
+        self.assertEqual(debate["rulings"], [])
+
+    def test_next_round_unaffected_by_debate_files(self):
+        self.plan()
+        changes = {
+            "verdict": "changes_requested",
+            "summary": "fix",
+            "findings": [
+                {"severity": "major", "section": "1", "issue": "first issue", "suggestion": "fix 1"},
+                {"severity": "major", "section": "2", "issue": "second issue", "suggestion": "fix 2"},
+            ],
+        }
+        rebut = {
+            "responses": [
+                {"id": "p1", "stance": "concede", "argument": "conceded", "evidence": "spec"},
+                {"id": "p2", "stance": "dispute", "argument": "disputed", "evidence": "code"},
+            ],
+            "summary": "summary",
+        }
+        judge = {
+            "rulings": [
+                {"id": "p2", "ruling": "overruled", "reason": "reason"},
+            ],
+            "summary": "summary",
+        }
+        self.debate(changes, plan_rebut=rebut, plan_judge=judge)
+        self.assertEqual(planreview.next_round(self.run_), 2)
+
+    def test_approve_verdict_skips_debate(self):
+        self.plan()
+        n, res = self.debate(APPROVE)
+        self.assertEqual(n, 1)
+        self.assertFalse(os.path.exists(self.run_.path("plan-review/round-1/debate.json")))
+        self.assertFalse(os.path.exists(self.run_.path("plan-review/round-1/rebut")))
+
+    def test_independent_mode_skips_debate(self):
+        self.run_.update(config=dict(self.run_.cfg, review_mode="independent"))
+        self.plan()
+        n, res = self.debate(CHANGES)
+        self.assertEqual(n, 1)
+        self.assertFalse(os.path.exists(self.run_.path("plan-review/round-1/debate.json")))
+        self.assertFalse(os.path.exists(self.run_.path("plan-review/round-1/rebut")))
+
+    def test_rebut_failure_treats_every_blocking_finding_as_upheld(self):
+        self.plan()
+        changes = {
+            "verdict": "changes_requested",
+            "summary": "fix",
+            "findings": [
+                {"severity": "major", "section": "1", "issue": "first issue", "suggestion": "fix 1"},
+                {"severity": "blocker", "section": "2", "issue": "second issue", "suggestion": "fix 2"},
+            ],
+        }
+        script = {
+            "plan_review": [{"structured_output": changes, "session_id": "s"}],
+            "plan_rebut": [{"exit": 1, "session_id": "s"}],
+        }
+        with open(self.script, "w") as f:
+            json.dump(script, f)
+        n, res = planreview.review_round(self.run_, adapters.FakeAdapter(FAKE_CLI),
+                                         env={"FAKE_SCRIPT": self.script})
+        self.assertEqual(n, 1)
+        self.assertFalse(os.path.exists(self.run_.path("plan-review/round-1/judge")))
+        debate = self.run_.read_json("plan-review/round-1/debate.json")
+        self.assertEqual(len(debate["upheld"]), 2)
+        self.assertEqual(len(debate["overruled"]), 0)
+        self.assertEqual(debate["rebuttals"], [])
+        self.assertEqual(debate["rulings"], [])
+        self.assertIn("error", debate)
+
+        events = [json.loads(l) for l in slurp(self.run_.path("events.jsonl")).splitlines()]
+        debate_events = [e for e in events if e.get("kind") == "plan_debate"]
+        self.assertEqual(len(debate_events), 1)
+        self.assertEqual(debate_events[0]["round"], 1)
+        self.assertEqual(debate_events[0]["upheld"], 2)
+        self.assertEqual(debate_events[0]["overruled"], 0)
+
+    def test_missing_ids_count_as_disputed_and_go_to_judge(self):
+        self.plan()
+        changes = {
+            "verdict": "changes_requested",
+            "summary": "fix",
+            "findings": [
+                {"severity": "major", "section": "1", "issue": "first issue", "suggestion": "fix 1"},
+                {"severity": "major", "section": "2", "issue": "second issue", "suggestion": "fix 2"},
+            ],
+        }
+        rebut = {
+            "responses": [
+                {"id": "p1", "stance": "concede", "argument": "conceded", "evidence": "spec"},
+            ],
+            "summary": "only answered p1",
+        }
+        judge = {
+            "rulings": [
+                {"id": "p2", "ruling": "overruled", "reason": "dismissed"},
+            ],
+            "summary": "overruled",
+        }
+        self.debate(changes, plan_rebut=rebut, plan_judge=judge)
+        debate = self.run_.read_json("plan-review/round-1/debate.json")
+        self.assertEqual(len(debate["upheld"]), 1)
+        self.assertEqual(debate["upheld"][0]["issue"], "first issue")
+        self.assertEqual(len(debate["overruled"]), 1)
+        self.assertEqual(debate["overruled"][0]["finding"]["issue"], "second issue")
+
+        events = [json.loads(l) for l in slurp(self.run_.path("events.jsonl")).splitlines()]
+        debate_events = [e for e in events if e.get("kind") == "plan_debate"]
+        self.assertEqual(len(debate_events), 1)
+        self.assertEqual(debate_events[0]["upheld"], 1)
+        self.assertEqual(debate_events[0]["overruled"], 1)
+
+    def test_judge_explicit_upheld_ruling(self):
+        self.plan()
+        changes = {
+            "verdict": "changes_requested",
+            "summary": "fix",
+            "findings": [
+                {"severity": "major", "section": "1", "issue": "first issue", "suggestion": "fix 1"},
+                {"severity": "major", "section": "2", "issue": "second issue", "suggestion": "fix 2"},
+            ],
+        }
+        rebut = {
+            "responses": [
+                {"id": "p1", "stance": "concede", "argument": "conceded", "evidence": "spec"},
+                {"id": "p2", "stance": "dispute", "argument": "disputed", "evidence": "code"},
+            ],
+            "summary": "conceded 1, disputed 1",
+        }
+        judge = {
+            "rulings": [
+                {"id": "p2", "ruling": "upheld", "reason": "reviewer is right"},
+            ],
+            "summary": "upheld p2",
+        }
+        self.debate(changes, plan_rebut=rebut, plan_judge=judge)
+        debate = self.run_.read_json("plan-review/round-1/debate.json")
+        self.assertEqual(len(debate["upheld"]), 2)
+        self.assertEqual(len(debate["overruled"]), 0)
+        self.assertEqual([f["issue"] for f in debate["upheld"]], ["first issue", "second issue"])
+        self.assertEqual(len(debate["rulings"]), 1)
+
+        events = [json.loads(l) for l in slurp(self.run_.path("events.jsonl")).splitlines()]
+        debate_events = [e for e in events if e.get("kind") == "plan_debate"]
+        self.assertEqual(len(debate_events), 1)
+        self.assertEqual(debate_events[0]["upheld"], 2)
+        self.assertEqual(debate_events[0]["overruled"], 0)
+
+    def test_judge_missing_ruling_counts_as_upheld(self):
+        self.plan()
+        changes = {
+            "verdict": "changes_requested",
+            "summary": "fix",
+            "findings": [
+                {"severity": "major", "section": "1", "issue": "first issue", "suggestion": "fix 1"},
+                {"severity": "major", "section": "2", "issue": "second issue", "suggestion": "fix 2"},
+            ],
+        }
+        rebut = {
+            "responses": [
+                {"id": "p1", "stance": "concede", "argument": "conceded", "evidence": "spec"},
+                {"id": "p2", "stance": "dispute", "argument": "disputed", "evidence": "code"},
+            ],
+            "summary": "conceded 1, disputed 1",
+        }
+        judge = {
+            "rulings": [],
+            "summary": "empty rulings",
+        }
+        self.debate(changes, plan_rebut=rebut, plan_judge=judge)
+        debate = self.run_.read_json("plan-review/round-1/debate.json")
+        self.assertEqual(len(debate["upheld"]), 2)
+        self.assertEqual(len(debate["overruled"]), 0)
+        self.assertEqual([f["issue"] for f in debate["upheld"]], ["first issue", "second issue"])
+
+        events = [json.loads(l) for l in slurp(self.run_.path("events.jsonl")).splitlines()]
+        debate_events = [e for e in events if e.get("kind") == "plan_debate"]
+        self.assertEqual(len(debate_events), 1)
+        self.assertEqual(debate_events[0]["upheld"], 2)
+        self.assertEqual(debate_events[0]["overruled"], 0)
+
+    def test_judge_call_failure_treats_disputed_as_upheld(self):
+        self.plan()
+        changes = {
+            "verdict": "changes_requested",
+            "summary": "fix",
+            "findings": [
+                {"severity": "major", "section": "1", "issue": "first issue", "suggestion": "fix 1"},
+                {"severity": "major", "section": "2", "issue": "second issue", "suggestion": "fix 2"},
+            ],
+        }
+        rebut = {
+            "responses": [
+                {"id": "p1", "stance": "concede", "argument": "conceded", "evidence": "spec"},
+                {"id": "p2", "stance": "dispute", "argument": "disputed", "evidence": "code"},
+            ],
+            "summary": "conceded 1, disputed 1",
+        }
+        script = {
+            "plan_review": [{"structured_output": changes, "session_id": "s"}],
+            "plan_rebut": [{"structured_output": rebut, "session_id": "s"}],
+            "plan_judge": [{"exit": 1, "session_id": "s"}],
+        }
+        with open(self.script, "w") as f:
+            json.dump(script, f)
+        n, res = planreview.review_round(self.run_, adapters.FakeAdapter(FAKE_CLI),
+                                         env={"FAKE_SCRIPT": self.script})
+        self.assertEqual(n, 1)
+        self.assertTrue(os.path.isdir(self.run_.path("plan-review/round-1/judge")))
+        debate = self.run_.read_json("plan-review/round-1/debate.json")
+        self.assertEqual(len(debate["upheld"]), 2)
+        self.assertEqual(len(debate["overruled"]), 0)
+        self.assertEqual(debate["rulings"], [])
+
+        events = [json.loads(l) for l in slurp(self.run_.path("events.jsonl")).splitlines()]
+        debate_events = [e for e in events if e.get("kind") == "plan_debate"]
+        self.assertEqual(len(debate_events), 1)
+        self.assertEqual(debate_events[0]["upheld"], 2)
+        self.assertEqual(debate_events[0]["overruled"], 0)
+
+    def test_only_minor_findings_skips_debate(self):
+        self.plan()
+        changes = {
+            "verdict": "changes_requested",
+            "summary": "minor nits",
+            "findings": [
+                {"severity": "minor", "section": "1", "issue": "minor nit", "suggestion": "cleanup"},
+            ],
+        }
+        n, res = self.debate(changes)
+        self.assertEqual(n, 1)
+        self.assertFalse(os.path.exists(self.run_.path("plan-review/round-1/debate.json")))
+        self.assertFalse(os.path.exists(self.run_.path("plan-review/round-1/rebut")))
+
+    def test_mixed_blocker_and_minor_ids_over_blocking_only(self):
+        self.plan()
+        changes = {
+            "verdict": "changes_requested",
+            "summary": "mixed",
+            "findings": [
+                {"severity": "minor", "section": "1", "issue": "minor nit", "suggestion": "cleanup"},
+                {"severity": "major", "section": "2", "issue": "real issue", "suggestion": "fix real"},
+            ],
+        }
+        rebut = {
+            "responses": [
+                {"id": "p1", "stance": "concede", "argument": "conceded real", "evidence": "spec"},
+            ],
+            "summary": "conceded p1",
+        }
+        self.debate(changes, plan_rebut=rebut)
+        debate = self.run_.read_json("plan-review/round-1/debate.json")
+        self.assertEqual(len(debate["upheld"]), 1)
+        self.assertEqual(debate["upheld"][0]["issue"], "real issue")
+        rebut_prompt = slurp(self.run_.path("plan-review/round-1/rebut/prompt.md"))
+        self.assertIn("real issue", rebut_prompt)
+        self.assertNotIn("minor nit", rebut_prompt)
 
 
 if __name__ == "__main__":

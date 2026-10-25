@@ -17,6 +17,10 @@ def audit_rel(stage, ticket, attempt, call_id, label=None):
         return "tickets/%s/attempt-%s/%s" % (ticket, attempt or 1, tag)
     if stage == "plan_review":
         return "plan-review/round-%s" % (attempt or 1)
+    if stage == "plan_rebut":
+        return "plan-review/round-%s/rebut" % (attempt or 1)
+    if stage == "plan_judge":
+        return "plan-review/round-%s/judge" % (attempt or 1)
     if stage == "wayfinder":
         return "chart/round-%s" % (attempt or 1)
     return "calls/%s-%s" % (tag, call_id)
