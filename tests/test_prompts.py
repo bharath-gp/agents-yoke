@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import string
 import unittest
 
@@ -573,6 +574,74 @@ class TestAdversarialPrompts(unittest.TestCase):
             self.assertIn("judge", content, "%s missing 'judge'" % name)
             self.assertIn("rebut", content, "%s missing 'rebut'" % name)
             self.assertIn("minor at most", content, "%s missing 'minor at most'" % name)
+
+    def test_new_prompts_render_with_string_template(self):
+        substitutions = dict(
+            findings="[]",
+            transcript="(none)",
+            rebuttals="[]",
+            requirements="r",
+            plan="p",
+            round=1,
+            ticket="{}",
+            plan_excerpt="",
+            base_sha="abc",
+            worktree="/w",
+            feedback="",
+            prior_results="{}",
+        )
+        self.assertIn("$findings", _read("rebut"))
+        self.assertIn("$transcript", _read("rebut"))
+        self.assertIn("$base_sha", _read("rebut"))
+        self.assertIn("$worktree", _read("rebut"))
+        self.assertIn("$ticket", _read("rebut"))
+
+        self.assertIn("$findings", _read("reply"))
+        self.assertIn("$transcript", _read("reply"))
+        self.assertIn("$base_sha", _read("reply"))
+        self.assertIn("$worktree", _read("reply"))
+        self.assertIn("$ticket", _read("reply"))
+
+        self.assertIn("$findings", _read("judge"))
+        self.assertIn("$rebuttals", _read("judge"))
+        self.assertIn("$base_sha", _read("judge"))
+        self.assertIn("$worktree", _read("judge"))
+        self.assertIn("$ticket", _read("judge"))
+
+        self.assertIn("$findings", _read("plan_rebut"))
+        self.assertIn("$requirements", _read("plan_rebut"))
+        self.assertIn("$plan", _read("plan_rebut"))
+        self.assertIn("$round", _read("plan_rebut"))
+        self.assertNotIn("$rebuttals", _read("plan_rebut"))
+
+        self.assertIn("$findings", _read("plan_judge"))
+        self.assertIn("$rebuttals", _read("plan_judge"))
+        self.assertIn("$requirements", _read("plan_judge"))
+        self.assertIn("$plan", _read("plan_judge"))
+        self.assertIn("$round", _read("plan_judge"))
+
+        for name in ("rebut", "reply", "judge", "plan_rebut", "plan_judge"):
+            content = _read(name)
+            rendered = string.Template(content).safe_substitute(substitutions)
+            for var in ("$findings", "$transcript", "$rebuttals"):
+                self.assertNotIn(var, rendered, "%s left unreplaced %s" % (name, var))
+            leftover = re.findall(r"\$[a-zA-Z_][a-zA-Z0-9_]*", rendered)
+            self.assertEqual(leftover, [], "%s left unreplaced placeholders: %s" % (name, leftover))
+
+    def test_judge_prompt_has_no_shell(self):
+        for name in ("rebut", "reply", "judge", "plan_rebut", "plan_judge"):
+            text = _read(name)
+            self.assertIn("no edits", text.lower(), "%s missing 'no edits'" % name)
+            self.assertIn("commit", text.lower(), "%s missing 'commit'" % name)
+        for name in ("plan_rebut", "plan_judge"):
+            text = _read(name)
+            self.assertIn("no general shell", text, "%s missing 'no general shell'" % name)
+
+        self.assertIn("never concede to be agreeable", _read("rebut").lower())
+        self.assertIn("never concede to be agreeable", _read("plan_rebut").lower())
+        self.assertIn("burden of proof", _read("judge").lower())
+        self.assertIn("burden of proof", _read("plan_judge").lower())
+        self.assertIn("withdraw", _read("reply").lower())
 
 
 if __name__ == "__main__":
