@@ -47,7 +47,7 @@ class PipeBase(GitBase):
         super().setUp()
         os.environ["YOKE_HOME"] = self.tmp
         self.addCleanup(os.environ.pop, "YOKE_HOME", None)
-        self.run_ = planreview.init_run(self.repo, None, {"max_attempts_per_ticket": 2, "review_lenses": []}, home=self.tmp)
+        self.run_ = planreview.init_run(self.repo, None, {"max_attempts_per_ticket": 2, "review_lenses": [], "review_mode": "independent"}, home=self.tmp)
         self.addCleanup(pipeline.clear_pause_state, self.run_)
         self.script = os.path.join(self.tmp, "script.json")
         self.env = {"FAKE_SCRIPT": self.script}
@@ -239,8 +239,11 @@ class TestUnblockAndLock(PipeBase):
         self.assertIn("budget", self.run_.read_json("escalations.json")[0]["reason"])
 
 
-if __name__ == "__main__":
-    unittest.main()
+class TestDebateStages(unittest.TestCase):
+    def test_read_stages_include_debate(self):
+        for stage in ("rebut", "reply", "judge"):
+            self.assertIn(stage, pipeline.READ_STAGES)
+        self.assertEqual(pipeline.STAGE_TIER, {"rebut": "cheap", "reply": "cheap", "judge": "plan"})
 
 
 class TestCli(PipeBase):
@@ -265,3 +268,7 @@ class TestCli(PipeBase):
         self.assertEqual(self.cli("unblock", "T-001")[0], 1)  # needs an action flag
         self.assertEqual(self.cli("unblock", "T-001", "--skip")[0], 0)
         self.assertEqual(self.tstate(1)["status"], "skipped")
+
+
+if __name__ == "__main__":
+    unittest.main()

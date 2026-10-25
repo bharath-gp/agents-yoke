@@ -242,6 +242,25 @@ class TestModelsCLI(unittest.TestCase):
         self.assertEqual(data.get("models"), {})
 
 
+class TestConfigReviewMode(unittest.TestCase):
+    def test_config_review_mode_defaults_and_clamps(self):
+        cfg = config.load()
+        self.assertEqual(config.review_mode(cfg), "adversarial")
+        self.assertEqual(config.debate_rounds(cfg), 1)
+        self.assertEqual(config.review_mode({"review_mode": "independent"}), "independent")
+        self.assertEqual(config.review_mode({"review_mode": "garbage"}), "adversarial")
+        self.assertEqual(config.review_mode({}), "adversarial")
+        self.assertEqual(config.debate_rounds({"debate_rounds": 0}), 1)
+        self.assertEqual(config.debate_rounds({"debate_rounds": "x"}), 1)
+        self.assertEqual(config.debate_rounds({"debate_rounds": None}), 1)
+        self.assertEqual(config.debate_rounds({"debate_rounds": float("inf")}), 1)
+        self.assertEqual(config.debate_rounds({"debate_rounds": 3}), 3)
+
+
+def test_config_review_mode_defaults_and_clamps():
+    TestConfigReviewMode().test_config_review_mode_defaults_and_clamps()
+
+
 if __name__ == "__main__":
     unittest.main()
 

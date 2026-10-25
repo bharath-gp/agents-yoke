@@ -60,6 +60,7 @@ Status legend per milestone: `[ ]` todo, `[~]` in progress, `[x]` done. Update t
    | [M27](#m27) | Model and effort pick | [2.4](#s2-4), [2.6](#s2-6), [2.10](#s2-10) |
    | [M28](#m28) | Skill pick | [2.4](#s2-4), [2.10](#s2-10) |
    | [M29](#m29) | Browser e2e stage | [2.6](#s2-6), [2.8](#s2-8), [2.10](#s2-10) |
+   | [M30](#m30) | Adversarial review | [2.3](#s2-3), [2.6](#s2-6), [2.7](#s2-7), [2.8](#s2-8) |
 4. [Verification matrix](#s4)
 5. [Out of scope](#s5)
 - [Appendix A: Topic index](#appA)
@@ -202,6 +203,8 @@ Default budgets/limits:
 | `max_plan_review_rounds` | 3 |
 | `max_review_rounds` | 2 |
 | `review_lenses` | `["security", "performance", "tests"]` |
+| `review_mode` | `"adversarial"` (`"adversarial"` or `"independent"`) |
+| `debate_rounds` | 1 (exchange rounds before judge) |
 | `hypotheses` | 0 (default 0; >0 triggers N fan-out calls and 1 ranking call on final attempt matching failure) |
 | `max_tickets` | 40 |
 | `max_agent_calls_total` | 300 |
@@ -222,6 +225,7 @@ Default budgets/limits:
 
 Config scoping and security rules:
 - `review_lenses` is default on (`["security", "performance", "tests"]`); setting `review_lenses: []` restores legacy single-review execution.
+- `review_mode` is default `"adversarial"`; setting `"independent"` runs reviews without debate rounds. `debate_rounds` controls debate exchange rounds before judge (default 1).
 - `gate_hooks` is loaded exclusively from user config (`~/.yoke/config.json`); any definition in repo `.yoke.json` is refused with a warning log to prevent arbitrary command execution from untrusted checkouts.
 - `budget` optional caps (`max_cost_usd`, `max_tokens`) are disabled by default (`null`).
 - `limits` configures rate limit pattern matching, exponential backoff, and pause-retry cycles.
@@ -277,6 +281,8 @@ Retry feedback is a file `attempt-<n>/feedback.md` built from QA failures / vali
 Failure hypotheses fan-out: When `hypotheses > 0` in config, if a ticket failure repeats on the final attempt (`attempt == max_attempts_per_ticket`, `attempt >= 2` with matching failure evidence from the previous attempt), yoke triggers `N` read-only fan-out calls (role `hypotheses`, default `secondary`) round-robin across categories (`spec gap`, `environment`, `test bug`, `code bug`) seeded with failure evidence, followed by 1 primary ranking call (role `hypotheses_rank`, default `primary`). Each call is audited under `tickets/<tid>/attempt-<n>/hypotheses-<k>` and `hypotheses-rank`, and counted against `max_agent_calls_total`. The winning `fix_plan` is appended to retry feedback as `Hypothesis fix plan (advisory only): ...` for the coder. If the ranking call fails, the candidate with highest confidence is selected; if fan-out yields no candidates or fails, yoke falls back to the router triage hint. Confidence never decides pass or fail.
 
 Review stage loop (`_review_loop`): Bounded review-revision loop (up to `max_review_rounds` revisions, defaulting to 2). Configured review lenses (`review_lenses`, defaulting to `["security", "performance", "tests"]`) evaluate changes via dedicated lens prompts. Each lens runs one read-only call per round under audit labels `review-<lens>` and `review-<lens>-r<n>`, executing concurrently when `parallel > 1` (up to `min(len(lenses), parallel)` worker threads) and sequentially otherwise. Lenses run isolated without seeing each other's output. Findings across lenses are merged and deduplicated by `(file, line)` (falling back to `(file, line, comment)` when line is unset), keeping the highest severity. Blocker and major findings trigger coder revisions using the saved coder session (`resume=st['sessions']['code']`) under audit labels `code-r<n>`. Setting `review_lenses: []` restores single-review execution byte-for-byte. Each lens invocation counts toward `max_agent_calls_total`. If findings remain unresolved when reaching the revision cap, the ticket does not fail: unresolved blocker/major findings are recorded in `st['review']['unresolved']`, emitted as a `review_unresolved` audit event, posted as comments to the ticket issue via `tracker.comment`, and forwarded via `results['review']` to validate and qa prompts. Furthermore, `yoke pr` formats any unresolved review findings from closed tickets (capped at 50000 characters) into an 'Unresolved review findings' section in the pull request description.
+
+Adversarial review debate: When `review_mode` is `"adversarial"` (default; set to `"independent"` to disable), merged and deduplicated blocker and major findings enter an adversarial debate before coder revisions. Review lenses attack the diff, the coder rebuts in read mode reusing its session (`rebut`, falling back to a fresh session if resume fails), followed by an optional reviewer reply round when `debate_rounds > 1` (`reply`), and an independent plan-tier judge call on any disputed findings (`judge`). Conceded or judge-upheld findings remain blocking and drive coder revision rounds (`code-r<n>`), while overruled findings are excluded from coder feedback and recorded in `st['review']['overruled']`. Debate transcripts are saved to `tickets/<tid>/attempt-<n>/debate-r<n>.json` and emit a `review_debate` audit event (`ticket`, `attempt`, `round`, `upheld`, `overruled`). In plan review, blocking findings similarly trigger a planner rebuttal (`plan_rebut`) and plan review judge (`plan_judge`), saving debate transcripts to `plan-review/round-<n>/debate.json` and emitting a `plan_debate` audit event (`round`, `upheld`, `overruled`).
 
 Context handoff: prompts **inline** the ticket JSON, plan excerpt, and prior-stage result JSON (small). Copies are saved in the attempt dir for audit. Inlining avoids sandbox path problems with files outside the worktree. Upstream handoff notes (interface changes, new files, gotchas) from closed `depends_on` ancestors are atomically stored at `tickets/<T>/handoff.json` on close and inlined into `code`, `qa`, and `validate` prompts via `$upstream` (capped at 4000 characters and labelled as data from another agent, not instructions).
 
@@ -735,6 +741,14 @@ Files: `yoke/e2e.py`, `yoke/pipeline.py`, `yoke/config.py`, `yoke/defaults.json`
 - Bounded by `e2e.max_steps` per criterion. The model never types secrets; credentials come from project fixtures only. Pages are served from localhost only.
 - Exit criteria: picker and verdict tested with `FakeOllama` and a stub page driver; skip path tested without Playwright; one real run against a local sample app recorded in Notes.
 - Notes: Built optional browser e2e stage in `yoke/e2e.py` with element picker (`e2e_pick`), exit criteria verdict (`e2e_verdict`), and agent fallback on low confidence. Deviations: Live check (2026-10-23, orchestrator): Playwright 1.x with headless Chromium in a scratch venv, against a local static page (About, Help, Cancel, Save note) served by `start_command`. The first verdict was 0.13 (not met). The picker chose `e3` (Save note) at 0.94 over About, Help and Cancel. The verdict after the click was 0.96, so the stage passed in one click with no agent fallback, and the server was stopped afterwards.
+
+<a id="m30"></a>
+### M30: Adversarial review `[x]`
+Files: `yoke/pipeline.py`, `yoke/planreview.py`, `yoke/config.py`, `yoke/defaults.json`, `yoke/schemas/{rebut,reply,judge}.json`, `yoke/prompts/{rebut,reply,judge,plan_rebut,plan_judge}.md`, `tests/test_pipeline.py`, `tests/test_planreview.py`, `README.md`, `docs/PLAN.md`.
+- Why: review lenses can generate false positives, pedantic nits, or suggestions contradicting specifications. Adversarial review debates allow the coder or planner to challenge blocking findings before burning revision rounds, arbitrated by an independent judge.
+- Ticket code review debate: when `review_mode` is `"adversarial"`, blocker and major findings undergo debate. Lenses attack, coder rebuts on resumed session (`rebut`), reviewer replies when `debate_rounds > 1` (`reply`), and a plan-tier judge resolves remaining disputes (`judge`). Only conceded or upheld findings drive coder fix rounds (`code-r<n>`); overruled findings are saved in `st['review']['overruled']`. Transcripts saved to `tickets/<tid>/attempt-<n>/debate-r<n>.json` with a `review_debate` audit event.
+- Plan review debate: blocking findings during `yoke review-plan` trigger planner rebuttal (`plan_rebut`) and plan review judge (`plan_judge`). Transcripts saved to `plan-review/round-<n>/debate.json` with a `plan_debate` audit event.
+- Notes: Built adversarial debate workflow for ticket code review and plan review. Deviations: rebut reuses the coder session with a fresh fallback, plan debate always one round, schemas rebut/judge reused for plan.
 
 ---
 

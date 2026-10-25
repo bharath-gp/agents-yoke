@@ -86,6 +86,39 @@ During ticket execution, the `review` stage runs an iterative review loop (up to
 
 Each lens call counts against `max_agent_calls_total`. Blocker and major findings trigger coder revisions using the resumed session. If findings remain unresolved when reaching the revision cap, the ticket proceeds without failing: unresolved findings are recorded in ticket state, posted as issue comments, and surfaced in the `yoke pr` description under "Unresolved review findings".
 
+#### Adversarial debate
+
+Yoke supports adversarial review debates during ticket review and plan review:
+
+```json
+{
+  "review_mode": "adversarial",
+  "debate_rounds": 1,
+  "timeouts_s": {
+    "rebut": 900,
+    "reply": 900,
+    "judge": 900,
+    "plan_rebut": 900,
+    "plan_judge": 900
+  }
+}
+```
+
+- **Review mode**: Configured via `review_mode` (`"adversarial"` by default). Set to `"independent"` to run reviews without adversarial debate rounds. Any unknown or missing value defaults to `"adversarial"`.
+- **Debate rounds**: Configured via `debate_rounds` (default: `1`). Controls the number of debate exchanges, clamped to at least `1`.
+- **Debate timeouts**: Timeout limits in seconds under `timeouts_s`: `rebut` (900s), `reply` (900s), `judge` (900s), `plan_rebut` (900s), and `plan_judge` (900s).
+- **Debate schemas**: Governed by strict JSON schemas (`yoke/schemas/rebut.json`, `yoke/schemas/reply.json`, `yoke/schemas/judge.json`) validating structured responses (`concede` or `dispute`), replies (`maintain` or `withdraw`), and judge rulings (`upheld` or `overruled`).
+- **Ticket code review debate lifecycle**: When `review_mode` is `"adversarial"`, merged and deduplicated blocking findings (`blocker` and `major`) undergo an adversarial debate flow: lenses attack, the coder rebuts on its resumed session, an optional reviewer reply occurs when `debate_rounds > 1`, and a plan-tier judge rules on disputes:
+  - **Rebut (`rebut`)**: The coder agent evaluates blocking findings in read mode using prompt extra variables (`findings`, `transcript`). Rebut reuses the existing coder session via `--resume`; if the resumed call fails, it automatically retries with a fresh session (`rebut-r<n>-<k>-fresh`). Missing IDs default to `dispute`. Conceded findings exit the debate as upheld.
+  - **Reply (`reply`)**: When `debate_rounds > 1` and disputes remain, the reviewer agent evaluates the debate transcript in read mode (`maintain` or `withdraw`). Withdrawn findings exit as overruled (`"withdrawn by reviewer"`). Missing IDs default to `maintain`.
+  - **Judge (`judge`)**: Any disputed findings still open after exchange rounds proceed to a plan-tier judge call in read mode (`judge-r<n>`) to rule on disputes. The judge issues rulings (`upheld` or `overruled` with reason). Missing rulings default to `upheld`. If all findings are conceded or withdrawn earlier, the judge call is skipped.
+  - **Rulings and fix rounds**: Only conceded or judge-upheld blocker/major findings remain blocking and drive coder revision rounds (`code-r<n>`). Overruled findings are excluded from coder feedback and appended to `st['review']['overruled']` (`finding` and `reason`).
+  - **Artifacts and audit**: For review pass `n`, the debate record is saved to `tickets/<tid>/attempt-<n>/debate-r<n>.json` (`{round, findings, transcript, rulings, upheld, overruled}`), and a `review_debate` audit event is emitted (`ticket`, `attempt`, `round`, `upheld`, `overruled`).
+- **Plan review debate lifecycle**: When `review_mode` is `"adversarial"`, blocking findings (`blocker` and `major`) identified during a plan review round (`review_round` / `yoke review-plan`) trigger an automated planner rebuttal and plan-tier judge pass:
+  - **Plan Rebut (`plan_rebut`)**: The planner agent evaluates blocking findings (numbered `p1..pn`) in read mode using the `rebut` schema and `plan_rebut.md` prompt. If the rebuttal call fails or schema validation fails, all blocking findings are treated as upheld (fail safe). Missing IDs default to disputed. Conceded findings exit as upheld.
+  - **Plan Judge (`plan_judge`)**: Disputed IDs proceed to the plan review agent acting as judge in read mode using the `judge` schema and `plan_judge.md` prompt. The judge issues rulings (`upheld` or `overruled` with reason). A missing ruling or failed judge call defaults to upheld. If all findings are conceded during rebut, the judge call is skipped.
+  - **Artifacts and audit**: For plan review round `n`, debate details are saved to `plan-review/round-<n>/debate.json` (`{upheld, overruled, rebuttals, rulings}`), audit calls are logged to `plan-review/round-<n>/rebut` and `plan-review/round-<n>/judge`, and a `plan_debate` audit event is emitted (`round`, `upheld`, `overruled`). When `debate.json` exists, `yoke review-plan` prints `debate: U upheld, O overruled (see <path>)` after the verdict line. Nested directories preserve the round count in `next_round`.
+
 ### Model selection and tiers
 
 Models can be configured per agent across two tiers: `plan` (used for `requirements`, `planner`, `plan_review`, `wayfinder`) and `cheap` (used for all other execution stages such as `code`, `qa`, `docs`, `review`, and `validate`):
@@ -450,7 +483,7 @@ The skills run these for you; the raw commands below are for scripting and debug
 
 ```bash
 yoke init --requirements req.md   # prints run_id; write plan.md into ~/.yoke/runs/<run_id>/
-yoke review-plan                  # one read-only secondary review round
+yoke review-plan                  # one read-only secondary review round (prints debate summary when debate ran)
 yoke approve plan                 # also: tickets (creates GitHub milestones/issues if tracker=github), final
 yoke tickets chart [--feedback "note"] # map approved plan to milestones/tickets via wayfinder
                                   # ticket ids continue after the highest GitHub issue/PR number (T-0057 after #56)

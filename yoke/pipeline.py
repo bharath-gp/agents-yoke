@@ -16,8 +16,9 @@ from . import adapters, calls, config, gitops, guard, hooks, milestones, planrev
 PKG = os.path.dirname(os.path.abspath(__file__))
 
 
-READ_STAGES = ("validate", "review", "search", "factcheck")
+READ_STAGES = ("validate", "review", "search", "factcheck", "rebut", "reply", "judge")
 WEB_STAGES = ("search", "factcheck")
+STAGE_TIER = {"rebut": "cheap", "reply": "cheap", "judge": "plan"}
 
 
 class Escalate(Exception):
@@ -539,7 +540,7 @@ def _call(run, adapter_for, env, ticket, stage, attempt, wt, base, mode, results
     over = next((s for s in router.route_ticket(cfg, ticket)["stages"] if s["stage"] == stage), {})
     hooks = os.path.join(PKG, "githooks")  # push protection for workers (PLAN 2.9)
     wenv = dict(env or {}, GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="core.hooksPath", GIT_CONFIG_VALUE_0=hooks)
-    timeout = cfg["timeouts_s"][stage]
+    timeout = cfg["timeouts_s"].get(stage, 900) if stage in STAGE_TIER else cfg["timeouts_s"][stage]
     tid = ticket["id"] if isinstance(ticket, dict) else ticket
     spec = adapters.CallSpec(
         prompt=prompt, schema_path=schema.schema_path(stage), cwd=wt, mode=mode,
@@ -548,6 +549,10 @@ def _call(run, adapter_for, env, ticket, stage, attempt, wt, base, mode, results
         allowed_tools=tools,
         web_tools=tuple(cfg["search"]["tools"]) if stage in WEB_STAGES else (),
         settings_path=run.read_json("run.json").get("agent_settings"))
+
+    if stage in STAGE_TIER and not over.get("model") and not over.get("effort"):
+        model, effort = config.model_for_tier(cfg, agent_name, STAGE_TIER[stage])
+        spec.model, spec.effort = model, effort
 
     if stage in ("code", "review", "qa", "validate", "docs") and not over.get("model") and not over.get("effort"):
         pick = router.pick_tier_effort(run, ticket, stage, attempt)
@@ -745,6 +750,165 @@ def _dedupe_findings(findings):
     return list(deduped.values())
 
 
+def _debate(run, adapter_for, env, ticket, st, wt, base, results, feedback, blocking, n):
+    """Run attack/rebut/(reply)/judge debate on blocking findings.
+
+    Returns (upheld, error). Only conceded or judge-upheld findings are returned in upheld.
+    Overruled findings are appended to st['review']['overruled'], debate-r<n>.json is written,
+    and a review_debate event is emitted.
+    """
+    tid = ticket["id"] if isinstance(ticket, dict) else ticket
+    attempt = st["attempt"]
+    cfg = run.cfg
+    R = config.debate_rounds(cfg)
+
+    items = [dict(f, id="f%d" % (i + 1)) for i, f in enumerate(blocking)]
+    findings_json = json.dumps(
+        [{k: it.get(k) for k in ("id", "file", "line", "severity", "comment", "suggestion")} for it in items],
+        indent=2,
+    )
+
+    open_ids = [it["id"] for it in items]
+    conceded_ids = []
+    withdrawn_ids = []
+    transcript = []
+
+    for k in range(1, R + 1):
+        if not open_ids:
+            break
+
+        resume = st.get("sessions", {}).get("code")
+        rebut_vars = {
+            "findings": findings_json,
+            "transcript": json.dumps(transcript) if transcript else "(none)",
+        }
+        res = _call(
+            run, adapter_for, env, ticket, "rebut", attempt, wt, base, "read",
+            results, feedback, resume=resume, label="rebut-r%d-%d" % (n, k),
+            adapter=adapter_for("code"), extra_vars=rebut_vars,
+        )
+        if not res.ok:
+            if resume:
+                res = _call(
+                    run, adapter_for, env, ticket, "rebut", attempt, wt, base, "read",
+                    results, feedback, resume=None, label="rebut-r%d-%d-fresh" % (n, k),
+                    adapter=adapter_for("code"), extra_vars=rebut_vars,
+                )
+            if not res.ok:
+                return [], "rebut call failed: %s" % res.error
+
+        rebut_out = res.structured_output if isinstance(res.structured_output, dict) else {}
+        responses = rebut_out.get("responses")
+        if not isinstance(responses, list):
+            responses = []
+        resp_map = {r.get("id"): r for r in responses if isinstance(r, dict) and "id" in r}
+
+        for fid in list(open_ids):
+            r = resp_map.get(fid)
+            if r and r.get("stance") == "concede":
+                conceded_ids.append(fid)
+                open_ids.remove(fid)
+
+        exchange = {"round": k, "rebut": rebut_out}
+
+        if k < R and open_ids:
+            reply_vars = {
+                "findings": findings_json,
+                "transcript": json.dumps(transcript + [exchange]),
+            }
+            reply_res = _call(
+                run, adapter_for, env, ticket, "reply", attempt, wt, base, "read",
+                results, feedback, label="reply-r%d-%d" % (n, k),
+                adapter=adapter_for("review"), extra_vars=reply_vars,
+            )
+            if not reply_res.ok:
+                return [], "reply call failed: %s" % reply_res.error
+
+            reply_out = reply_res.structured_output if isinstance(reply_res.structured_output, dict) else {}
+            exchange["reply"] = reply_out
+            replies = reply_out.get("replies")
+            if not isinstance(replies, list):
+                replies = []
+            reply_map = {r.get("id"): r for r in replies if isinstance(r, dict) and "id" in r}
+
+            for fid in list(open_ids):
+                r = reply_map.get(fid)
+                if r and r.get("stance") == "withdraw":
+                    withdrawn_ids.append(fid)
+                    open_ids.remove(fid)
+
+        transcript.append(exchange)
+
+    judge_upheld_ids = []
+    judge_overruled_ids = []
+    judge_reasons = {}
+    rulings = []
+
+    if open_ids:
+        judge_vars = {
+            "findings": findings_json,
+            "rebuttals": json.dumps(transcript),
+            "transcript": json.dumps(transcript),
+        }
+        judge_res = _call(
+            run, adapter_for, env, ticket, "judge", attempt, wt, base, "read",
+            results, feedback, label="judge-r%d" % n,
+            adapter=adapter_for("review"), extra_vars=judge_vars,
+        )
+        if not judge_res.ok:
+            return [], "judge call failed: %s" % judge_res.error
+
+        judge_out = judge_res.structured_output if isinstance(judge_res.structured_output, dict) else {}
+        rulings_data = judge_out.get("rulings")
+        if not isinstance(rulings_data, list):
+            rulings_data = []
+        rulings = rulings_data
+        ruling_map = {r.get("id"): r for r in rulings if isinstance(r, dict) and "id" in r}
+
+        for fid in open_ids:
+            r = ruling_map.get(fid)
+            if r and r.get("ruling") == "overruled":
+                judge_overruled_ids.append(fid)
+                judge_reasons[fid] = r.get("reason", "")
+            else:
+                judge_upheld_ids.append(fid)
+
+    upheld_id_set = set(conceded_ids) | set(judge_upheld_ids)
+    withdrawn_id_set = set(withdrawn_ids)
+    judge_overruled_id_set = set(judge_overruled_ids)
+
+    upheld = []
+    overruled = []
+
+    for i, f in enumerate(blocking):
+        fid = "f%d" % (i + 1)
+        if fid in upheld_id_set:
+            upheld.append(f)
+        elif fid in withdrawn_id_set:
+            overruled.append({"finding": f, "reason": "withdrawn by reviewer"})
+        elif fid in judge_overruled_id_set:
+            overruled.append({"finding": f, "reason": judge_reasons.get(fid, "")})
+
+    debate_data = {
+        "round": n,
+        "findings": items,
+        "transcript": transcript,
+        "rulings": rulings,
+        "upheld": upheld,
+        "overruled": overruled,
+    }
+    run.write_json("tickets/%s/attempt-%d/debate-r%d.json" % (tid, attempt, n), debate_data)
+
+    st.setdefault("review", {"rounds": 0, "unresolved": [], "overruled": []})
+    st["review"].setdefault("overruled", [])
+    st["review"]["overruled"].extend(overruled)
+    save_state(run, tid, st)
+
+    run.event("review_debate", ticket=tid, attempt=attempt, round=n, upheld=len(upheld), overruled=len(overruled))
+
+    return upheld, None
+
+
 def _review_loop(run, adapter_for, env, ticket, st, wt, base, results, feedback):
     """Run iterative review loop with resumed coder revisions up to max_review_rounds.
 
@@ -752,9 +916,12 @@ def _review_loop(run, adapter_for, env, ticket, st, wt, base, results, feedback)
     otherwise. Lenses evaluate isolated copies of results without seeing peer lens
     outputs. Findings are merged and deduplicated by (file, line), retaining the
     highest severity. When review_lenses is empty, preserves legacy single-review loop.
+    When review_mode is 'adversarial', blocking findings undergo a structured debate
+    (_debate) before coder fix rounds, filtering out overruled findings.
     """
     tid, attempt = ticket["id"], st["attempt"]
-    st.setdefault("review", {"rounds": 0, "unresolved": []})
+    st.setdefault("review", {"rounds": 0, "unresolved": [], "overruled": []})
+    st["review"].setdefault("overruled", [])
     cfg = run.cfg
     lenses = config.review_lenses(cfg)
     max_rounds = cfg.get("max_review_rounds", 2)
@@ -817,6 +984,14 @@ def _review_loop(run, adapter_for, env, ticket, st, wt, base, results, feedback)
             }
 
         blocking = [f for f in findings if f.get("severity") in ("blocker", "major")]
+        if blocking and config.review_mode(cfg) == "adversarial":
+            upheld, err = _debate(run, adapter_for, env, ticket, st, wt, base, results, feedback, blocking, n)
+            if err:
+                return err
+            overruled = [f for f in blocking if not any(f is u for u in upheld)]
+            findings = [f for f in findings if not any(f is o for o in overruled)]
+            results["review"] = dict(results["review"], findings=findings, verdict="changes_requested" if upheld else "approve")
+            blocking = upheld
         if not blocking:
             st["review"]["rounds"] = n
             st["review"]["unresolved"] = []
@@ -912,7 +1087,7 @@ def _attempt_body(run, adapter_for, env, ticket, st, wt, stages, start_idx, resu
     tid, attempt, base = ticket["id"], st["attempt"], st["base_sha"]
     st["gate_hooks"] = {}
     if "review" in stages[start_idx:]:
-        st["review"] = {"rounds": 0, "unresolved": []}
+        st["review"] = {"rounds": 0, "unresolved": [], "overruled": []}
         save_state(run, tid, st)
     feedback = _read_feedback(run, tid, attempt)
     nudges = consume_nudges(run, tid)

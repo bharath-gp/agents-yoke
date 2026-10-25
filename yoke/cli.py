@@ -209,6 +209,15 @@ def _front_half(args):
         if res.ok and res.schema_valid:
             out = res.structured_output
             print("verdict %s, %d findings: %s" % (out["verdict"], len(out["findings"]), out["summary"]))
+            rel = "plan-review/round-%d/debate.json" % n
+            try:
+                debate = run.read_json(rel, None)
+            except (FileNotFoundError, ValueError):
+                debate = None
+            if isinstance(debate, dict) and "upheld" in debate:
+                upheld = debate.get("upheld") or []
+                overruled = debate.get("overruled") or []
+                print("debate: %d upheld, %d overruled (see %s)" % (len(upheld), len(overruled), run.path(rel)))
             return 0
         print("review failed: %s" % res.error, file=sys.stderr)
         return 1
