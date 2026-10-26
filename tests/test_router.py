@@ -336,7 +336,12 @@ class TestCommitMessage(RouterCase):
         self.assertEqual(out["result"]["body"], "agent body")
 
     def test_repo_config_commit_message_and_deep_merge(self):
-        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        repo_root = os.path.join(self.tmp, "repo_cfg")
+        os.makedirs(repo_root)
+        with open(os.path.join(repo_root, ".yoke.json"), "w") as f:
+            json.dump({"roles": {"primary": "claude"}, "models": {},
+                       "test_command": "python3 tests/run_parallel.py",
+                       "router": {"commit_message": "default"}}, f)
         cfg = config.load(repo=repo_root, home=self.tmp)
         self.assertEqual(cfg["router"]["commit_message"], "default")
         self.assertEqual(cfg["router"]["llm_model"], "claude-haiku-5-5")
