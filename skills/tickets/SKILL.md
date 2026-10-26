@@ -16,7 +16,7 @@ If the user gives a run id, pass `--run <id>` to every `yoke` command.
    - `plan_excerpt` is copied verbatim from `plan.md`.
    - Keep `depends_on` minimal so independent tickets can run in parallel.
 2. Inspect the map: run `yoke map` to show the destination, out-of-scope boundaries, milestones, tickets, and frontier (or `yoke tickets show` for the tickets table).
-3. If adjustments are needed, re-run with feedback: `yoke tickets chart --feedback "<notes>"`. Repeat until satisfied with the ticket breakdown and milestones.
+3. If adjustments are needed, re-run with feedback: `yoke tickets chart --feedback "<notes>"`. After showing warnings, if a dependency chain warning appears, offer one re-chart round: `yoke tickets chart --run <id> --feedback "<warning text>"`. Repeat until satisfied with the ticket breakdown and milestones.
 4. State the side effects of approving: when the repo has a GitHub remote, `yoke approve tickets` creates GitHub milestones and one GitHub issue per ticket attached to its milestone. It never pushes code.
 5. Only on the user's explicit yes, run `yoke approve tickets`. Editing the tickets afterwards voids the approval.
 6. Next step: the `run` skill.
