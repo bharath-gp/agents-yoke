@@ -328,7 +328,8 @@ Decision thresholds, safety guard, skill discovery, and browser e2e settings can
       "e2e_pick": 0.6,
       "e2e_verdict": 0.8
     },
-    "retry_bump": true
+    "retry_bump": true,
+    "commit_message": "agent"
   },
   "guard": {
     "enabled": true,
@@ -384,6 +385,7 @@ Decision thresholds, safety guard, skill discovery, and browser e2e settings can
 ```
 
 - **Thresholds & retry bump**: `router.thresholds` sets per-point confidence cutoffs. Points omitted from `thresholds` fall back to `router.min_confidence` (default: 0.7). When `router.retry_bump` is enabled (default: `true`), repeated failed attempts dynamically step up reasoning effort (`low` -> `medium` -> `high`) and model tier (`cheap` -> `plan`).
+- **Commit message generation (`router.commit_message`)**: Controls how git commit messages are generated upon ticket close (`"agent"` or `"default"`, default `"agent"`). In `"agent"` mode, an LLM generates the commit subject and body with deterministic fallback on failure. In `"default"` mode, commit messages are built deterministically without an agent call: the subject is `<id>: <title>` (truncated to 72 characters) and the body is the validator summary (falling back to the diffstat).
 - **User config only**: For security reasons, `guard` and `router.thresholds.safety` are strictly enforced from user configuration (`~/.yoke/config.json`). Any definitions in repository configuration (`<repo>/.yoke.json`) are refused with a warning log to prevent untrusted repositories from tampering with safety policies.
 - **Environment override**: The `YOKE_OLLAMA_URL` environment variable overrides `router.ollama_url` across all runs, applied over user config and prior to repo config (used in tests to point to a dead port for offline verification).
 - **Dashboard decisions card**: The web dashboard aggregates decision points by source count (`ollama`, `none`, `default`, `fallback`) and tracks recent flagged guard events (`deny`, `ask`, `escalate`) with reasons and target paths in the Decision models card.

@@ -1250,7 +1250,8 @@ def _close(run, adapter_for, ticket, st, wt, stages, results, test_cmd, rerun_rc
     if scan.get("decision") != "allow":
         raise Escalate("safety guard: %s" % scan.get("reason"))
     stat = gitops.git(wt, "diff", "--cached", "--stat").stdout
-    msg = router.commit_message(run, ticket, stat, adapter_for("router"))["result"]
+    summary = ((results or {}).get("validate") or {}).get("summary")
+    msg = router.commit_message(run, ticket, stat, adapter_for("router"), summary=summary)["result"]
     subject = msg["subject"] + ("\n\n" + msg["body"] if msg.get("body") else "")
     gitops.commit_all(wt, subject, tid, amend=bool(st.get("commit")))
     with merge_lock:

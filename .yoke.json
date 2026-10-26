@@ -4,5 +4,8 @@
     "secondary": "agy"
   },
   "models": {},
-  "test_command": "python3 tests/run_parallel.py"
+  "test_command": "python3 tests/run_parallel.py",
+  "router": {
+    "commit_message": "default"
+  }
 }

@@ -86,6 +86,7 @@
     "ollama_url": "http://127.0.0.1:11434",
     "model": "tev1:4b",
     "llm_model": "claude-haiku-5-5",
+    "commit_message": "agent",
     "min_confidence": 0.7,
     "thresholds": {
       "safety": 0.7,

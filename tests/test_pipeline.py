@@ -9,7 +9,7 @@ from unittest import mock
 
 from tests.test_core import FAKE_CLI
 from tests.test_gitops import GitBase, git
-from yoke import adapters, pipeline, planreview, scheduler
+from yoke import adapters, config, pipeline, planreview, scheduler
 
 os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
 
@@ -106,6 +106,21 @@ class TestHappy(PipeBase):
             "- T-002 ticket 2: s",
             "- T-003 ticket 3: s",
         ])
+
+    def test_close_commit_message_default_mode(self):
+        self.run_.update(config=config.deep_merge(
+            self.run_.cfg, {"router": {"commit_message": "default"}}))
+        val_res = val()
+        val_res["summary"] = "validation succeeded smoothly"
+        self.setup_tickets(
+            [ticket(1)],
+            {"code": [resp(CODE, "c1", write={"f1.txt": "x"})],
+             "review": [resp(REV)],
+             "validate": [resp(val_res)]})
+        self.assertEqual(self.go(), "done")
+        branch = self.run_.read_json("run.json")["branch"]
+        msg = git(self.repo, "log", "-1", "--format=%B", branch).strip()
+        self.assertEqual(msg, "T-001: ticket 1\n\nvalidation succeeded smoothly\n\nYoke-Ticket: T-001")
 
     def test_refuses_without_approval(self):
         self.run_.write_json("tickets.json", {"tickets": [ticket(1)]})
