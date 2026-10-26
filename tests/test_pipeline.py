@@ -239,8 +239,25 @@ class TestUnblockAndLock(PipeBase):
         self.assertIn("budget", self.run_.read_json("escalations.json")[0]["reason"])
 
 
-if __name__ == "__main__":
-    unittest.main()
+class TestValidateEvidence(PipeBase):
+    def test_validate_prompt_has_rerun_evidence(self):
+        self.assertEqual(pipeline._test_evidence(None, None), "No test command ran for this ticket type.")
+        self.assertEqual(pipeline._test_evidence("x", None), "No test command ran for this ticket type.")
+        self.assertEqual(pipeline._test_evidence(None, 0), "No test command ran for this ticket type.")
+        self.assertEqual(
+            pipeline._test_evidence("x", 1),
+            "The runner ran `x` in this worktree and it exited 1.",
+        )
+        self.setup_tickets(
+            [ticket(1, "test")],
+            {"qa": [resp(qa(PASS_CMD % "f"), write={"f": "1"})],
+             "validate": [resp(val())],
+             "router": [{"exit": 1}]})
+        self.assertEqual(self.go(), "done")
+        with open(self.run_.path("tickets/T-001/attempt-1/validate/prompt.md")) as f:
+            prompt = f.read()
+        self.assertIn("test -f f", prompt)
+        self.assertIn("exited 0", prompt)
 
 
 class TestCli(PipeBase):
@@ -265,3 +282,7 @@ class TestCli(PipeBase):
         self.assertEqual(self.cli("unblock", "T-001")[0], 1)  # needs an action flag
         self.assertEqual(self.cli("unblock", "T-001", "--skip")[0], 0)
         self.assertEqual(self.tstate(1)["status"], "skipped")
+
+
+if __name__ == "__main__":
+    unittest.main()

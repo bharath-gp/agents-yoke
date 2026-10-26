@@ -14,8 +14,10 @@ $plan_excerpt
 Results of earlier stages (JSON):
 $prior_results
 
+Test evidence: $test_evidence
+
 Feedback from the previous attempt (empty on the first attempt):
 $feedback
 
 $upstream
-Rules: do not edit files, do not commit, do not push. Working directory $worktree. Return only a JSON object matching the schema.
+Rules: do not edit files, do not commit, do not push. Do not run tests, builds or any long-running command, and do not start background tasks. Use Read, Grep, Glob and git diff/log/show only. Judge test-related criteria from the test evidence above and the diff. Working directory $worktree. Return only a JSON object matching the schema.

@@ -531,7 +531,8 @@ def _call(run, adapter_for, env, ticket, stage, attempt, wt, base, mode, results
         plan_excerpt=ticket.get("plan_excerpt", "") if isinstance(ticket, dict) else "",
         destination=dest, out_of_scope=oos,
         prior_results=json.dumps(results, indent=2), feedback=feedback or "(none)",
-        base_sha=base, worktree=wt, upstream=upstream, skills=skills_text, **_vars(cfg, ticket))
+        base_sha=base, worktree=wt, upstream=upstream, skills=skills_text,
+        test_evidence=_test_evidence(None, None), **_vars(cfg, ticket))
     if extra_vars:
         subs.update(extra_vars)
     with open(ppath) as f:
@@ -695,6 +696,13 @@ def _rerun(run, cmd, wt):
         return r.returncode, (r.stdout + r.stderr)[-2000:]
     except subprocess.TimeoutExpired:
         return -1, "timed out"
+
+
+def _test_evidence(test_cmd, rerun_rc):
+    """Format runner test re-run evidence string for validate prompt."""
+    if test_cmd and rerun_rc is not None:
+        return "The runner ran `%s` in this worktree and it exited %s." % (test_cmd, rerun_rc)
+    return "No test command ran for this ticket type."
 
 
 def _post_code(run, ticket, st, wt, since, res):
@@ -943,8 +951,10 @@ def _attempt_body(run, adapter_for, env, ticket, st, wt, stages, start_idx, resu
             continue
         mode = "read" if stage in READ_STAGES else "write"
         call = _call if stage == "code" else _call_retry  # a failed code call restarts the attempt anyway
+        extra_vars = {"test_evidence": _test_evidence(test_cmd, rerun_rc)} if stage == "validate" else None
         res = call(run, adapter_for, env, ticket, stage, attempt, wt, base, mode, results, feedback,
-                   resume=st["sessions"].get("code") if stage == "code" and attempt > 1 else None)
+                   resume=st["sessions"].get("code") if stage == "code" and attempt > 1 else None,
+                   extra_vars=extra_vars)
         if not res.ok:
             return "%s call failed: %s" % (stage, res.error), results, test_cmd, rerun_rc
         out = results[stage] = res.structured_output
