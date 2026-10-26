@@ -101,11 +101,56 @@ def check(tickets, max_tickets, milestones=None):
     return errs
 
 
+def _longest_chain(group):
+    """Return the longest in-group dependency path as a list of ticket ids from root to leaf."""
+    group_ids = {
+        t["id"]
+        for t in group
+        if isinstance(t, dict) and isinstance(t.get("id"), str)
+    }
+    deps = {
+        t["id"]: [
+            d
+            for d in (t.get("depends_on") if isinstance(t.get("depends_on"), list) else [])
+            if isinstance(d, str) and d in group_ids
+        ]
+        for t in group
+        if isinstance(t, dict) and isinstance(t.get("id"), str)
+    }
+    memo = {}
+    visiting = set()
+
+    # shortcut: recursion depth bounded by ticket count and max_tickets config
+    def visit(tid):
+        if tid in memo:
+            return memo[tid]
+        if tid in visiting:
+            return []
+        visiting.add(tid)
+        best = []
+        for d in deps.get(tid, []):
+            p = visit(d)
+            if len(p) > len(best):
+                best = p
+        visiting.remove(tid)
+        res = best + [tid]
+        memo[tid] = res
+        return res
+
+    longest = []
+    for tid in deps:
+        p = visit(tid)
+        if len(p) > len(longest):
+            longest = p
+    return longest
+
+
 def warnings(tickets, milestones=None):
     """Runner-level warnings (non-fatal); returns warning strings.
 
     Flags tickets with >6 files_hint or >6 exit_criteria, feature/bugfix/refactor tickets
-    without steps or test_plan, and milestones with >12 tickets.
+    without steps or test_plan, milestones with >12 tickets, and milestones with
+    dependency chains of 4 or more tickets or full chains of 3 or more tickets.
     """
     if isinstance(tickets, dict):
         doc = tickets
@@ -133,12 +178,44 @@ def warnings(tickets, milestones=None):
         for t in tickets:
             if isinstance(t, dict):
                 mid = t.get("milestone")
-                if mid:
+                if isinstance(mid, str):
                     counts[mid] = counts.get(mid, 0) + 1
         for m in milestones:
             mid = m.get("id") if isinstance(m, dict) else m
-            if counts.get(mid, 0) > 12:
+            if isinstance(mid, str) and counts.get(mid, 0) > 12:
                 warns.append("milestone %s has %d tickets (more than 12)" % (mid, counts[mid]))
+
+    groups = {}
+    for t in tickets:
+        if isinstance(t, dict):
+            mid = t.get("milestone")
+            if isinstance(mid, str):
+                groups.setdefault(mid, []).append(t)
+
+    if milestones:
+        ms_order = []
+        seen = set()
+        for m in milestones:
+            mid = m.get("id") if isinstance(m, dict) else m
+            if isinstance(mid, str) and mid in groups and mid not in seen:
+                seen.add(mid)
+                ms_order.append(mid)
+        for mid in groups:
+            if mid not in seen:
+                ms_order.append(mid)
+    else:
+        ms_order = list(groups.keys())
+
+    for mid in ms_order:
+        group = groups[mid]
+        path = _longest_chain(group)
+        n = len(path)
+        m_count = len(group)
+        if n >= 4 or (n == m_count and m_count >= 3):
+            warns.append(
+                "milestone %s has a dependency chain of %d tickets (%s); only true code dependencies belong in depends_on"
+                % (mid, n, " -> ".join(path))
+            )
 
     return warns
 

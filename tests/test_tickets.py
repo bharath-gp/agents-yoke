@@ -164,5 +164,140 @@ class TestTickets(unittest.TestCase):
         self.assertEqual(milestones.milestones_of(self.run_), [{"id": "MS-00", "title": "implicit", "exit_check": None}])
 
 
+class TestChainWarning(unittest.TestCase):
+    def test_chain_flagged(self):
+        ts = [
+            {"id": "T-0081", "title": "t81", "type": "chore", "milestone": "MS-01", "depends_on": []},
+            {"id": "T-0082", "title": "t82", "type": "chore", "milestone": "MS-01", "depends_on": ["T-0081"]},
+            {"id": "T-0083", "title": "t83", "type": "chore", "milestone": "MS-01", "depends_on": ["T-0082"]},
+            {"id": "T-0084", "title": "t84", "type": "chore", "milestone": "MS-01", "depends_on": ["T-0083"]},
+            {"id": "T-0085", "title": "t85", "type": "chore", "milestone": "MS-01", "depends_on": ["T-0084"]},
+        ]
+        warns = tickets.warnings(ts)
+        chain_warns = [w for w in warns if "dependency chain" in w]
+        self.assertEqual(len(chain_warns), 1)
+        w = chain_warns[0]
+        self.assertIn("MS-01", w)
+        self.assertIn("5 tickets", w)
+        self.assertIn("T-0081 -> T-0082", w)
+        self.assertEqual(
+            w,
+            "milestone MS-01 has a dependency chain of 5 tickets (T-0081 -> T-0082 -> T-0083 -> T-0084 -> T-0085); only true code dependencies belong in depends_on",
+        )
+
+    def test_three_ticket_full_chain_flagged(self):
+        ts = [
+            {"id": "T-001", "title": "t1", "type": "chore", "milestone": "MS-01", "depends_on": []},
+            {"id": "T-002", "title": "t2", "type": "chore", "milestone": "MS-01", "depends_on": ["T-001"]},
+            {"id": "T-003", "title": "t3", "type": "chore", "milestone": "MS-01", "depends_on": ["T-002"]},
+        ]
+        warns = tickets.warnings(ts)
+        chain_warns = [w for w in warns if "dependency chain" in w]
+        self.assertEqual(len(chain_warns), 1)
+        self.assertEqual(
+            chain_warns[0],
+            "milestone MS-01 has a dependency chain of 3 tickets (T-001 -> T-002 -> T-003); only true code dependencies belong in depends_on",
+        )
+
+    def test_wide_milestone_no_warning(self):
+        ts = [
+            {"id": "T-001", "title": "t1", "type": "chore", "milestone": "MS-01", "depends_on": []},
+            {"id": "T-002", "title": "t2", "type": "chore", "milestone": "MS-01", "depends_on": ["T-001"]},
+            {"id": "T-003", "title": "t3", "type": "chore", "milestone": "MS-01", "depends_on": []},
+            {"id": "T-004", "title": "t4", "type": "chore", "milestone": "MS-01", "depends_on": ["T-003"]},
+            {"id": "T-005", "title": "t5", "type": "chore", "milestone": "MS-01", "depends_on": []},
+        ]
+        warns = tickets.warnings(ts)
+        chain_warns = [w for w in warns if "dependency chain" in w]
+        self.assertEqual(chain_warns, [])
+
+    def test_cross_milestone_deps_ignored(self):
+        ts = [
+            {"id": "T-001", "title": "t1", "type": "chore", "milestone": "MS-01", "depends_on": []},
+            {"id": "T-002", "title": "t2", "type": "chore", "milestone": "MS-01", "depends_on": ["T-001"]},
+            {"id": "T-003", "title": "t3", "type": "chore", "milestone": "MS-02", "depends_on": ["T-002"]},
+            {"id": "T-004", "title": "t4", "type": "chore", "milestone": "MS-02", "depends_on": ["T-003"]},
+            {"id": "T-005", "title": "t5", "type": "chore", "milestone": "MS-02", "depends_on": ["T-001"]},
+        ]
+        warns = tickets.warnings(ts)
+        chain_warns = [w for w in warns if "dependency chain" in w]
+        self.assertEqual(chain_warns, [])
+
+    def test_cycle_does_not_recurse(self):
+        ts = [
+            {"id": "T-001", "title": "t1", "type": "chore", "milestone": "MS-01", "depends_on": ["T-002"]},
+            {"id": "T-002", "title": "t2", "type": "chore", "milestone": "MS-01", "depends_on": ["T-001"]},
+            {"id": "T-003", "title": "t3", "type": "chore", "milestone": "MS-01", "depends_on": ["T-003"]},
+        ]
+        warns = tickets.warnings(ts)
+        self.assertIsInstance(warns, list)
+        chain_warns = [w for w in warns if "dependency chain" in w]
+        self.assertEqual(chain_warns, [])
+        self.assertEqual(len(tickets._longest_chain(ts)), 2)
+
+    def test_malformed_input_does_not_crash(self):
+        ts = [
+            {"id": 123, "title": "bad id", "milestone": "MS-01", "depends_on": "not a list"},
+            {"id": "T-001", "title": "t1", "milestone": "MS-01", "depends_on": [{}, ["nested"], None, "T-002"]},
+            {"id": "T-002", "title": "t2", "milestone": ["unhashable"], "depends_on": []},
+            {"id": "T-003", "title": "t3", "milestone": {"unhashable": "dict"}, "depends_on": []},
+            "not a dict",
+        ]
+        warns = tickets.warnings(ts, milestones=[["unhashable_mid"], {"id": ["unhashable"]}, "MS-01"])
+        self.assertIsInstance(warns, list)
+        chain_warns = [w for w in warns if "dependency chain" in w]
+        self.assertEqual(chain_warns, [])
+
+    def test_two_ticket_chain_no_warning(self):
+        ts = [
+            {"id": "T-001", "title": "t1", "type": "chore", "milestone": "MS-01", "depends_on": []},
+            {"id": "T-002", "title": "t2", "type": "chore", "milestone": "MS-01", "depends_on": ["T-001"]},
+        ]
+        warns = tickets.warnings(ts)
+        chain_warns = [w for w in warns if "dependency chain" in w]
+        self.assertEqual(chain_warns, [])
+
+    def test_four_ticket_milestone_three_chain_no_warning(self):
+        ts = [
+            {"id": "T-001", "title": "t1", "type": "chore", "milestone": "MS-01", "depends_on": []},
+            {"id": "T-002", "title": "t2", "type": "chore", "milestone": "MS-01", "depends_on": ["T-001"]},
+            {"id": "T-003", "title": "t3", "type": "chore", "milestone": "MS-01", "depends_on": ["T-002"]},
+            {"id": "T-004", "title": "t4", "type": "chore", "milestone": "MS-01", "depends_on": []},
+        ]
+        warns = tickets.warnings(ts)
+        chain_warns = [w for w in warns if "dependency chain" in w]
+        self.assertEqual(chain_warns, [])
+
+    def test_four_ticket_milestone_four_chain_warns(self):
+        ts = [
+            {"id": "T-001", "title": "t1", "type": "chore", "milestone": "MS-01", "depends_on": []},
+            {"id": "T-002", "title": "t2", "type": "chore", "milestone": "MS-01", "depends_on": ["T-001"]},
+            {"id": "T-003", "title": "t3", "type": "chore", "milestone": "MS-01", "depends_on": ["T-002"]},
+            {"id": "T-004", "title": "t4", "type": "chore", "milestone": "MS-01", "depends_on": ["T-003"]},
+        ]
+        warns = tickets.warnings(ts)
+        chain_warns = [w for w in warns if "dependency chain" in w]
+        self.assertEqual(len(chain_warns), 1)
+        self.assertEqual(
+            chain_warns[0],
+            "milestone MS-01 has a dependency chain of 4 tickets (T-001 -> T-002 -> T-003 -> T-004); only true code dependencies belong in depends_on",
+        )
+
+    def test_milestone_ordering_respected(self):
+        ts = [
+            {"id": "T-001", "title": "t1", "type": "chore", "milestone": "MS-01", "depends_on": []},
+            {"id": "T-002", "title": "t2", "type": "chore", "milestone": "MS-01", "depends_on": ["T-001"]},
+            {"id": "T-003", "title": "t3", "type": "chore", "milestone": "MS-01", "depends_on": ["T-002"]},
+            {"id": "T-011", "title": "t11", "type": "chore", "milestone": "MS-02", "depends_on": []},
+            {"id": "T-012", "title": "t12", "type": "chore", "milestone": "MS-02", "depends_on": ["T-011"]},
+            {"id": "T-013", "title": "t13", "type": "chore", "milestone": "MS-02", "depends_on": ["T-012"]},
+        ]
+        warns = tickets.warnings(ts, milestones=[{"id": "MS-02"}, {"id": "MS-01"}])
+        chain_warns = [w for w in warns if "dependency chain" in w]
+        self.assertEqual(len(chain_warns), 2)
+        self.assertIn("MS-02", chain_warns[0])
+        self.assertIn("MS-01", chain_warns[1])
+
+
 if __name__ == "__main__":
     unittest.main()
