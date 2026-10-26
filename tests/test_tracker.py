@@ -118,7 +118,7 @@ class TrackerBase(Base):
 
     def approve_all(self):
         planreview.approve(self.run_, "plan")
-        with contextlib.redirect_stdout(io.StringIO()):
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             return cli.main(["approve", "tickets", "--run", self.run_.run_id])
 
 
@@ -157,9 +157,10 @@ class TestIssues(TrackerBase):
         planreview.check_approval(self.run_, "tickets")
 
     def test_issue_number_mismatch_warns_and_keeps_ids(self):
+        planreview.approve(self.run_, "plan")
         err = io.StringIO()
-        with contextlib.redirect_stderr(err):
-            self.approve_all()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            cli.main(["approve", "tickets", "--run", self.run_.run_id])
         self.assertIn("T-001 became issue #40", err.getvalue())
         self.assertEqual(self.run_.read_json("issues.json")["T-001"]["number"], 40)
         self.assertEqual([t["id"] for t in self.run_.read_json("tickets.json")["tickets"]], ["T-001", "T-002"])
@@ -182,7 +183,8 @@ class TestIssues(TrackerBase):
         os.environ["FAKE_GH_FAIL"] = "issue create"
         self.assertEqual(self.approve_all(), 1)
         del os.environ["FAKE_GH_FAIL"]
-        self.assertEqual(self.approve_all(), 0)
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(self.approve_all(), 0)
         self.assertEqual(sorted(self.run_.read_json("issues.json")), ["T-001", "T-002"])
 
 
@@ -366,7 +368,8 @@ class TestMilestones(TrackerBase):
         self.assertEqual(len(patches), 1)
         self.assertIn("repos/o/r/milestones/1", patches[0])
         self.assertIn("state=closed", patches[0])
-        events = [json.loads(line) for line in open(self.run_.path("events.jsonl"))]
+        with open(self.run_.path("events.jsonl")) as f:
+            events = [json.loads(line) for line in f]
         self.assertTrue(any(e.get("kind") == "milestone_closed" and e.get("milestone") == "MS-01" for e in events))
 
     def test_fix_ticket_issue_created_in_same_milestone(self):
@@ -388,14 +391,16 @@ class TestMilestones(TrackerBase):
         os.environ["FAKE_GH_FAIL"] = "api"
         self.addCleanup(os.environ.pop, "FAKE_GH_FAIL", None)
         tracker.close_milestone(self.run_, "MS-01")
-        events = [json.loads(line) for line in open(self.run_.path("events.jsonl"))]
+        with open(self.run_.path("events.jsonl")) as f:
+            events = [json.loads(line) for line in f]
         self.assertTrue(any(e.get("kind") == "tracker_error" and e.get("milestone") == "MS-01" for e in events))
 
         os.environ["FAKE_GH_FAIL"] = "issue create"
         fix = milestones.make_fix_ticket(id="F-002", milestone={"id": "MS-01", "title": "Foundation", "exit_check": "true"})
         tracker.create_fix_issue(self.run_, fix)
         os.environ.pop("FAKE_GH_FAIL", None)
-        events = [json.loads(line) for line in open(self.run_.path("events.jsonl"))]
+        with open(self.run_.path("events.jsonl")) as f:
+            events = [json.loads(line) for line in f]
         self.assertTrue(any(e.get("kind") == "tracker_error" and e.get("ticket") == "F-002" for e in events))
 
     def test_scheduler_gate_gh_failure_logs_tracker_error_and_run_continues(self):
@@ -407,7 +412,8 @@ class TestMilestones(TrackerBase):
         os.environ["FAKE_GH_FAIL"] = "api"
         self.addCleanup(os.environ.pop, "FAKE_GH_FAIL", None)
         self.assertEqual(scheduler.run(self.run_), "done")
-        events = [json.loads(line) for line in open(self.run_.path("events.jsonl"))]
+        with open(self.run_.path("events.jsonl")) as f:
+            events = [json.loads(line) for line in f]
         self.assertTrue(any(e.get("kind") == "tracker_error" and e.get("milestone") == "MS-01" for e in events))
         self.assertTrue(any(e.get("kind") == "milestone_passed" and e.get("milestone") == "MS-01" for e in events))
 
