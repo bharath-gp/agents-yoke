@@ -69,7 +69,9 @@ To see validator overhead, compare `duration_s` in `tickets/*/attempt-*/validate
 | 3 (M32) | A: test-fix loop after code | 0.13.0 | 1.5-2.5h; fewer escalations | [x] |
 | 4 (M33) | D1: wider charts, parallel default advice | 0.13.1 | up to the deps-only critical path | [x] |
 | 5 (M34) | F + G: notifications; commit message without an agent call | 0.13.2 | human wait; 2-4 min | [x] |
-| 6 (M35) | D2: look-ahead start, merge after gate (option B) | 0.14.0 | removes the milestone-tail stall | [x] |
+| 6 (M36) | D2: look-ahead start, merge after gate (option B) | 0.14.0 | removes the milestone-tail stall | [x] |
+
+Milestone numbers shifted by one when this work merged, because `main` took M30 for adversarial review: Phases 1-5 are [M31](PLAN.md#m31)-[M35](PLAN.md#m35) in PLAN.md. The headings below keep their original numbers so their anchors stay stable.
 
 The versions assume the phases land in order. Use the next free patch or minor version at the time, and keep `pyproject.toml` and `.claude-plugin/plugin.json` equal.
 
@@ -340,7 +342,7 @@ PLAN M34 and the bump.
 
 ## Phase 6 (decision only): overlapping milestones
 
-Decided and implemented as [M35](PLAN.md#m35), option B: look-ahead start, merge after the gate. Of the three options put to the user (overlap during the gate only, deps-only gates, look-ahead start), B was chosen because it keeps the [M14](PLAN.md#m14) guarantee that merged milestone k+1 code builds on a passed gate.
+Decided and implemented as [M36](PLAN.md#m36), option B: look-ahead start, merge after the gate. Of the three options put to the user (overlap during the gate only, deps-only gates, look-ahead start), B was chosen because it keeps the [M14](PLAN.md#m14) guarantee that merged milestone k+1 code builds on a passed gate.
 
 - A ticket of milestone k+1 starts as soon as its `depends_on` are closed and a parallel slot is free.
 - It may not commit, rebase or merge until every earlier gate is `passed` or `waived`. It parks as `awaiting_gate` with its worktree and results kept, and resumes the close when the gates pass.

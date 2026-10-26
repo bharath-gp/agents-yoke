@@ -1,0 +1,24 @@
+{
+  "type": "object",
+  "required": ["rulings", "summary"],
+  "additionalProperties": false,
+  "properties": {
+    "rulings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "ruling", "reason"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string"},
+          "ruling": {
+            "type": "string",
+            "enum": ["upheld", "overruled"]
+          },
+          "reason": {"type": "string"}
+        }
+      }
+    },
+    "summary": {"type": "string"}
+  }
+}

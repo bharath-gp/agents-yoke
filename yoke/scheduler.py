@@ -228,7 +228,7 @@ def _loop(run_, adapter_for, env):
                         for em in all_milestones[:ms_idx.get(t.get("milestone", "MS-00"), 0)]
                     )
 
-                # Look-ahead (PLAN M35): a ticket may start once its deps are closed, whatever the
+                # Look-ahead (PLAN M36): a ticket may start once its deps are closed, whatever the
                 # gates say; only a parked ticket (awaiting_gate) needs the earlier gates passed to resume.
                 ready = [
                     t for t in tickets

@@ -1,11 +1,13 @@
+import copy
 import json
 import os
 import tempfile
 import unittest
 from unittest import mock
 
+from tests.test_core import FAKE_CLI
 from tests.test_pipeline import CODE, PipeBase, REV, resp, ticket, val
-from yoke import config, router, state
+from yoke import adapters, config, pipeline, router, state
 
 os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
 
@@ -436,6 +438,174 @@ class TestModelPickPipeline(PipeBase):
         meta4 = self.run_.read_json("tickets/T-001/attempt-4/code/meta.json")
         self.assertEqual(meta4["requested"]["model"], "m-plan")
         self.assertEqual(meta4["requested"]["effort"], "high")
+
+    def test_stage_tier_sets_plan_model_for_judge(self):
+        cfg = dict(self.run_.cfg)
+        cfg["models"] = {"agy": {"plan": {"model": "P", "effort": "high"}, "cheap": {"model": "C", "effort": "low"}}}
+        self.run_.update(config=cfg)
+        captured = []
+        with mock.patch("yoke.calls.run_call", side_effect=lambda run, ad, spec, **kw: (captured.append(spec), mock.MagicMock(limit=None, ok=True))[1]):
+            with mock.patch("yoke.router.pick_tier_effort") as mock_pick:
+                t = ticket(1)
+                adapter = adapters.FakeAdapter(FAKE_CLI)
+                adapter.name = "agy"
+                pipeline._call(
+                    self.run_,
+                    lambda role: adapter,
+                    self.env,
+                    t,
+                    "judge",
+                    1,
+                    self.repo,
+                    "HEAD",
+                    "read",
+                    {},
+                    "",
+                    adapter=adapter,
+                )
+                self.assertEqual(len(captured), 1)
+                self.assertEqual(captured[0].model, "P")
+                self.assertEqual(captured[0].effort, "high")
+                mock_pick.assert_not_called()
+
+    def test_stage_tier_cheap_for_rebut_and_unset_when_unconfigured(self):
+        cfg = dict(self.run_.cfg)
+        cfg["models"] = {"agy": {"plan": {"model": "P", "effort": "high"}, "cheap": {"model": "C", "effort": "low"}}}
+        self.run_.update(config=cfg)
+        t = ticket(1)
+        adapter = adapters.FakeAdapter(FAKE_CLI)
+        adapter.name = "agy"
+        for stage in ("rebut", "reply"):
+            captured = []
+            with mock.patch("yoke.calls.run_call", side_effect=lambda run, ad, spec, **kw: (captured.append(spec), mock.MagicMock(limit=None, ok=True))[1]):
+                with mock.patch("yoke.router.pick_tier_effort") as mock_pick:
+                    pipeline._call(
+                        self.run_,
+                        lambda role: adapter,
+                        self.env,
+                        t,
+                        stage,
+                        1,
+                        self.repo,
+                        "HEAD",
+                        "read",
+                        {},
+                        "",
+                        adapter=adapter,
+                    )
+                    self.assertEqual(len(captured), 1)
+                    self.assertEqual(captured[0].model, "C")
+                    self.assertEqual(captured[0].effort, "low")
+                    mock_pick.assert_not_called()
+
+        # With models {} the spec model and effort are None
+        cfg["models"] = {}
+        self.run_.update(config=cfg)
+        for stage in ("rebut", "reply"):
+            captured = []
+            with mock.patch("yoke.calls.run_call", side_effect=lambda run, ad, spec, **kw: (captured.append(spec), mock.MagicMock(limit=None, ok=True))[1]):
+                with mock.patch("yoke.router.pick_tier_effort") as mock_pick:
+                    pipeline._call(
+                        self.run_,
+                        lambda role: adapter,
+                        self.env,
+                        t,
+                        stage,
+                        1,
+                        self.repo,
+                        "HEAD",
+                        "read",
+                        {},
+                        "",
+                        adapter=adapter,
+                    )
+                    self.assertEqual(len(captured), 1)
+                    self.assertIsNone(captured[0].model)
+                    self.assertIsNone(captured[0].effort)
+                    mock_pick.assert_not_called()
+
+    def test_stage_tier_override_precedence_over_tier(self):
+        cfg = dict(self.run_.cfg)
+        cfg["roles"] = copy.deepcopy(cfg["roles"])
+        cfg["roles"]["by_role"]["judge"] = "secondary"
+        cfg["models"] = {"agy": {"plan": {"model": "P", "effort": "high"}, "cheap": {"model": "C", "effort": "low"}}}
+        cfg["routing"] = dict(cfg.get("routing", {}))
+        cfg["routing"]["chore"] = {
+            "stages": ["judge"],
+            "overrides": {"judge": {"model": "custom-judge", "effort": "low"}},
+        }
+        self.run_.update(config=cfg)
+        captured = []
+        with mock.patch("yoke.calls.run_call", side_effect=lambda run, ad, spec, **kw: (captured.append(spec), mock.MagicMock(limit=None, ok=True))[1]):
+            t = ticket(1, "chore")
+            adapter = adapters.FakeAdapter(FAKE_CLI)
+            adapter.name = "agy"
+            pipeline._call(
+                self.run_,
+                lambda role: adapter,
+                self.env,
+                t,
+                "judge",
+                1,
+                self.repo,
+                "HEAD",
+                "read",
+                {},
+                "",
+                adapter=adapter,
+            )
+            self.assertEqual(len(captured), 1)
+            self.assertEqual(captured[0].model, "custom-judge")
+            self.assertEqual(captured[0].effort, "low")
+
+    def test_stage_tier_timeout_fallback_when_missing_from_config(self):
+        cfg = dict(self.run_.cfg)
+        cfg["timeouts_s"] = dict(cfg.get("timeouts_s", {}))
+        cfg["timeouts_s"].pop("judge", None)
+        self.run_.update(config=cfg)
+        captured = []
+        with mock.patch("yoke.calls.run_call", side_effect=lambda run, ad, spec, **kw: (captured.append(spec), mock.MagicMock(limit=None, ok=True))[1]):
+            t = ticket(1)
+            adapter = adapters.FakeAdapter(FAKE_CLI)
+            adapter.name = "agy"
+            pipeline._call(
+                self.run_,
+                lambda role: adapter,
+                self.env,
+                t,
+                "judge",
+                1,
+                self.repo,
+                "HEAD",
+                "read",
+                {},
+                "",
+                adapter=adapter,
+            )
+            self.assertEqual(len(captured), 1)
+            self.assertEqual(captured[0].timeout_s, 900)
+
+        # Configured timeout is honoured
+        cfg["timeouts_s"]["judge"] = 1234
+        self.run_.update(config=cfg)
+        captured.clear()
+        with mock.patch("yoke.calls.run_call", side_effect=lambda run, ad, spec, **kw: (captured.append(spec), mock.MagicMock(limit=None, ok=True))[1]):
+            pipeline._call(
+                self.run_,
+                lambda role: adapter,
+                self.env,
+                t,
+                "judge",
+                1,
+                self.repo,
+                "HEAD",
+                "read",
+                {},
+                "",
+                adapter=adapter,
+            )
+            self.assertEqual(len(captured), 1)
+            self.assertEqual(captured[0].timeout_s, 1234)
 
 
 if __name__ == "__main__":

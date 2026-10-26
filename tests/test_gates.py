@@ -380,7 +380,7 @@ if __name__ == "__main__":
 
 
 class TestLookAhead(PipeBase):
-    """PLAN M35: a k+1 ticket starts once its deps are closed but merges only after gate k."""
+    """PLAN M36: a k+1 ticket starts once its deps are closed but merges only after gate k."""
 
     setup_doc = TestGates.setup_doc
 
