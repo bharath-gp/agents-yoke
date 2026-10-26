@@ -78,6 +78,20 @@ class TestModelsCLI(unittest.TestCase):
         self.orig_cwd = os.getcwd()
         os.chdir(self.repo)
 
+        orig = models.list_models
+        # Any test asserting the agy subprocess path stays unpatched
+        if self._testMethodName not in (
+            "test_list_with_stub_agy",
+            "test_list_failing_agy_prints_warning_and_static_list_exit_0",
+            "test_set_validation",
+        ):
+            p = mock.patch(
+                "yoke.models.list_models",
+                side_effect=lambda agent: ([{"id": m, "label": ""} for m in models.STATIC_AGY_MODELS], None) if agent == "agy" else orig(agent),
+            )
+            p.start()
+            self.addCleanup(p.stop)
+
     def tearDown(self):
         os.chdir(self.orig_cwd)
         self._td.cleanup()
