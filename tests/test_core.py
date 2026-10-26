@@ -269,8 +269,23 @@ class TestAdapterCmds(Tmp):
         self.assertEqual(json.loads(cmd[cmd.index("--json-schema") + 1]), SCHEMA)
         self.assertEqual(cmd[cmd.index("--permission-mode") + 1], "plan")
         self.assertNotIn("acceptEdits", cmd)
-        self.assertNotIn("--disallowedTools", cmd)
+        self.assertEqual(cmd[cmd.index("--allowedTools") + 1], adapters.CLAUDE_READ_TOOLS)
+        self.assertIn("--disallowedTools", cmd)
+        i = cmd.index("--disallowedTools")
+        self.assertEqual(cmd[i + 1:i + 1 + len(adapters.CLAUDE_READ_DENY)], adapters.CLAUDE_READ_DENY)
+        self.assertEqual(cmd[i + 1 + len(adapters.CLAUDE_READ_DENY)], "--setting-sources")
+        self.assertNotIn("Bash", adapters.CLAUDE_READ_DENY)
         self.assertNotIn("--settings", cmd)
+
+    def test_claude_setting_sources(self):
+        for mode in ("read", "write"):
+            cmd = adapters.ClaudeAdapter().build_cmd(self.spec(mode=mode))
+            self.assertIn("--setting-sources", cmd)
+            self.assertEqual(cmd[cmd.index("--setting-sources") + 1], "project,local")
+            cmd_empty = adapters.ClaudeAdapter().build_cmd(self.spec(mode=mode, setting_sources=""))
+            self.assertNotIn("--setting-sources", cmd_empty)
+        cfg = config.load(home=self.tmp)
+        self.assertEqual(cfg["agents"]["claude"]["setting_sources"], "project,local")
 
     def test_claude_write_resume_model(self):
         cmd = adapters.ClaudeAdapter().build_cmd(self.spec(

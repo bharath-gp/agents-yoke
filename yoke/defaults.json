@@ -104,7 +104,8 @@
   "tracker": "auto",
   "agents": {
     "claude": {
-      "write_allowed_tools": ["Read", "Edit", "Write", "Grep", "Glob", "Bash(ls:*)", "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)"]
+      "write_allowed_tools": ["Read", "Edit", "Write", "Grep", "Glob", "Bash(ls:*)", "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)"],
+      "setting_sources": "project,local"
     },
     "agy": {}
   },
