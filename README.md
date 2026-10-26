@@ -279,7 +279,7 @@ Yoke can run an external shell command whenever a run finishes successfully (`ru
 }
 ```
 
-- **Configuration**: Set `notify_command` in `~/.yoke/config.json` (user-wide) or `<repo>/.yoke.json` (per-repo). Defaults to `null` (disabled).
+- **Configuration**: Set `notify_command` in `~/.yoke/config.json` only. Defaults to `null` (disabled). Like `gate_hooks`, it runs a shell command, so a `notify_command` in repo config (`<repo>/.yoke.json`) is refused with a warning log.
 - **Trigger events**: Invoked from `scheduler.run`'s finalization block after emitting `run_done` or `run_needs_user`.
 - **Environment variables**: Values are passed strictly through environment variables to prevent command injection:
   - `YOKE_EVENT`: Event name (`run_done` or `run_needs_user`).

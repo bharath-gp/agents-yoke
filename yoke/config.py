@@ -41,7 +41,7 @@ def _read(path, required=False):
 def load(repo=None, home=None, overrides=None):
     """Load configuration merged across defaults, user config, repo config, and overrides.
 
-    gate_hooks, guard, and router.thresholds.safety are accepted only from user config
+    gate_hooks, guard, notify_command, and router.thresholds.safety are accepted only from user config
     (~/.yoke/config.json). If defined in repo config, they are refused and logged with a warning.
     """
     cfg = _read(DEFAULTS_PATH, required=True)
@@ -61,8 +61,15 @@ def load(repo=None, home=None, overrides=None):
             and "thresholds" in repo_router
             and (not isinstance(repo_router["thresholds"], dict) or "safety" in repo_router["thresholds"])
         )
-        if has_gate_hooks or has_guard or has_safety:
+        has_notify = "notify_command" in repo_cfg
+        if has_gate_hooks or has_guard or has_safety or has_notify:
             repo_cfg = copy.deepcopy(repo_cfg)
+            if has_notify:
+                logger.warning(
+                    "refusing notify_command from repo config %s: notify_command may only be configured in user config",
+                    repo_path,
+                )
+                del repo_cfg["notify_command"]
             if has_gate_hooks:
                 logger.warning(
                     "refusing gate_hooks from repo config %s: gate_hooks may only be configured in user config",
