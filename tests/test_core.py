@@ -1,6 +1,8 @@
 import io
 import json
 import os
+import signal
+import subprocess
 import tempfile
 import time
 import unittest
@@ -456,6 +458,51 @@ class TestRunCall(Tmp):
             time.sleep(0.1)
         else:
             self.fail("grandchild survived timeout kill")
+
+    def test_kill_group_permission_error_fallback(self):
+        proc = mock.MagicMock(pid=12345)
+        proc.poll.side_effect = [None, 0]
+        with mock.patch("os.getpgid", return_value=99999), mock.patch("os.killpg", side_effect=PermissionError) as mock_killpg:
+            calls._kill_group(proc, grace=0.01)
+        self.assertEqual(proc.send_signal.call_args_list, [mock.call(signal.SIGTERM)])
+        self.assertEqual(mock_killpg.call_args_list, [mock.call(99999, signal.SIGTERM), mock.call(99999, signal.SIGKILL)])
+
+    def test_kill_group_process_lookup_error(self):
+        proc = mock.MagicMock(pid=12345)
+        proc.poll.return_value = 0
+        with mock.patch("os.getpgid", return_value=99999), mock.patch("os.killpg", side_effect=ProcessLookupError) as mock_killpg:
+            calls._kill_group(proc, grace=0.01)
+        proc.send_signal.assert_called_once_with(signal.SIGTERM)
+        mock_killpg.assert_called_once_with(99999, signal.SIGTERM)
+
+    def test_kill_group_getpgid_fails(self):
+        proc = mock.MagicMock(pid=12345)
+        proc.poll.return_value = 0
+        with mock.patch("os.getpgid", side_effect=ProcessLookupError) as mock_getpgid, mock.patch("os.killpg") as mock_killpg:
+            calls._kill_group(proc, grace=0.01)
+        mock_getpgid.assert_called_once_with(12345)
+        self.assertEqual(mock_killpg.call_args_list, [mock.call(12345, signal.SIGTERM), mock.call(12345, signal.SIGKILL)])
+
+    def test_kill_group_sigterm_escalates_to_sigkill(self):
+        proc = mock.MagicMock(pid=12345)
+        proc.poll.side_effect = [None, None]
+        proc.wait.side_effect = [subprocess.TimeoutExpired(cmd="fake", timeout=0.01), None]
+        with mock.patch("os.getpgid", return_value=99999), mock.patch("os.killpg") as mock_killpg:
+            calls._kill_group(proc, grace=0.01)
+        self.assertEqual(mock_killpg.call_args_list, [mock.call(99999, signal.SIGTERM), mock.call(99999, signal.SIGKILL)])
+
+    def test_kill_group_real_subprocess(self):
+        proc = subprocess.Popen(["sleep", "999"], start_new_session=True)
+        try:
+            calls._kill_group(proc, grace=0.1)
+            self.assertIsNotNone(proc.poll())
+        finally:
+            if proc.poll() is None:
+                try:
+                    proc.kill()
+                    proc.wait()
+                except OSError:
+                    pass
 
     def test_missing_executable(self):
         spec = adapters.CallSpec(prompt="t", schema_path=self.schema_path, cwd=self.tmp)
