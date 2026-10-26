@@ -24,6 +24,10 @@ class Escalate(Exception):
     pass
 
 
+class AwaitGate(Exception):
+    """Ticket finished its stages but an earlier milestone gate is not passed/waived yet."""
+
+
 class BudgetExhausted(Exception):
     def __init__(self, reason="budget exhausted: max_agent_calls_total reached"):
         super().__init__(reason)
@@ -1216,14 +1220,28 @@ def _gate(stages, results, rerun_rc):
     return g
 
 
+def open_gates(run, ticket):
+    """Earlier milestone gates that are not yet passed or waived (merge must wait for them)."""
+    all_ms = milestones.milestones_of(run)
+    idx = {m["id"]: i for i, m in enumerate(all_ms)}
+    states = milestones.load_states(run)
+    return [m["id"] for m in all_ms[:idx.get(ticket.get("milestone", "MS-00"), 0)]
+            if states.get(m["id"], {}).get("status") not in ("passed", "waived")]
+
+
 def _close(run, adapter_for, ticket, st, wt, stages, results, test_cmd, rerun_rc, merge_lock, env=None):
-    """Gate, commit, rebase, retest if moved, ff-merge. Returns feedback on a retryable failure."""
+    """Gate, commit, rebase, retest if moved, ff-merge. Returns feedback on a retryable failure.
+    Raises AwaitGate when the ticket passed its close gate but an earlier milestone gate is still open."""
     tid, info = ticket["id"], run.read_json("run.json")
     cfg = run.cfg
     gate = _gate(stages, results, rerun_rc)
     if not all(gate.values()):
         run.event("close_gate", ticket=tid, attempt=st["attempt"], gate=gate, ok=False)
         return "Close gate failed: " + ", ".join(k for k, v in gate.items() if not v)
+
+    pending_gates = open_gates(run, ticket)
+    if pending_gates:
+        raise AwaitGate(",".join(pending_gates))
 
     close_hooks = (cfg.get("gate_hooks") or {}).get("before_close") or []
     fb, close_info = _run_gate_hook_stage(run, wt, ticket, st["attempt"], "before_close", close_hooks, env=env)
@@ -1310,12 +1328,18 @@ def run_ticket(run, ticket, adapter_for=None, env=None, merge_lock=None):
     gitops.add_worktree(info["repo"], wt, info["branch"] + "-" + tid, info["branch"])
     st = ticket_state(run, tid)
     st["base_sha"] = st.get("base_sha") or gitops.head_sha(wt)
+    resume_close = st.get("status") == "awaiting_gate"
     st["status"] = "in_progress"
     save_state(run, tid, st)
     stages = cfg["routing"][ticket["type"]]["stages"]
     try:
         while True:
-            fb, results, test_cmd, rc = _attempt(run, adapter_for, env, ticket, st, wt, stages)
+            if resume_close:  # parked ticket: stages already passed, only the close remains
+                resume_close = False
+                results, test_cmd, rc = st.get("last_results") or {}, st.get("last_test_cmd"), st.get("last_rerun_rc")
+                fb = None
+            else:
+                fb, results, test_cmd, rc = _attempt(run, adapter_for, env, ticket, st, wt, stages)
             if fb is None:
                 fb = _close(run, adapter_for, ticket, st, wt, stages, results, test_cmd, rc, merge_lock, env=env)
             if fb is None:
@@ -1339,6 +1363,11 @@ def run_ticket(run, ticket, adapter_for=None, env=None, merge_lock=None):
             fb = _maybe_triage_hint(run, adapter_for, tid, st["attempt"], fb, ticket=ticket, wt=wt, env=env, base=st.get("base_sha"))
             write_feedback(run, tid, st["attempt"], fb)
             save_state(run, tid, st)
+    except AwaitGate as e:
+        st["status"] = "awaiting_gate"
+        save_state(run, tid, st)
+        run.event("ticket_awaiting_gate", ticket=tid, gates=str(e))
+        return "awaiting_gate"
     except Escalate as e:
         st["status"] = "blocked"
         save_state(run, tid, st)

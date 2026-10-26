@@ -582,6 +582,7 @@
 
     .status-closed { background: var(--state-done-bg); color: var(--state-done); }
     .status-in_progress, .status-in-progress { background: var(--state-running-bg); color: var(--state-running); }
+    .status-awaiting_gate, .status-awaiting-gate { background: var(--warn-bg); color: var(--warn-text); }
     .status-pending { background: var(--state-pending-bg); color: var(--state-pending); }
     .status-blocked { background: var(--state-failed-bg); color: var(--state-failed); }
     .status-skipped { background: var(--state-stopped-bg); color: var(--state-stopped); }
@@ -1148,13 +1149,14 @@
         const remaining = prog.remaining !== undefined ? prog.remaining : (total - closed);
         const inProgress = prog.in_progress || 0;
         const blocked = prog.blocked || 0;
+        const awaitingGate = prog.awaiting_gate || 0;
         const pending = prog.pending || 0;
 
         const pct = total > 0 ? Math.round((closed / total) * 100) : 0;
         const fill = document.getElementById('progress-bar-fill');
         fill.style.width = pct + '%';
         document.getElementById('progress-text-summary').textContent = closed + ' of ' + total + ' tickets done (' + pct + '%), ' + remaining + ' remaining';
-        document.getElementById('progress-breakdown').textContent = 'Done: ' + closed + ' | In Progress: ' + inProgress + ' | Blocked: ' + blocked + ' | Pending: ' + pending;
+        document.getElementById('progress-breakdown').textContent = 'Done: ' + closed + ' | In Progress: ' + inProgress + ' | Awaiting Gate: ' + awaitingGate + ' | Blocked: ' + blocked + ' | Pending: ' + pending;
 
         // Usage totals and top 3 spenders
         const usageData = d.usage || (d.status && d.status.usage) || {};

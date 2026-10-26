@@ -69,7 +69,7 @@ To see validator overhead, compare `duration_s` in `tickets/*/attempt-*/validate
 | 3 (M32) | A: test-fix loop after code | 0.13.0 | 1.5-2.5h; fewer escalations | [x] |
 | 4 (M33) | D1: wider charts, parallel default advice | 0.13.1 | up to the deps-only critical path | [x] |
 | 5 (M34) | F + G: notifications; commit message without an agent call | 0.13.2 | human wait; 2-4 min | [x] |
-| 6 | D2: overlap milestones | design decision | more parallelism | [ ] |
+| 6 (M35) | D2: look-ahead start, merge after gate (option B) | 0.14.0 | removes the milestone-tail stall | [x] |
 
 The versions assume the phases land in order. Use the next free patch or minor version at the time, and keep `pyproject.toml` and `.claude-plugin/plugin.json` equal.
 
@@ -340,24 +340,12 @@ PLAN M34 and the bump.
 
 ## Phase 6 (decision only): overlapping milestones
 
-Do not implement this without a user decision. The milestone design (sequential gates, [M14](PLAN.md#m14)) guarantees that milestone k+1 builds on a passed gate.
+Decided and implemented as [M35](PLAN.md#m35), option B: look-ahead start, merge after the gate. Of the three options put to the user (overlap during the gate only, deps-only gates, look-ahead start), B was chosen because it keeps the [M14](PLAN.md#m14) guarantee that merged milestone k+1 code builds on a passed gate.
 
-Option to put to the user:
-
-- Let a ticket of milestone k+1 start while milestone k's `exit_check` runs or its fixes are open, when all of the ticket's `depends_on` are closed.
-- If the gate fails and fix tickets (`F-xxx`) land, rebase the running tickets in k+1 at close time. The `reapply_on` conflict path already exists.
-
-Gain: run 1020 has a gated critical path of 11.7h against 3.7h on deps alone, though that run used `parallel` 1.
-
-Cost:
-
-- `scheduler._loop` readiness rule (lines 207-215)
-- `milestones.ticket_waiting_for`
-- dashboard gate display
-- many tests
-- a PLAN section 2.8 / M14 design change
-
-Decide after Phases 3 and 4 have run once, using `scripts/run_timing.py` numbers.
+- A ticket of milestone k+1 starts as soon as its `depends_on` are closed and a parallel slot is free.
+- It may not commit, rebase or merge until every earlier gate is `passed` or `waived`. It parks as `awaiting_gate` with its worktree and results kept, and resumes the close when the gates pass.
+- When slots are scarce the earliest milestone wins, so look-ahead never starves the current milestone.
+- Evidence for the choice: the last run had a ~70 min MS-02 tail (one ticket on attempt 2) while 4 of 5 MS-03 tickets had no dependency on MS-02, and a gate fix held MS-02 for ~18 min.
 
 ## Rules that apply to every phase
 

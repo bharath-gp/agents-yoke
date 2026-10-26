@@ -462,12 +462,13 @@ def run_detail(run):
     closed_count = sum(1 for t in all_tickets if sts.get(t.get("id")) == "closed")
     skipped_count = sum(1 for t in all_tickets if sts.get(t.get("id")) == "skipped")
     in_progress_count = sum(1 for t in all_tickets if sts.get(t.get("id")) == "in_progress")
+    awaiting_gate_count = sum(1 for t in all_tickets if sts.get(t.get("id")) == "awaiting_gate")
     blocked_count = 0
     pending_count = 0
     for t in all_tickets:
         tid = t.get("id")
         t_st = sts.get(tid, "pending")
-        if t_st in ("closed", "skipped", "in_progress"):
+        if t_st in ("closed", "skipped", "in_progress", "awaiting_gate"):
             continue
         reasons = milestones.ticket_waiting_for(t, all_milestones, ms_states, sts, ms_idx)
         if t_st == "blocked" or bool(reasons):
@@ -487,6 +488,7 @@ def run_detail(run):
         "closed": closed_count,
         "skipped": skipped_count,
         "in_progress": in_progress_count,
+        "awaiting_gate": awaiting_gate_count,
         "pending": pending_count,
         "blocked": blocked_count,
         "remaining": remaining_count,

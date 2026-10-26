@@ -91,8 +91,9 @@ class TestMap(unittest.TestCase):
         self.assertIn("Frontier:", out)
         self.assertIn("T-001: Setup data model", out)
 
-        # T-003 is in MS-02 and blocked by gate MS-01 even though it has no depends_on
-        self.assertIn("blocked by gate MS-01", out)
+        # T-003 is in MS-02 with no depends_on: look-ahead lets it start, so it is on the frontier
+        self.assertIn("T-003: Independent execution task", out)
+        self.assertNotIn("blocked by gate", out)
         # T-002 has unclosed dependency T-001
         self.assertIn("waiting for T-001", out)
 
@@ -103,7 +104,7 @@ class TestMap(unittest.TestCase):
         self.assertEqual(rc, 0)
         cli_out = buf.getvalue()
         self.assertIn("Frontier:", cli_out)
-        self.assertIn("blocked by gate MS-01", cli_out)
+        self.assertNotIn("blocked by gate", cli_out)
 
     def test_status_includes_fix_tickets_from_fixes_json(self):
         doc = {

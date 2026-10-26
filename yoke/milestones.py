@@ -235,15 +235,15 @@ def ticket_waiting_for(ticket, all_milestones, ms_states, sts, ms_idx=None):
     tid = ticket.get("id")
     st = sts.get(tid, "pending")
     reasons = []
-    if st == "pending":
+    if st == "awaiting_gate":
         blocked_gates = [
             em["id"] for em in all_milestones[:ms_idx.get(ticket.get("milestone", "MS-00"), 0)]
             if ms_states.get(em["id"], {}).get("status") not in ("passed", "waived")
         ]
         if blocked_gates:
-            reasons.append("blocked by gate %s" % ", ".join(blocked_gates))
+            reasons.append("awaiting gate %s" % ", ".join(blocked_gates))
+    elif st == "pending":  # look-ahead: only unclosed deps hold a pending ticket back
         unclosed = [d for d in ticket.get("depends_on", []) if sts.get(d) != "closed"]
         if unclosed:
             reasons.append("waiting for %s" % ", ".join(unclosed))
     return reasons
-

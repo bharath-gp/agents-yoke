@@ -221,17 +221,27 @@ def _loop(run_, adapter_for, env):
                 ms_idx = {m["id"]: i for i, m in enumerate(all_milestones)}
 
                 busy = set(running.values())
+
+                def gates_open(t):
+                    return any(
+                        ms_states.get(em["id"], {}).get("status") not in ("passed", "waived")
+                        for em in all_milestones[:ms_idx.get(t.get("milestone", "MS-00"), 0)]
+                    )
+
+                # Look-ahead (PLAN M35): a ticket may start once its deps are closed, whatever the
+                # gates say; only a parked ticket (awaiting_gate) needs the earlier gates passed to resume.
                 ready = [
                     t for t in tickets
                     if t["id"] not in busy
-                    and sts.get(t["id"]) in ("pending", "in_progress")
-                    and all(sts.get(d) == "closed" for d in t.get("depends_on", []))
-                    and all(
-                        ms_states.get(em["id"], {}).get("status") in ("passed", "waived")
-                        for em in all_milestones[:ms_idx.get(t.get("milestone", "MS-00"), 0)]
+                    and (
+                        (sts.get(t["id"]) in ("pending", "in_progress")
+                         and all(sts.get(d) == "closed" for d in t.get("depends_on", [])))
+                        or (sts.get(t["id"]) == "awaiting_gate" and not gates_open(t))
                     )
                 ]
-                ready.sort(key=lambda t: sts.get(t["id"]) != "in_progress")
+                # resumed work first, then earliest milestone so look-ahead never starves the current one
+                ready.sort(key=lambda t: (sts.get(t["id"]) == "pending",
+                                          ms_idx.get(t.get("milestone", "MS-00"), 0)))
                 if not out_of_budget:
                     exceeded, reason = config.check_budget(run_)
                     if exceeded:
@@ -276,21 +286,24 @@ def _loop(run_, adapter_for, env):
                     running[pool.submit(pipeline.run_ticket, run_, t, adapter_for, env, merge_lock)] = t["id"]
                     running_tickets[t["id"]] = t
 
-                if not running:
-                    if out_of_budget:
+                unfinished_ms = None
+                for m in all_milestones:
+                    if ms_states.get(m["id"], {}).get("status", "open") not in ("passed", "waived"):
+                        unfinished_ms = m
+                        break
+                gate_due = unfinished_ms is not None and all(
+                    sts.get(t["id"]) in ("closed", "skipped")
+                    for t in tickets if t.get("milestone", "MS-00") == unfinished_ms["id"]
+                )
+
+                if not running or gate_due:
+                    if out_of_budget and not running:
                         is_cap = isinstance(out_of_budget, str) and out_of_budget.startswith(config.BUDGET_CAP_PREFIX)
                         reason = out_of_budget if isinstance(out_of_budget, str) else "budget exhausted: max_agent_calls_total reached"
                         if is_cap:
                             run_.update(budget_escalated=True)
                         pipeline.escalate(run_, None, reason)
                         return "needs_user"
-
-                    unfinished_ms = None
-                    for m in all_milestones:
-                        m_st = ms_states.get(m["id"], {}).get("status", "open")
-                        if m_st not in ("passed", "waived"):
-                            unfinished_ms = m
-                            break
 
                     if unfinished_ms:
                         m_id = unfinished_ms["id"]
@@ -366,7 +379,8 @@ def _loop(run_, adapter_for, env):
                                     )
                                     return "needs_user"
 
-                    return "done" if all(s in ("closed", "skipped") for s in sts.values()) else "needs_user"
+                    if not running:
+                        return "done" if all(s in ("closed", "skipped") for s in sts.values()) else "needs_user"
 
                 done, _ = wait(running, return_when=FIRST_COMPLETED)
                 for f in done:
