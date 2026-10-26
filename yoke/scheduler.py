@@ -8,7 +8,7 @@ import signal
 import threading
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
-from . import config, gitops, guard, milestones, pipeline, planreview, router, state, tracker, usage
+from . import config, gitops, guard, hooks, milestones, pipeline, planreview, router, state, tracker, usage
 
 
 class LockError(Exception):
@@ -168,6 +168,23 @@ def run(run_, adapter_for=None, env=None):
         pause.request_stop()
         run_.update(state=final, runner_pid=None)
         run_.event("run_" + final)
+        try:
+            if final in ("done", "needs_user"):
+                if final == "done":
+                    msg = "run %s done" % run_.run_id
+                else:
+                    esc = run_.read_json("escalations.json", [])
+                    last_esc = esc[-1] if (isinstance(esc, list) and esc) else None
+                    if isinstance(last_esc, dict):
+                        reason = (last_esc.get("reason") or "")[:200]
+                    else:
+                        reason = "needs user"
+                    if not reason:
+                        reason = "needs user"
+                    msg = "run %s needs you: %s" % (run_.run_id, reason)
+                hooks.notify(run_, "run_" + final, msg)
+        except Exception:
+            pass
         try:
             usage.write_usage(run_)
         except Exception as e:

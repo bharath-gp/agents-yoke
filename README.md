@@ -269,6 +269,24 @@ yoke nudge <ticket_id> --note "<guidance text>"
 - **Feedback loop**: The note is injected into prompt feedback on the ticket's next attempt or review revision round.
 - **Use cases**: Guiding an agent back on track when monitoring progress, clarifying ambiguities, or suggesting alternative approaches without restarting the run.
 
+### Run completion notification (`notify_command`)
+
+Yoke can run an external shell command whenever a run finishes successfully (`run_done`) or needs user attention (`run_needs_user`):
+
+```json
+{
+  "notify_command": "notify-send \"$YOKE_MESSAGE\""
+}
+```
+
+- **Configuration**: Set `notify_command` in `~/.yoke/config.json` (user-wide) or `<repo>/.yoke.json` (per-repo). Defaults to `null` (disabled).
+- **Trigger events**: Invoked from `scheduler.run`'s finalization block after emitting `run_done` or `run_needs_user`.
+- **Environment variables**: Values are passed strictly through environment variables to prevent command injection:
+  - `YOKE_EVENT`: Event name (`run_done` or `run_needs_user`).
+  - `YOKE_RUN`: Run ID (e.g. `agents-yoke-20261026-125803`).
+  - `YOKE_MESSAGE`: Human-readable summary: `run <run_id> done` or `run <run_id> needs you: <reason>` (with escalation reason truncated to 200 characters, defaulting to `needs user` if absent).
+- **Execution and error handling**: Executed via `run_hook` with a 10-second timeout in the run directory. Existing `os.environ` is preserved so standard system utilities and `PATH` remain available. If the command exits non-zero, times out, or fails, a `notify_failed` event is logged to `events.jsonl` (with error output truncated to 500 characters). Notification failures never raise exceptions or disrupt the run.
+
 ## Decision models
 
 yoke routes small, high-frequency decisions to a local Ollama decision model (`tev1:4b`, using `POST /v1/systemone` single forward passes) with configured confidence thresholds and deterministic fallbacks.

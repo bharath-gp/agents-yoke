@@ -103,6 +103,7 @@
     "fallback": {"agent": "claude", "model": "claude-haiku-5-5", "effort": "low"}
   },
   "test_command": null,
+  "notify_command": null,
   "tracker": "auto",
   "agents": {
     "claude": {

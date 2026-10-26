@@ -158,3 +158,37 @@ def run_hooks(
             return res
         last_res = res
     return last_res
+
+
+def notify(run, event: str, message: str) -> None:
+    """Run cfg notify_command with YOKE_EVENT, YOKE_RUN, and YOKE_MESSAGE in env.
+
+    Logs event 'notify_failed' (event=, error=) on non-pass or exception.
+    Never raises.
+    """
+    try:
+        cfg = getattr(run, "cfg", None)
+        cmd = cfg.get("notify_command") if hasattr(cfg, "get") else None
+        if not cmd:
+            return
+
+        run_id = getattr(run, "run_id", "")
+        cwd = getattr(run, "dir", None) or os.getcwd()
+        env = {
+            "YOKE_EVENT": str(event),
+            "YOKE_RUN": str(run_id),
+            "YOKE_MESSAGE": str(message),
+        }
+        res = run_hook(cmd, cwd=cwd, timeout_s=10, kill_grace_s=1.0, env=env)
+        if res.status != "pass":
+            err = res.tail or res.output or (f"exit code {res.exit_code}" if res.exit_code is not None else res.status)
+            try:
+                run.event("notify_failed", event=event, error=str(err)[:500])
+            except Exception:
+                pass
+    except Exception as e:
+        try:
+            run.event("notify_failed", event=event, error=str(e)[:500])
+        except Exception:
+            pass
+
