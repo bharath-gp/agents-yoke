@@ -27,17 +27,38 @@ def audit_rel(stage, ticket, attempt, call_id, label=None):
 
 
 def _kill_group(proc, grace):
+    try:
+        pgid = os.getpgid(proc.pid)
+    except (ProcessLookupError, PermissionError, OSError):
+        pgid = proc.pid
     for sig, wait in ((signal.SIGTERM, grace), (signal.SIGKILL, None)):
         try:
-            os.killpg(proc.pid, sig)
-        except ProcessLookupError:
-            break
+            os.killpg(pgid, sig)
+        except (ProcessLookupError, PermissionError):
+            try:
+                proc.send_signal(sig)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+            if proc.poll() is not None:
+                break
         if wait is not None:
             try:
                 proc.wait(timeout=wait)
             except subprocess.TimeoutExpired:
                 pass
-    proc.wait()
+        if proc.poll() is not None:
+            # Best-effort SIGKILL sweep for any detached grandchild processes.
+            # On macOS, an empty or reaped process group returns EPERM (PermissionError).
+            if sig == signal.SIGTERM:
+                try:
+                    os.killpg(pgid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+            break
+    try:
+        proc.wait()
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
 
 
 def _exec(run, adapter, spec, rel, stage, ticket, attempt, label=None, charge=True):

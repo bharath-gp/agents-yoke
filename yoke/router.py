@@ -35,7 +35,8 @@ def _agent(run, name, prompt, adapter=None):
     spec = adapters.CallSpec(
         prompt=prompt, schema_path=schema.schema_path("router-" + name), cwd=run.read_json("run.json")["repo"],
         model=cfg["router"].get("llm_model") or fb.get("model"), effort=fb.get("effort"),
-        timeout_s=cfg["timeouts_s"]["router_fallback"])
+        timeout_s=cfg["timeouts_s"]["router_fallback"],
+        setting_sources=((cfg.get("agents") or {}).get("claude") or {}).get("setting_sources", "project,local"))
     try:
         res = calls.run_call(run, adapter or adapters.get(fb["agent"]), spec, stage="router")
     except Exception as e:  # never block the loop on a router problem
@@ -543,7 +544,22 @@ def summarize(run, text, adapter=None):
     return _log(run, "summarize", _out(text[:500], "default", None, None, "agent failed"))
 
 
-def commit_message(run, ticket, diffstat="", adapter=None):
+def commit_message(run, ticket, diffstat="", adapter=None, summary=None):
+    """Generate a commit message for a closed ticket.
+
+    When cfg router.commit_message is 'default', builds deterministically without calling an agent:
+    subject is '<id>: <title>' (truncated to 72 chars), body is summary or diffstat.
+    Otherwise ('agent' mode), invokes the commit_message agent with fallback to default.
+    """
+    cfg_router = (run.cfg.get("router") or {}) if hasattr(run, "cfg") and isinstance(run.cfg, dict) else {}
+    mode = cfg_router.get("commit_message", "agent")
+    if mode == "default":
+        t = ticket if isinstance(ticket, dict) else {}
+        t_id = t.get("id", "")
+        title = t.get("title", "")
+        subject = ("%s: %s" % (t_id, title))[:72]
+        return _log(run, "commit_message", _out({"subject": subject, "body": summary or diffstat},
+                                                "default", None, None))
     out = _agent(run, "commit_message", "Write a git commit message (subject <= 72 chars) for ticket:\n%s\n\n%s"
                  % (_ticket_text(ticket), diffstat[-STATE_CHARS:]), adapter)
     if out:

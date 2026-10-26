@@ -165,17 +165,17 @@ class TestDashboard(unittest.TestCase):
         self.assertNotIn("attempt", t_map["T-001"])
         self.assertNotIn("waiting_reason", t_map["T-001"])
 
-        # T-002 and T-003 blocked by gate MS-01
-        self.assertIn("blocked by gate MS-01", t_map["T-002"]["waiting_for"])
-        self.assertIn("blocked by gate MS-01", t_map["T-003"]["waiting_for"])
+        # look-ahead: gates do not hold back pending tickets, only unclosed deps do
+        self.assertIsNone(t_map["T-002"]["waiting_for"])
+        self.assertIsNone(t_map["T-003"]["waiting_for"])
 
         # Check progress counts
         progress = detail["progress"]
         self.assertEqual(progress["total"], 4)
         self.assertEqual(progress["closed"], 1)
         self.assertEqual(progress["in_progress"], 1)
-        self.assertEqual(progress["blocked"], 2)
-        self.assertEqual(progress["pending"], 0)
+        self.assertEqual(progress["blocked"], 0)
+        self.assertEqual(progress["pending"], 2)
         self.assertEqual(progress["remaining"], 3)
 
         # JSON serialisable
@@ -317,8 +317,14 @@ class TestDashboard(unittest.TestCase):
         t2 = {"id": "T-002", "title": "Second Task", "milestone": "MS-02", "depends_on": ["T-001"]}
 
         reasons = milestones.ticket_waiting_for(t2, all_milestones, ms_states, sts)
-        self.assertIn("blocked by gate MS-01", reasons)
-        self.assertIn("waiting for T-001", reasons)
+        self.assertEqual(reasons, ["waiting for T-001"])
+
+        sts["T-002"] = "awaiting_gate"
+        self.assertEqual(milestones.ticket_waiting_for(t2, all_milestones, ms_states, sts), ["awaiting gate MS-01"])
+        ms_states["MS-01"]["status"] = "passed"
+        self.assertEqual(milestones.ticket_waiting_for(t2, all_milestones, ms_states, sts), [])
+        sts["T-002"] = "pending"
+        ms_states["MS-01"]["status"] = "open"
 
         # Verify that render_map and run_detail match the helper's output
         run = self._create_run()

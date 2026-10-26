@@ -306,6 +306,20 @@ class TestGateHooksConfig(unittest.TestCase):
             )
             self.assertEqual(cfg["parallel"], 8)
 
+    def test_repo_notify_command_refused_and_logged(self):
+        with tempfile.TemporaryDirectory() as home_dir, tempfile.TemporaryDirectory() as repo_dir:
+            with open(os.path.join(home_dir, "config.json"), "w") as f:
+                json.dump({"notify_command": "echo user"}, f)
+            with open(os.path.join(repo_dir, ".yoke.json"), "w") as f:
+                json.dump({"parallel": 8, "notify_command": "echo repo_malicious"}, f)
+
+            with self.assertLogs(config.logger, level="WARNING") as log_cm:
+                cfg = config.load(repo=repo_dir, home=home_dir)
+
+            self.assertTrue(any("refusing notify_command from repo config" in m for m in log_cm.output))
+            self.assertEqual(cfg["notify_command"], "echo user")
+            self.assertEqual(cfg["parallel"], 8)
+
     def test_repo_without_gate_hooks_does_not_warn(self):
         with tempfile.TemporaryDirectory() as home_dir, tempfile.TemporaryDirectory() as repo_dir:
             repo_config = {"parallel": 4}
@@ -463,7 +477,8 @@ class TestPipelineGateHooks(PipeBase):
         real_run_hook = hooks.run_hook
         timeouts_passed = []
         def spy_run_hook(*args, **kw):
-            timeouts_passed.append((kw.get("stage"), kw.get("timeout_s")))
+            if kw.get("stage") is not None:
+                timeouts_passed.append((kw.get("stage"), kw.get("timeout_s")))
             return real_run_hook(*args, **kw)
 
         with mock.patch("yoke.pipeline.hooks.run_hook", side_effect=spy_run_hook):

@@ -80,7 +80,9 @@ def wait_for(run, timeout, poll=2):
             return "died", "runner died; use /yoke:resume (yoke run --resume --detach)"
         if time.time() >= end:
             s = run.status()
-            return "timeout", "still running: %d/%d closed" % (s["tickets"].get("closed", 0), s["tickets_total"])
+            parked = s["tickets"].get("awaiting_gate", 0)
+            return "timeout", "still running: %d/%d closed%s" % (
+                s["tickets"].get("closed", 0), s["tickets_total"], ", %d awaiting gate" % parked if parked else "")
         time.sleep(poll)
 
 
@@ -314,10 +316,6 @@ def render_map(run):
         t for t in tickets
         if sts.get(t["id"]) in ("pending", "in_progress")
         and all(sts.get(d) == "closed" for d in t.get("depends_on", []))
-        and all(
-            ms_states.get(em["id"], {}).get("status") in ("passed", "waived")
-            for em in all_milestones[:ms_idx.get(t.get("milestone", "MS-00"), 0)]
-        )
     ]
 
     lines.append("\nFrontier:")
@@ -468,9 +466,9 @@ def dispatch(args):
                 run.update(config=dict(run.cfg, parallel=max(1, args.parallel)))
             if args.detach:
                 scheduler.acquire_lock(run)  # fail fast in the parent
-                log = open(run.path("runner.log"), "a")
-                proc = subprocess.Popen([sys.executable, "-m", "yoke.cli", "run", "--run", run.run_id],
-                                        stdout=log, stderr=log, start_new_session=True)
+                with open(run.path("runner.log"), "a") as log:
+                    proc = subprocess.Popen([sys.executable, "-m", "yoke.cli", "run", "--run", run.run_id],
+                                            stdout=log, stderr=log, start_new_session=True)
                 state._write_atomic(run.path("runner.lock"), str(proc.pid))
                 print("runner started, pid %d, log %s" % (proc.pid, run.path("runner.log")))
                 return 0

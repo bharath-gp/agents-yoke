@@ -5,7 +5,7 @@ from unittest import mock
 
 from tests.test_gitops import git
 from tests.test_pipeline import CODE, DOCS, PipeBase, qa, resp, ticket, val
-from yoke import pipeline, tracker
+from yoke import pipeline, prbody, tracker
 
 os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
 
@@ -254,27 +254,28 @@ class TestReviewStage(PipeBase):
         self.assertFalse(os.path.exists(self.run_.path("tickets/T-001/attempt-1/review")))
 
     def test_pr_body_unresolved_findings_surfaced_or_omitted(self):
-        self.run_.write_json("tickets/T-001/state.json", {
-            "status": "closed",
-            "review": {"rounds": 0, "unresolved": []}
-        })
-        body_clean = tracker.pr_body(self.run_)
-        self.assertNotIn("Unresolved review findings", body_clean)
+        with mock.patch("yoke.prbody.fill", side_effect=lambda run, template, facts, adapter=None, env=None: prbody.fill_template(template, facts)):
+            self.run_.write_json("tickets/T-001/state.json", {
+                "status": "closed",
+                "review": {"rounds": 0, "unresolved": []}
+            })
+            body_clean = tracker.pr_body(self.run_)
+            self.assertNotIn("Unresolved review findings", body_clean)
 
-        self.run_.write_json("tickets/T-001/state.json", {
-            "status": "closed",
-            "review": {
-                "rounds": 2,
-                "unresolved": [
-                    finding(severity="blocker", file="yoke/core.py", line=15,
-                            comment="unhandled null pointer", suggestion="check None before access")
-                ]
-            }
-        })
-        body_unresolved = tracker.pr_body(self.run_)
-        self.assertIn("Unresolved review findings", body_unresolved)
-        self.assertIn("unhandled null pointer", body_unresolved)
-        self.assertIn("check None before access", body_unresolved)
+            self.run_.write_json("tickets/T-001/state.json", {
+                "status": "closed",
+                "review": {
+                    "rounds": 2,
+                    "unresolved": [
+                        finding(severity="blocker", file="yoke/core.py", line=15,
+                                comment="unhandled null pointer", suggestion="check None before access")
+                    ]
+                }
+            })
+            body_unresolved = tracker.pr_body(self.run_)
+            self.assertIn("Unresolved review findings", body_unresolved)
+            self.assertIn("unhandled null pointer", body_unresolved)
+            self.assertIn("check None before access", body_unresolved)
 
     def test_review_state_resumed_from_disk_initialises_overruled(self):
         st = {"attempt": 1, "status": "in_progress", "review": {"rounds": 0, "unresolved": []}}
@@ -357,7 +358,8 @@ class TestMultiLensReview(PipeBase):
         with open(self.run_.path("tickets/T-001/attempt-1/validate/prompt.md")) as f:
             val_prompt = f.read()
         self.assertIn("unresolved flaw", val_prompt)
-        pr_text = tracker.pr_body(self.run_)
+        with mock.patch("yoke.prbody.fill", side_effect=lambda run, template, facts, adapter=None, env=None: prbody.fill_template(template, facts)):
+            pr_text = tracker.pr_body(self.run_)
         self.assertIn("unresolved flaw", pr_text)
         self.assertTrue(any("unresolved flaw" in c[1] for c in comments))
 

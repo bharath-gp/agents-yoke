@@ -61,6 +61,12 @@ Status legend per milestone: `[ ]` todo, `[~]` in progress, `[x]` done. Update t
    | [M28](#m28) | Skill pick | [2.4](#s2-4), [2.10](#s2-10) |
    | [M29](#m29) | Browser e2e stage | [2.6](#s2-6), [2.8](#s2-8), [2.10](#s2-10) |
    | [M30](#m30) | Adversarial review | [2.3](#s2-3), [2.6](#s2-6), [2.7](#s2-7), [2.8](#s2-8) |
+   | [M31](#m31) | Validator test evidence, read deny list, setting_sources | [2.4](#s2-4), [2.6](#s2-6), [2.8](#s2-8) |
+   | [M32](#m32) | Test rerun timeout, group kill, failure text | [2.6](#s2-6), [2.8](#s2-8) |
+   | [M33](#m33) | Test-fix loop | [2.6](#s2-6), [2.8](#s2-8) |
+   | [M34](#m34) | Dependency chain warning, chart rules, skill text | [2.5](#s2-5), [2.7](#s2-7) |
+   | [M35](#m35) | Notifications and commit message mode | [2.6](#s2-6), [2.10](#s2-10) |
+   | [M36](#m36) | Look-ahead start, merge after gate | [2.8](#s2-8), [2.9](#s2-9) |
 4. [Verification matrix](#s4)
 5. [Out of scope](#s5)
 - [Appendix A: Topic index](#appA)
@@ -260,7 +266,7 @@ Validation done by a ~60-line stdlib validator in `schema.py` supporting `type, 
 <a id="s2-8"></a>
 ### 2.8 Per-ticket pipeline (state machine)
 ```
-pending → (deps closed) → in_progress
+pending → (deps closed) → in_progress   (milestone gates do not delay the start; see M36)
   for stage in stages(type):
     code:     run secondary (resume session on retry, feedback appended)
               blocked → escalate
@@ -271,12 +277,15 @@ pending → (deps closed) → in_progress
               validator inspects `git diff <base_sha>` itself
               reject → feedback_for_coder → attempt += 1 → back to code
     docs:     run secondary
-  close: all gates true → commit in ticket worktree → merge into feature branch → closed
+  close: all gates true → (earlier milestone gates not passed/waived → awaiting_gate, resume later)
+         → commit in ticket worktree → merge into feature branch → closed
 attempt > max_attempts → blocked + escalation; dependents stay pending (shown as "waiting on blocked T-xxx")
 ```
 Close gate (checked explicitly, logged): code `done` ∧ QA `pass` ∧ runner test rerun exit 0 ∧ validate `approve` with every `exit_criteria.met` true ∧ docs `done|not_needed` (only for stages in this ticket's route) ∧ gate hooks (`after_stage` code/qa, `before_close`) passing. Hook failures return output tail as retry feedback to the coder.
 
 Retry feedback is a file `attempt-<n>/feedback.md` built from QA failures / validator issues / router triage hint or hypotheses fix plan, inlined into the next code prompt, and the coder session is resumed by ID.
+
+Notes (Test-fix loop): Following the `code` stage and any `after_stage.code` gate hooks, the runner re-runs the test command (up to `max_test_fix_rounds`, default 2; 0 disables) and resumes the coder session (`code-t1`, `code-t2`) with failure feedback before advancing to review and QA. The validator runs no tests and evaluates diffs alongside verified test evidence from the runner.
 
 Failure hypotheses fan-out: When `hypotheses > 0` in config, if a ticket failure repeats on the final attempt (`attempt == max_attempts_per_ticket`, `attempt >= 2` with matching failure evidence from the previous attempt), yoke triggers `N` read-only fan-out calls (role `hypotheses`, default `secondary`) round-robin across categories (`spec gap`, `environment`, `test bug`, `code bug`) seeded with failure evidence, followed by 1 primary ranking call (role `hypotheses_rank`, default `primary`). Each call is audited under `tickets/<tid>/attempt-<n>/hypotheses-<k>` and `hypotheses-rank`, and counted against `max_agent_calls_total`. The winning `fix_plan` is appended to retry feedback as `Hypothesis fix plan (advisory only): ...` for the coder. If the ranking call fails, the candidate with highest confidence is selected; if fan-out yields no candidates or fails, yoke falls back to the router triage hint. Confidence never decides pass or fail.
 
@@ -289,7 +298,7 @@ Context handoff: prompts **inline** the ticket JSON, plan excerpt, and prior-sta
 Prompt templates: `yoke/prompts/<stage>.md` using `string.Template` (`$ticket`, `$plan_excerpt`, `$prior_results`, `$feedback`, `$base_sha`, `$worktree`, `$upstream`, `$skills`): `$` avoids clashing with JSON braces. Every worker prompt states: stay inside the worktree, do not commit, do not push, do not touch git config, return only the schema object.
 
 Milestone gates and fix tickets:
-- Sequential milestone barrier: tickets belonging to milestone `MS-k` are ready only when all preceding milestones `MS-i` (`i < k`) have passed or been waived (`passed|waived`).
+- Milestone barrier, "start early, merge after gate" ([M36](#m36)): a ticket of milestone `MS-k` may start once its dependencies are closed, but it may not commit or merge until all preceding milestones `MS-i` (`i < k`) are `passed|waived`. A ticket that finishes early parks as `awaiting_gate` and completes its close when the gates pass.
 - Milestone exit checks: when all tickets in milestone `MS-k` are closed or skipped, the runner evaluates its `exit_check` in integration worktree `worktrees/_integration`. If exit check passes (rc 0), milestone status becomes `passed`, logged as `milestone_passed`, and the milestone closes on GitHub.
 - If exit check fails, the runner auto-generates a fix ticket (`F-xxx`, type bugfix, exit criteria checking that the exit check command exits 0) attached to the milestone, up to `max_fix_tickets_per_milestone` (default 2). Fix tickets are executed and merged like standard tickets.
 - If fix tickets are exhausted without passing, the milestone fails and escalates. The user can unblock with `yoke unblock --milestone MS-xx [--note TEXT]` (resets fix count to retry) or `yoke unblock --milestone MS-xx --waive REASON` (records waiver reason in `map.md` decisions log and marks the milestone `waived`).
@@ -564,10 +573,11 @@ Files: `yoke/milestones.py`, `yoke/chart.py`, `yoke/schemas/chart.json`, `yoke/p
 - Milestone extraction and mapping: `milestones.py` handles destination, out-of-scope boundaries, milestone list, ticket merging with fix tickets, and milestone state persistence (`milestones.json`).
 - Wayfinder charting: `chart.py` and `yoke tickets chart [--feedback TEXT]` invoke the `wayfinder` role to map `plan.md` to destination, milestones, and tickets adhering to `schemas/chart.json`, audited under `chart/round-<n>`.
 - Implementation map and frontier: `yoke map` renders destination, out-of-scope items, per-milestone gate status, exit checks, tickets with status/blockers, execution frontier, and decisions log (`map.md`).
-- Milestone gate scheduling and fix tickets: `scheduler.py` enforces sequential milestone barriers; executes integration `exit_check` when a milestone's tickets complete; auto-generates fix tickets (`F-xxx`) on check failures up to `max_fix_tickets_per_milestone`; escalates on exhaustion.
+- Milestone gate scheduling and fix tickets: `scheduler.py` enforces milestone barriers (as of M36 on merging, not on starting); executes integration `exit_check` when a milestone's tickets complete; auto-generates fix tickets (`F-xxx`) on check failures up to `max_fix_tickets_per_milestone`; escalates on exhaustion.
 - Escalation and unblock: `unblock --milestone MS-xx [--note TEXT]` resets fix counts to re-test; `unblock --milestone MS-xx --waive REASON` logs waivers to `map.md` and marks the gate waived.
 - GitHub tracker integration: creates GitHub milestones upon ticket approval, associates ticket issues with milestones, creates fix ticket issues, and closes GitHub milestones when gates pass.
 - Notes: Built `yoke/milestones.py`, `yoke/chart.py`, added `yoke tickets chart` and `yoke map` commands, updated `scheduler.py` with milestone barriers and exit check runner re-testing, enhanced `tracker.py` with milestone lifecycle integration, updated all relevant skills (`tickets`, `go`, `run`, `finish`), and bumped package version to 0.5.0.
+- Deviation (0.14.0, [M36](#m36)): the barrier now gates merging, not starting. Tickets of milestone k+1 start once their deps are closed and park as `awaiting_gate` until every earlier gate is `passed|waived`.
 - Deviation (0.7.0, ticket numbering): ticket ids no longer start at T-001 each run. On the first `yoke tickets chart` the runner stores `ticket_offset` in `run.json` = highest GitHub issue or PR number (`gh issue list` + `gh pr list`, all states), so tickets are `T-<offset+1>`, `T-<offset+2>`, ... (4 digits, `depends_on` remapped; agent-supplied ids are placeholders). `gh` failing or tracker `local` gives offset 0 (T-0001) plus a warning. Re-charting reuses the stored offset, so `tickets.json` and approval hashes stay stable. `id_counter` in `run.json` is a shared counter: fix tickets take `F-<next>` from it (`Run.alloc_number`, also scans `tickets.json`/`fixes.json`, so legacy runs without an offset and recovery never duplicate). `approve tickets` warns when a created issue number differs from the ticket number; ids are never renamed and the real number stays in `issues.json`.
 
 <a id="m15"></a>
@@ -750,6 +760,61 @@ Files: `yoke/pipeline.py`, `yoke/planreview.py`, `yoke/config.py`, `yoke/default
 - Plan review debate: blocking findings during `yoke review-plan` trigger planner rebuttal (`plan_rebut`) and plan review judge (`plan_judge`). Transcripts saved to `plan-review/round-<n>/debate.json` with a `plan_debate` audit event.
 - Notes: Built adversarial debate workflow for ticket code review and plan review. Deviations: rebut reuses the coder session with a fresh fallback, plan debate always one round, schemas rebut/judge reused for plan.
 
+<a id="m31"></a>
+### M31: Validator test evidence, read deny list, setting_sources `[x]`
+Files: `yoke/prompts/validate.md`, `yoke/pipeline.py`, `yoke/adapters.py`, `yoke/defaults.json`, `tests/test_prompts.py`, `tests/test_core.py`, `tests/test_pipeline.py`.
+- Validator prompt receives runner test evidence (`$test_evidence`) and instructions not to run test suites or long commands, evaluating diffs and runner test evidence instead.
+- Read-only Claude calls block test runners via `--disallowedTools` (`CLAUDE_READ_DENY`: `Bash(python3:*) Bash(python:*) Bash(pytest:*) Bash(sleep:*) Bash(npm:*) Bash(make:*)`).
+- Claude CLI calls isolated from user configuration via `--setting-sources` (defaulting to `agents.claude.setting_sources = "project,local"`; empty string disables).
+- Exit criteria: unit tests pass; validate prompt contains test evidence; read mode denies test tools; setting_sources passed to Claude CLI calls.
+- Notes: Quota probes from docs/perf-plan.md Commit 1.2 step 1 and Commit 1.3 step 2 are pending; run them by hand. Phase 0 (tests/run_parallel.py, quiet tests) shipped repo-only.
+
+<a id="m32"></a>
+### M32: Test rerun timeout, group kill, failure text `[x]`
+Files: `yoke/pipeline.py`, `yoke/hooks.py`, `yoke/defaults.json`, `tests/test_pipeline.py`.
+- Runner test rerun (`_rerun`) executed with process-group isolation and timeout via `hooks.run_hook`, terminating child processes cleanly on timeout.
+- Test timeout configured via `timeouts_s.test` (default 600s).
+- Failure output formatted by `_failure_text` to extract actionable unittest/pytest failure blocks rather than generic tail truncation.
+- Exit criteria: tests pass; hanging commands terminate within timeout with exit code -1; failure blocks extracted from test runner output.
+- Notes: Built on `hooks.run_hook` process-group termination; replaced 2000-character tail truncation with failure-block extraction.
+
+<a id="m33"></a>
+### M33: Test-fix loop `[x]`
+Files: `yoke/pipeline.py`, `yoke/defaults.json`, `yoke/prompts/code.md`, `tests/test_pipeline.py`.
+- Test-fix loop runs immediately after the `code` stage and `after_stage.code` gate hooks, before review and QA.
+- Iteratively reruns the test command up to `max_test_fix_rounds` (default 2; 0 disables) and resumes coder session with failure feedback under audit labels `code-t1`, `code-t2`.
+- Emits `test_fix` audit events (`ticket`, `attempt`, `round`, `rc`).
+- Validator runs no tests and judges results from runner test evidence and diff.
+- Exit criteria: tests pass; coder resumed on test failure; loop terminates on test pass or round exhaustion; events recorded.
+- Notes: Closes the gap between code generation and QA verification, preventing repeated multi-stage failure cycles.
+
+<a id="m34"></a>
+### M34: Dependency chain warning, chart rules, skill text `[x]`
+Files: `yoke/tickets.py`, `yoke/prompts/chart.md`, `skills/tickets/SKILL.md`, `skills/run/SKILL.md`, `tests/test_tickets.py`, `tests/test_chart.py`.
+- Dependency chain warning in `tickets.warnings` flags long serial chains within milestones (chains >= 4 tickets, or full chaining of milestones with >= 3 tickets).
+- Chart prompt rules updated to encourage wide milestones, treat shared files as `files_hint` rather than hard dependencies, and target intermediate milestone exit checks to specific modules.
+- Skills updated: `skills/tickets/SKILL.md` offers re-charting on chain warnings; `skills/run/SKILL.md` recommends `parallel: 3` when independent tickets exist.
+- Exit criteria: chain warnings detect serial dependencies; charting rules enforced; prompt tests pass.
+- Notes: Encourages wide execution graphs to maximize concurrency under `--parallel`.
+
+<a id="m35"></a>
+### M35: Notifications and commit message mode `[x]`
+Files: `yoke/scheduler.py`, `yoke/router.py`, `yoke/defaults.json`, `tests/test_scheduler.py`, `tests/test_router.py`.
+- External notification command support via `notify_command` (default `null`), invoked on `run_done` and `run_needs_user` with environment variables `YOKE_EVENT`, `YOKE_RUN`, `YOKE_MESSAGE`. Failures log `notify_failed` event without raising.
+- Deterministic commit message generation mode via `router.commit_message` (`"agent"` or `"default"`, default `"agent"`). `"default"` mode constructs messages deterministically (`<id>: <title>` subject and validator summary or diffstat body) without invoking an LLM fallback call.
+- Exit criteria: notify command executed with environment variables on completion and escalation; notify failure logs event; deterministic commit message formats correctly without agent calls.
+- Notes: Lowers latency and token spend on run finalization and ticket commits.
+
+<a id="m36"></a>
+### M36: Look-ahead start, merge after gate (0.14.0) `[x]`
+Files: `yoke/scheduler.py`, `yoke/pipeline.py`, `yoke/milestones.py`, `yoke/runcmds.py`, `yoke/dashboard.py`, `yoke/dashboard.html`, `tests/test_gates.py`, `tests/test_map.py`, `tests/test_dashboard.py`, `README.md`, `docs/PLAN.md`, `docs/perf-plan.md`.
+- Start rule: a ticket of milestone k+1 is ready when its `depends_on` are all `closed` and a slot is free, whatever the gate state. Ready tickets sort resumed work first, then by milestone order, so look-ahead never starves the current milestone.
+- Close rule: `pipeline._close` raises `AwaitGate` after the close gate passes when an earlier gate is not `passed`/`waived`. `run_ticket` saves status `awaiting_gate` (worktree and `last_results` kept, nothing committed) and frees the slot. Once the gates pass the scheduler re-submits it; `run_ticket` skips the stages and runs `_close` (commit, rebase onto the post-gate tip, test rerun, ff-merge). A rebase conflict or failing rerun uses the normal retry feedback path.
+- Gate timing: the exit check now runs as soon as the earliest open milestone is fully closed, even while look-ahead tickets still run. Fix tickets (`F-xxx`) belong to milestone k and run normally; parked tickets stay parked until the gate passes.
+- Display: `ticket_waiting_for` reports `awaiting gate MS-xx` for parked tickets and no longer reports "blocked by gate" for tickets that may start. `yoke status` counts, `yoke map`, `yoke wait` timeout text and the dashboard (progress `awaiting_gate`, status chip) show it as its own state. `yoke map` frontier no longer filters by gate.
+- Exit criteria: a k+1 ticket with no deps starts while a k ticket runs, parks, and merges only after the gate passes (merge order asserted); a parked ticket merges after a fix ticket and gate pass; a rebase conflict at deferred close re-enters the coder retry; a restart resumes a parked ticket without losing its worktree or double merging; `done` still needs every ticket `closed`/`skipped`.
+- Notes: Recovery needs no new code: `awaiting_gate` is a persisted status the scheduler picks up each loop. Parked tickets are not `closed`, so their dependents wait. Deviation from M14: merged code is still always on top of a passed gate; only the start is early. Tickets whose `files_hint` overlap still only defer against running tickets, not parked ones, so a conflict surfaces at deferred close.
+
 ---
 
 <a id="s4"></a>
@@ -807,6 +872,13 @@ Files: `yoke/pipeline.py`, `yoke/planreview.py`, `yoke/config.py`, `yoke/default
 | Schemas (ticket, stage results, router) | [2.7](#s2-7) |
 | Type → stages routing table | [2.6](#s2-6) |
 | Worktrees, feature branch, commits | [2.9](#s2-9) |
+| Claude setting sources (`agents.claude.setting_sources`) | [2.4](#s2-4), [M31](#m31) |
+| Test rerun timeout and process-group kill (`timeouts_s.test`) | [2.6](#s2-6), [M32](#m32) |
+| Test-fix loop (`max_test_fix_rounds`) | [2.8](#s2-8), [M33](#m33) |
+| Dependency chain warning and parallel charting | [2.5](#s2-5), [M34](#m34) |
+| Run notifications (`notify_command`) | [2.6](#s2-6), [M35](#m35) |
+| Commit message generation mode (`router.commit_message`) | [2.10](#s2-10), [M35](#m35) |
+| Parallel test runner (`tests/run_parallel.py`) | [4](#s4), [M31](#m31) |
 
 <a id="appB"></a>
 ## Appendix B: File index
@@ -840,3 +912,4 @@ Files: `yoke/pipeline.py`, `yoke/planreview.py`, `yoke/config.py`, `yoke/default
 | `yoke/skills.py` | skill catalog discovery for skill pick | [2.10](#s2-10) | [M28](#m28) |
 | `yoke/e2e.py` | browser e2e stage (optional Playwright) | [2.8](#s2-8) | [M29](#m29) |
 | `tests/fake_cli.py`, `tests/test_*.py`, `tests/e2e.sh` | fake CLI, unit + e2e tests | [4](#s4) | [M1](#m1)–[M9](#m9) |
+| `tests/run_parallel.py` | parallel, quiet test runner | [4](#s4) | [M31](#m31) |

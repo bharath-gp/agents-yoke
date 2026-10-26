@@ -25,6 +25,10 @@ class Escalate(Exception):
     pass
 
 
+class AwaitGate(Exception):
+    """Ticket finished its stages but an earlier milestone gate is not passed/waived yet."""
+
+
 class BudgetExhausted(Exception):
     def __init__(self, reason="budget exhausted: max_agent_calls_total reached"):
         super().__init__(reason)
@@ -532,7 +536,8 @@ def _call(run, adapter_for, env, ticket, stage, attempt, wt, base, mode, results
         plan_excerpt=ticket.get("plan_excerpt", "") if isinstance(ticket, dict) else "",
         destination=dest, out_of_scope=oos,
         prior_results=json.dumps(results, indent=2), feedback=feedback or "(none)",
-        base_sha=base, worktree=wt, upstream=upstream, skills=skills_text, **_vars(cfg, ticket))
+        base_sha=base, worktree=wt, upstream=upstream, skills=skills_text,
+        test_evidence=_test_evidence(None, None), **_vars(cfg, ticket))
     if extra_vars:
         subs.update(extra_vars)
     with open(ppath) as f:
@@ -548,7 +553,8 @@ def _call(run, adapter_for, env, ticket, stage, attempt, wt, base, mode, results
         timeout_s=timeout, env=wenv,
         allowed_tools=tools,
         web_tools=tuple(cfg["search"]["tools"]) if stage in WEB_STAGES else (),
-        settings_path=run.read_json("run.json").get("agent_settings"))
+        settings_path=run.read_json("run.json").get("agent_settings"),
+        setting_sources=((cfg.get("agents") or {}).get("claude") or {}).get("setting_sources", "project,local"))
 
     if stage in STAGE_TIER and not over.get("model") and not over.get("effort"):
         model, effort = config.model_for_tier(cfg, agent_name, STAGE_TIER[stage])
@@ -693,13 +699,95 @@ def _call_retry(run, adapter_for, env, ticket, stage, attempt, *args, **kw):
 
 
 def _rerun(run, cmd, wt):
-    """Runner's independent check: (exit_code, output tail)."""
-    try:
-        r = subprocess.run(cmd, shell=True, cwd=wt, capture_output=True, text=True,
-                           timeout=run.cfg["timeouts_s"]["qa"])  # ponytail: no process-group kill
-        return r.returncode, (r.stdout + r.stderr)[-2000:]
-    except subprocess.TimeoutExpired:
-        return -1, "timed out"
+    """Runner's independent check: (exit_code, output text)."""
+    timeouts = run.cfg.get("timeouts_s") if hasattr(run, "cfg") and isinstance(run.cfg, dict) else {}
+    if not isinstance(timeouts, dict):
+        timeouts = {}
+    timeout = timeouts.get("test") or 600
+    kill_grace = run.cfg.get("kill_grace_s", 1.0) if hasattr(run, "cfg") and isinstance(run.cfg, dict) else 1.0
+    if kill_grace is None:
+        kill_grace = 1.0
+    res = hooks.run_hook(cmd, cwd=wt, timeout_s=timeout, kill_grace_s=kill_grace)
+    if res.timed_out:
+        return -1, "timed out after %ds" % timeout
+    return res.exit_code, _failure_text(res.output)
+
+
+def _failure_text(output, limit=4000):
+    """Extract unittest or pytest failure details from command output."""
+    if not output:
+        return ""
+    lines = output.splitlines()
+
+    # 1. unittest: collect blocks from ^(FAIL|ERROR): up to separator after traceback
+    fail_error_re = re.compile(r"^(FAIL|ERROR): ")
+    sep_re = re.compile(r"^(-{20,}|={20,})$")
+    ran_re = re.compile(r"^Ran \d+ tests?")
+    failed_re = re.compile(r"^FAILED \(")
+
+    unittest_blocks = []
+    i = 0
+    n = len(lines)
+    while i < n:
+        if fail_error_re.match(lines[i]):
+            block = [lines[i]]
+            i += 1
+            saw_first_sep = False
+            while i < n:
+                line = lines[i]
+                if sep_re.match(line):
+                    if not saw_first_sep:
+                        saw_first_sep = True
+                        block.append(line)
+                        i += 1
+                    else:
+                        break
+                elif saw_first_sep and fail_error_re.match(line):
+                    break
+                else:
+                    block.append(line)
+                    i += 1
+            unittest_blocks.extend(block)
+        else:
+            i += 1
+
+    if unittest_blocks:
+        last_ran = None
+        last_failed = None
+        for line in lines:
+            if ran_re.match(line):
+                last_ran = line
+            if failed_re.match(line):
+                last_failed = line
+        if last_ran:
+            unittest_blocks.append(last_ran)
+        if last_failed:
+            unittest_blocks.append(last_failed)
+        return "\n".join(unittest_blocks)[-limit:]
+
+    # 2. pytest: lines matching ^FAILED or ^E plus last summary line
+    pytest_matched = [line for line in lines if re.match(r"^(FAILED |E\s+)", line)]
+    last_summary = None
+    summary_re = re.compile(r"^=+ .*(failed|passed|error).* =+$")
+    for line in lines:
+        if len(line) < 500 and summary_re.match(line):
+            last_summary = line
+
+    if pytest_matched or (last_summary and re.search(r"\b(failed|error)s?\b", last_summary)):
+        res = list(pytest_matched)
+        if last_summary:
+            res.append(last_summary)
+        return "\n".join(res)[-limit:]
+
+    # 3. fallback: output[-limit:]
+    return output[-limit:]
+
+
+def _test_evidence(test_cmd, rerun_rc):
+    """Format runner test re-run evidence string for validate prompt."""
+    if test_cmd and rerun_rc is not None:
+        return "The runner ran `%s` in this worktree and it exited %s." % (test_cmd, rerun_rc)
+    return "No test command ran for this ticket type."
 
 
 def _post_code(run, ticket, st, wt, since, res):
@@ -1082,6 +1170,54 @@ def _run_gate_hook_stage(run, wt, ticket, attempt, stage_name, hook_list, env=No
     return None, (last_res[1] if last_res else None)
 
 
+def _test_fix_loop(run, adapter_for, env, ticket, st, wt, base, results, feedback, since):
+    """Re-run test command and resume coder up to max_test_fix_rounds times.
+
+    Stages changes, re-runs the test command after guard validation, and
+    resumes the coder session with failure feedback for up to max_test_fix_rounds.
+    Emits a test_fix event on each rerun check.
+    Returns error/failure feedback string if tests still fail after all rounds,
+    or None when the test command succeeds (rc == 0).
+    """
+    tid, attempt = ticket["id"], st["attempt"]
+    cmd = run.cfg.get("test_command") or st.get("last_test_cmd")
+    rounds = run.cfg.get("max_test_fix_rounds", 2)
+    if rounds is None:
+        rounds = 2
+    if not cmd or rounds <= 0:
+        return None
+
+    chk = guard.check_command(run.cfg, cmd, wt, run)
+    if chk.get("decision") == "deny":
+        return "Safety guard refused test command `%s`: %s" % (cmd, chk.get("reason"))
+    if chk.get("decision") != "allow":
+        raise Escalate("safety guard: %s" % chk.get("reason"))
+
+    gitops.git(wt, "add", "-A")
+    rc, text = _rerun(run, cmd, wt)
+    run.event("test_fix", ticket=tid, attempt=attempt, round=0, rc=rc)
+    if rc == 0:
+        return None
+
+    for k in range(1, rounds + 1):
+        fb_k = (feedback + "\n\n" if feedback else "") + (
+            "Runner re-ran `%s` after your change and it exited %s:\n%s" % (cmd, rc, text)
+        )
+        res = _call(run, adapter_for, env, ticket, "code", attempt, wt, base, "write",
+                    results, fb_k, resume=st["sessions"].get("code"), label="code-t%d" % k)
+        if not res.ok:
+            return "code call failed: %s" % res.error
+        results["code"] = res.structured_output
+        _post_code(run, ticket, st, wt, since, res)
+        gitops.git(wt, "add", "-A")
+        rc, text = _rerun(run, cmd, wt)
+        run.event("test_fix", ticket=tid, attempt=attempt, round=k, rc=rc)
+        if rc == 0:
+            return None
+
+    return "Runner re-ran `%s` after the coder's fixes and it exited %s:\n%s" % (cmd, rc, text)
+
+
 def _attempt_body(run, adapter_for, env, ticket, st, wt, stages, start_idx, results, test_cmd, rerun_rc):
     """Execute stages starting at start_idx with seeded results and test state."""
     tid, attempt, base = ticket["id"], st["attempt"], st["base_sha"]
@@ -1118,8 +1254,10 @@ def _attempt_body(run, adapter_for, env, ticket, st, wt, stages, start_idx, resu
             continue
         mode = "read" if stage in READ_STAGES else "write"
         call = _call if stage == "code" else _call_retry  # a failed code call restarts the attempt anyway
+        extra_vars = {"test_evidence": _test_evidence(test_cmd, rerun_rc)} if stage == "validate" else None
         res = call(run, adapter_for, env, ticket, stage, attempt, wt, base, mode, results, feedback,
-                   resume=st["sessions"].get("code") if stage == "code" and attempt > 1 else None)
+                   resume=st["sessions"].get("code") if stage == "code" and attempt > 1 else None,
+                   extra_vars=extra_vars)
         if not res.ok:
             return "%s call failed: %s" % (stage, res.error), results, test_cmd, rerun_rc
         out = results[stage] = res.structured_output
@@ -1130,6 +1268,9 @@ def _attempt_body(run, adapter_for, env, ticket, st, wt, stages, start_idx, resu
             fb, info = _run_gate_hook_stage(run, wt, ticket, attempt, "code", code_hooks, env=env)
             if info:
                 st.setdefault("gate_hooks", {})["code"] = info
+            if fb:
+                return fb, results, test_cmd, rerun_rc
+            fb = _test_fix_loop(run, adapter_for, env, ticket, st, wt, base, results, feedback, since)
             if fb:
                 return fb, results, test_cmd, rerun_rc
         elif stage == "qa":
@@ -1254,14 +1395,28 @@ def _gate(stages, results, rerun_rc):
     return g
 
 
+def open_gates(run, ticket):
+    """Earlier milestone gates that are not yet passed or waived (merge must wait for them)."""
+    all_ms = milestones.milestones_of(run)
+    idx = {m["id"]: i for i, m in enumerate(all_ms)}
+    states = milestones.load_states(run)
+    return [m["id"] for m in all_ms[:idx.get(ticket.get("milestone", "MS-00"), 0)]
+            if states.get(m["id"], {}).get("status") not in ("passed", "waived")]
+
+
 def _close(run, adapter_for, ticket, st, wt, stages, results, test_cmd, rerun_rc, merge_lock, env=None):
-    """Gate, commit, rebase, retest if moved, ff-merge. Returns feedback on a retryable failure."""
+    """Gate, commit, rebase, retest if moved, ff-merge. Returns feedback on a retryable failure.
+    Raises AwaitGate when the ticket passed its close gate but an earlier milestone gate is still open."""
     tid, info = ticket["id"], run.read_json("run.json")
     cfg = run.cfg
     gate = _gate(stages, results, rerun_rc)
     if not all(gate.values()):
         run.event("close_gate", ticket=tid, attempt=st["attempt"], gate=gate, ok=False)
         return "Close gate failed: " + ", ".join(k for k, v in gate.items() if not v)
+
+    pending_gates = open_gates(run, ticket)
+    if pending_gates:
+        raise AwaitGate(",".join(pending_gates))
 
     close_hooks = (cfg.get("gate_hooks") or {}).get("before_close") or []
     fb, close_info = _run_gate_hook_stage(run, wt, ticket, st["attempt"], "before_close", close_hooks, env=env)
@@ -1288,7 +1443,8 @@ def _close(run, adapter_for, ticket, st, wt, stages, results, test_cmd, rerun_rc
     if scan.get("decision") != "allow":
         raise Escalate("safety guard: %s" % scan.get("reason"))
     stat = gitops.git(wt, "diff", "--cached", "--stat").stdout
-    msg = router.commit_message(run, ticket, stat, adapter_for("router"))["result"]
+    summary = ((results or {}).get("validate") or {}).get("summary")
+    msg = router.commit_message(run, ticket, stat, adapter_for("router"), summary=summary)["result"]
     subject = msg["subject"] + ("\n\n" + msg["body"] if msg.get("body") else "")
     gitops.commit_all(wt, subject, tid, amend=bool(st.get("commit")))
     with merge_lock:
@@ -1347,12 +1503,18 @@ def run_ticket(run, ticket, adapter_for=None, env=None, merge_lock=None):
     gitops.add_worktree(info["repo"], wt, info["branch"] + "-" + tid, info["branch"])
     st = ticket_state(run, tid)
     st["base_sha"] = st.get("base_sha") or gitops.head_sha(wt)
+    resume_close = st.get("status") == "awaiting_gate"
     st["status"] = "in_progress"
     save_state(run, tid, st)
     stages = cfg["routing"][ticket["type"]]["stages"]
     try:
         while True:
-            fb, results, test_cmd, rc = _attempt(run, adapter_for, env, ticket, st, wt, stages)
+            if resume_close:  # parked ticket: stages already passed, only the close remains
+                resume_close = False
+                results, test_cmd, rc = st.get("last_results") or {}, st.get("last_test_cmd"), st.get("last_rerun_rc")
+                fb = None
+            else:
+                fb, results, test_cmd, rc = _attempt(run, adapter_for, env, ticket, st, wt, stages)
             if fb is None:
                 fb = _close(run, adapter_for, ticket, st, wt, stages, results, test_cmd, rc, merge_lock, env=env)
             if fb is None:
@@ -1376,6 +1538,11 @@ def run_ticket(run, ticket, adapter_for=None, env=None, merge_lock=None):
             fb = _maybe_triage_hint(run, adapter_for, tid, st["attempt"], fb, ticket=ticket, wt=wt, env=env, base=st.get("base_sha"))
             write_feedback(run, tid, st["attempt"], fb)
             save_state(run, tid, st)
+    except AwaitGate as e:
+        st["status"] = "awaiting_gate"
+        save_state(run, tid, st)
+        run.event("ticket_awaiting_gate", ticket=tid, gates=str(e))
+        return "awaiting_gate"
     except Escalate as e:
         st["status"] = "blocked"
         save_state(run, tid, st)

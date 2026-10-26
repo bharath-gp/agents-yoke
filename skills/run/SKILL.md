@@ -9,7 +9,7 @@ Gate: run `yoke setup --check` first. If it fails or `yoke` is not found, stop a
 
 You are a thin orchestrator. Do not read diffs or logs unless the user asks. If the user gives a run id, pass `--run <id>` to every `yoke` command.
 
-1. Ask the user how many tickets to run in parallel (default 1).
+1. Ask the user how many tickets to run in parallel (recommend 3 when milestones have independent tickets; 1 stays the safe default for chains).
 2. Start the runner: `yoke run --detach --parallel N`. It refuses without approved plan and tickets.
 3. Loop `yoke wait`. It blocks until an escalation opens, the run finishes, the runner dies, or it times out (it then prints "still running: k/n closed"; call it again).
 4. On an escalation: show it (`yoke escalations`), ask the user what to do, then act with one of `yoke unblock T-xxx --note TEXT`, `--skip`, `--reset-attempts`, or for milestone gate failures `yoke unblock --milestone MS-xx [--note TEXT]` / `--waive REASON`, and go back to step 3.

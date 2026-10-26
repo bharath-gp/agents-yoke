@@ -304,10 +304,12 @@ class TestTicketNumbering(BaseChartTest):
 
     def test_rechart_reuses_stored_offset_byte_stable(self):
         self.go(highest=56)
-        first = open(self.run_.path("tickets.json")).read()
+        with open(self.run_.path("tickets.json")) as f:
+            first = f.read()
         ids, _ = self.go(highest=99)
         self.assertEqual(ids, ["T-0057", "T-0058"])
-        self.assertEqual(first, open(self.run_.path("tickets.json")).read())
+        with open(self.run_.path("tickets.json")) as f:
+            self.assertEqual(first, f.read())
 
     def test_shared_counter_never_duplicates_and_handles_legacy(self):
         self.go(highest=68)  # T-0069, T-0070

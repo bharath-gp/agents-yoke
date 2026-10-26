@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import os
 import tempfile
@@ -14,7 +16,10 @@ class TestDoctor(unittest.TestCase):
         problems = cli.doctor(out=lines.append)
         self.assertTrue(lines[0].startswith("python "))
         self.assertIsInstance(problems, list)
-        self.assertEqual(cli.main(["doctor"]), 1 if problems else 0)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(cli.main(["doctor"]), 1 if problems else 0)
+        self.assertTrue(out.getvalue().startswith("python "))
 
 
 class TestGrantAgyRead(unittest.TestCase):

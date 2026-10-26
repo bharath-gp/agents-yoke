@@ -8,6 +8,7 @@ from . import limits
 FORBIDDEN_FLAG = "--dangerously-skip-permissions"
 CLAUDE_READ_TOOLS = "Read Grep Glob Bash(git diff:*) Bash(git log:*) Bash(git show:*)"
 CLAUDE_NO_GIT_WRITE = ["Bash(git push:*)", "Bash(git commit:*)"]
+CLAUDE_READ_DENY = ["Bash(python3:*)", "Bash(python:*)", "Bash(pytest:*)", "Bash(sleep:*)", "Bash(npm:*)", "Bash(make:*)"]
 
 
 @dataclass
@@ -25,6 +26,7 @@ class CallSpec:
     allowed_tools: tuple = ()  # claude write mode allowlist (config agents.claude.write_allowed_tools)
     web_tools: tuple = ()  # claude read mode extras for web stages (config search.tools)
     settings_path: str = None
+    setting_sources: str = "project,local"
 
 
 @dataclass
@@ -95,7 +97,11 @@ class ClaudeAdapter(Adapter):
                     "--allowedTools", " ".join(call.allowed_tools),
                     "--disallowedTools"] + CLAUDE_NO_GIT_WRITE
         else:
-            cmd += ["--permission-mode", "plan", "--allowedTools", " ".join((CLAUDE_READ_TOOLS,) + tuple(call.web_tools))]
+            cmd += ["--permission-mode", "plan",
+                    "--allowedTools", " ".join((CLAUDE_READ_TOOLS,) + tuple(call.web_tools)),
+                    "--disallowedTools"] + CLAUDE_READ_DENY
+        if call.setting_sources:
+            cmd += ["--setting-sources", call.setting_sources]
         if call.resume_session:
             cmd += ["--resume", call.resume_session]
         if call.model:

@@ -294,7 +294,8 @@ def review_round(run, adapter=None, env=None):
     spec = adapters.CallSpec(
         prompt=prompt, schema_path=os.path.join(schema.SCHEMA_DIR, "plan-review.json"),
         cwd=run.read_json("run.json")["repo"], mode="read",
-        timeout_s=cfg["timeouts_s"][role], env=env or {})
+        timeout_s=cfg["timeouts_s"][role], env=env or {},
+        setting_sources=((cfg.get("agents") or {}).get("claude") or {}).get("setting_sources", "project,local"))
     adapter = adapter or adapters.get(config.agent_for(cfg, role))
     res = calls.run_call(run, adapter, spec, stage=role, attempt=n)
     run.event("plan_review", round=n, ok=res.ok and res.schema_valid is not False,

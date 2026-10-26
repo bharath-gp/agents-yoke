@@ -21,7 +21,7 @@ Multi-agent loop for large work items. Claude (primary) gathers requirements, pl
 ## How it works
 
 1. Interactive: requirements, `plan.md`, one read-only secondary plan review, ticket split. You approve the plan and tickets (hash-bound).
-2. Unattended: a detached runner takes each ticket through code, review, QA, validate, docs. Failures retry with feedback up to a limit, then escalate to you. Independent tickets run in parallel, one git worktree each (`--parallel N`). When `parallel > 1`, ready tickets whose `files_hint` overlaps (exact file path or directory prefix) any currently running ticket are deferred until that ticket finishes, emitting a `ticket_deferred` audit event (tickets with empty hints never block). Upstream handoff notes (interface changes, new files, gotchas) from closed ancestor tickets are automatically stored at `tickets/<T>/handoff.json` and inlined into dependent `code`, `QA`, and `validate` prompts (`$upstream`). Pending or in-progress tickets can be steered with `yoke nudge T-xxx --note TEXT`, which appends user guidance to the next attempt or review round feedback without touching `tickets.json` or interrupting in-flight calls.
+2. Unattended: a detached runner takes each ticket through code, review, QA, validate, docs. Following the `code` stage, a test-fix loop can re-run the test command and resume the coder to fix failures before advancing to review and QA. The validator runs no tests and evaluates diffs alongside verified test evidence from the runner. Failures retry with feedback up to a limit, then escalate to you. Independent tickets run in parallel, one git worktree each (`--parallel N`). When `parallel > 1`, ready tickets whose `files_hint` overlaps (exact file path or directory prefix) any currently running ticket are deferred until that ticket finishes, emitting a `ticket_deferred` audit event (tickets with empty hints never block). Upstream handoff notes (interface changes, new files, gotchas) from closed ancestor tickets are automatically stored at `tickets/<T>/handoff.json` and inlined into dependent `code`, `QA`, and `validate` prompts (`$upstream`). Pending or in-progress tickets can be steered with `yoke nudge T-xxx --note TEXT`, which appends user guidance to the next attempt or review round feedback without touching `tickets.json` or interrupting in-flight calls.
 3. A ticket is committed to feature branch `yoke/<run_id>` only when QA passes and the validator approves. The runner never pushes; `yoke pr` does, after `approve final`.
 4. State and audit trail (prompts, commands, outputs) live in `~/.yoke/runs/<run_id>/` (`$YOKE_HOME` overrides), outside the target repo. Any session can resume from disk. An atomic usage ledger (`usage.json`) tracks token usage and costs by stage, ticket, agent and model at each ticket close and at run end; status, wait summaries, and the dashboard surface usage totals and top spenders.
 
@@ -257,6 +257,21 @@ Gate verification commands can be configured under `gate_hooks`:
 - **Pipeline integration**: `after_stage` hooks run following `code` and `qa` stages; `before_close` hooks run prior to commit. Failures feed output tails back to the coder as feedback, and results are recorded in attempt audit logs (`attempt-N/hooks/<stage>.log`) and `close_gate` events.
 - **Process control**: On timeout, the entire process group is terminated using SIGTERM followed by SIGKILL.
 
+### Test-fix loop
+
+Following the `code` stage and any `after_stage.code` gate hooks, the runner can re-run the test command and resume the coder to fix failures before advancing to review and QA:
+
+```json
+{
+  "max_test_fix_rounds": 2
+}
+```
+
+- `max_test_fix_rounds`: Maximum number of resume rounds for test fixes (default: `2`). Set to `0` to disable the loop.
+- **Command source**: Uses `test_command` from run configuration (`run.cfg["test_command"]`), or falls back to `last_test_cmd` from a preceding QA attempt.
+- **Safety check**: Verifies the command with `guard.check_command` prior to execution. Denied commands return retryable feedback; other non-allow decisions escalate.
+- **Execution flow**: The runner stages changes (`git add -A`), re-runs the test command, and emits a `test_fix` audit event (`round=0`). If the test passes (`rc == 0`), execution proceeds directly. If it fails, the runner resumes the coder (audit labels `code-t1`, `code-t2`, ...) with test failure output for up to `max_test_fix_rounds` rounds until the test passes or rounds are exhausted.
+
 ### Failure hypotheses fan-out
 
 When repeated failures occur across attempts on a ticket, yoke can optionally generate competing hypotheses and rank them to provide advisory guidance:
@@ -286,6 +301,24 @@ yoke nudge <ticket_id> --note "<guidance text>"
 - **Runtime injection**: Appends guidance directly to ticket runtime state without modifying `tickets.json` or aborting active agent operations.
 - **Feedback loop**: The note is injected into prompt feedback on the ticket's next attempt or review revision round.
 - **Use cases**: Guiding an agent back on track when monitoring progress, clarifying ambiguities, or suggesting alternative approaches without restarting the run.
+
+### Run completion notification (`notify_command`)
+
+Yoke can run an external shell command whenever a run finishes successfully (`run_done`) or needs user attention (`run_needs_user`):
+
+```json
+{
+  "notify_command": "osascript -e \"display notification \\\"$YOKE_MESSAGE\\\" with title \\\"yoke\\\"\""
+}
+```
+
+- **Configuration**: Set `notify_command` in `~/.yoke/config.json` only. Defaults to `null` (disabled). Like `gate_hooks`, it runs a shell command, so a `notify_command` in repo config (`<repo>/.yoke.json`) is refused with a warning log.
+- **Trigger events**: Invoked from `scheduler.run`'s finalization block after emitting `run_done` or `run_needs_user`.
+- **Environment variables**: Values are passed strictly through environment variables to prevent command injection:
+  - `YOKE_EVENT`: Event name (`run_done` or `run_needs_user`).
+  - `YOKE_RUN`: Run ID (e.g. `agents-yoke-20261026-125803`).
+  - `YOKE_MESSAGE`: Human-readable summary: `run <run_id> done` or `run <run_id> needs you: <reason>` (with escalation reason truncated to 200 characters, defaulting to `needs user` if absent).
+- **Execution and error handling**: Executed via `run_hook` with a 10-second timeout in the run directory. Existing `os.environ` is preserved so standard system utilities and `PATH` remain available. If the command exits non-zero, times out, or fails, a `notify_failed` event is logged to `events.jsonl` (with error output truncated to 500 characters). Notification failures never raise exceptions or disrupt the run.
 
 ## Decision models
 
@@ -328,7 +361,8 @@ Decision thresholds, safety guard, skill discovery, and browser e2e settings can
       "e2e_pick": 0.6,
       "e2e_verdict": 0.8
     },
-    "retry_bump": true
+    "retry_bump": true,
+    "commit_message": "agent"
   },
   "guard": {
     "enabled": true,
@@ -379,11 +413,26 @@ Decision thresholds, safety guard, skill discovery, and browser e2e settings can
     "ready_timeout_s": 60,
     "max_steps": 12,
     "candidates": 20
-  }
+  },
+  "agents": {
+    "claude": {
+      "setting_sources": "project,local"
+    }
+  },
+  "timeouts_s": {
+    "test": 600
+  },
+  "max_test_fix_rounds": 2,
+  "notify_command": null
 }
 ```
 
 - **Thresholds & retry bump**: `router.thresholds` sets per-point confidence cutoffs. Points omitted from `thresholds` fall back to `router.min_confidence` (default: 0.7). When `router.retry_bump` is enabled (default: `true`), repeated failed attempts dynamically step up reasoning effort (`low` -> `medium` -> `high`) and model tier (`cheap` -> `plan`).
+- **Commit message generation (`router.commit_message`)**: Controls how git commit messages are generated upon ticket close (`"agent"` or `"default"`, default `"agent"`). In `"agent"` mode, an LLM generates the commit subject and body with deterministic fallback on failure. In `"default"` mode, commit messages are built deterministically without an agent call: the subject is `<id>: <title>` (truncated to 72 characters) and the body is the validator summary (falling back to the diffstat).
+- **Claude setting sources (`agents.claude.setting_sources`)**: Controls which setting sources Claude CLI calls inherit (default: `"project,local"`). Setting to `""` disables the `--setting-sources` flag. Note: global user settings in `~/.claude/settings.json` no longer apply inside yoke calls.
+- **Test timeout (`timeouts_s.test`)**: Execution timeout in seconds for runner test command re-runs (default: `600`). If a test command hangs or exceeds this limit, its entire process group is terminated cleanly.
+- **Test-fix loop (`max_test_fix_rounds`)**: Maximum number of resume rounds for test fixes immediately after the `code` stage (default: `2`). Setting to `0` disables the test-fix loop.
+- **Run notifications (`notify_command`)**: External command executed upon run completion (`run_done`) or escalation (`run_needs_user`), default: `null`. Payload values are passed strictly through environment variables `YOKE_EVENT`, `YOKE_RUN`, and `YOKE_MESSAGE`. Example: `osascript -e "display notification \"$YOKE_MESSAGE\" with title \"yoke\""`.
 - **User config only**: For security reasons, `guard` and `router.thresholds.safety` are strictly enforced from user configuration (`~/.yoke/config.json`). Any definitions in repository configuration (`<repo>/.yoke.json`) are refused with a warning log to prevent untrusted repositories from tampering with safety policies.
 - **Environment override**: The `YOKE_OLLAMA_URL` environment variable overrides `router.ollama_url` across all runs, applied over user config and prior to repo config (used in tests to point to a dead port for offline verification).
 - **Dashboard decisions card**: The web dashboard aggregates decision points by source count (`ollama`, `none`, `default`, `fallback`) and tracks recent flagged guard events (`deny`, `ask`, `escalate`) with reasons and target paths in the Decision models card.
@@ -507,10 +556,10 @@ Subcommands take `--run <id>`; default is the latest run for the current repo. `
 ## Implementation map & milestone gates
 
 - **Wayfinder charting (`yoke tickets chart`)**: Maps the approved `plan.md` into destination, out-of-scope boundaries, milestones with optional integration `exit_check` commands, and tickets. Pass `--feedback "<notes>"` to refine the breakdown.
-- **Design-carrying tickets**: the `plan` skill writes a sectioned plan (context, architecture, decisions, interfaces, per-ticket work items with steps, named tests and impacted existing tests). Wayfinder copies that into optional ticket fields `design`, `interfaces`, `steps`, `test_plan`, `impacted_tests`, `risks`, which coder, QA and validator see in the ticket JSON. Import warns when a feature, bugfix or refactor ticket has no `steps` or `test_plan`.
+- **Design-carrying tickets**: the `plan` skill writes a sectioned plan (context, architecture, decisions, interfaces, per-ticket work items with steps, named tests and impacted existing tests). Wayfinder copies that into optional ticket fields `design`, `interfaces`, `steps`, `test_plan`, `impacted_tests`, `risks`, which coder, QA and validator see in the ticket JSON. Import warns when a feature, bugfix or refactor ticket has no `steps` or `test_plan`, or when an in-milestone `depends_on` chain has 4 or more tickets (or fully chains a milestone of 3 or more tickets).
 - **Contents index**: `plan.md` must start with a `## Contents` list of `[title](#anchor)` links to every `##` section, so agents read the index and jump to the sections they need. `yoke approve plan` refuses a plan whose index is missing, has a dead link, or leaves out a section; `yoke review-plan` warns. Tickets name the sections they rely on in `plan_sections`. Docs and research agents write the same index into long Markdown they produce.
 - **Implementation map (`yoke map`)**: Renders destination, out-of-scope items, per-milestone gate status, tickets with waiting/blocking reasons, execution frontier, and decisions log (`map.md`).
-- **Sequential milestone barrier**: The runner executes tickets milestone-by-milestone. Tickets belonging to later milestones do not become ready until all preceding milestones pass or are waived.
+- **Start early, merge after gate**: A ticket of a later milestone starts as soon as its dependencies are closed and a parallel slot is free (the earliest milestone gets slots first). It cannot commit or merge until all preceding milestones pass or are waived; until then it waits as `awaiting_gate` with its worktree kept, then rebases onto the post-gate tip and merges.
 - **Exit checks & fix tickets**: When all tickets in a milestone complete, the runner runs its `exit_check` in the integration worktree. If the check fails, Ollama evaluates the failure under decision point `gate_failure`. A confident `escalate` decision marks the milestone as failed and escalates immediately to the user; otherwise (`fix_ticket` or fallback), the runner auto-generates fix tickets (`F-001`, `F-002` up to `max_fix_tickets_per_milestone`, default 2). If fixes are exhausted, the gate escalates.
 - **Unblocking milestones**: Answer gate escalations with `yoke unblock --milestone MS-xx [--note TEXT]` to retry the gate check or `yoke unblock --milestone MS-xx --waive REASON` to log the waiver to `map.md` and proceed.
 

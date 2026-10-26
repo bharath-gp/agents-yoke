@@ -657,6 +657,7 @@ def fill(run, template, facts, adapter=None, env=None):
             mode="read",
             timeout_s=timeout_s,
             env=env or {},
+            setting_sources=((cfg.get("agents") or {}).get("claude") or {}).get("setting_sources", "project,local") if isinstance(cfg, dict) else "project,local",
         )
 
         if adapter is None:

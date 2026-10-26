@@ -8,6 +8,7 @@
 
 ```bash
 python3 -m unittest discover -s tests                 # all tests
+python3 tests/run_parallel.py                        # all tests, parallel (used by .yoke.json)
 python3 -m unittest tests.test_core.TestName.test_x   # single test
 uv tool install --editable .                          # put `yoke` on PATH
 tests/e2e.sh [normal|fallback]                        # manual, real agents, spends quota

@@ -1,10 +1,12 @@
 import json
 import os
+import shutil
 import socket
 import tempfile
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from unittest import mock
 
 from yoke import adapters, config, router, state
 
@@ -42,6 +44,7 @@ def choice(c, conf):
 class RouterCase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         repo = os.path.join(self.tmp, "repo")
         os.makedirs(repo)
         self.server = HTTPServer(("127.0.0.1", 0), Stub)
@@ -262,6 +265,89 @@ class DecideTest(RouterCase):
             mock_ollama.return_value = {"q": choice("a", 0.9)}
             router.decide(self.run_.cfg, "x", "state", {}, lambda a: ("a", 0.9), timeout=15)
             self.assertEqual(mock_ollama.call_args[1].get("timeout"), 15)
+
+
+def _exploding_adapter():
+    adapter = mock.MagicMock()
+    adapter.side_effect = AssertionError("adapter called in default mode")
+    adapter.build_cmd.side_effect = AssertionError("adapter called in default mode")
+    return adapter
+
+
+class TestCommitMessage(RouterCase):
+    def test_default_mode_no_agent(self):
+        self.run_.update(config=config.deep_merge(
+            self.cfg, {"router": {"commit_message": "default"}}))
+        adapter = _exploding_adapter()
+
+        ticket = {"id": "T-001", "title": "title"}
+        out = router.commit_message(self.run_, ticket, adapter=adapter, summary="summary")
+        self.assertEqual(out["source"], "default")
+        self.assertEqual(out["result"]["subject"], "T-001: title")
+        self.assertEqual(out["result"]["body"], "summary")
+        self.assertIsNone(out["fallback_reason"])
+        self.assertEqual(len(adapter.mock_calls), 0)
+
+        long_ticket = {"id": "T-001", "title": "a" * 100}
+        out_long = router.commit_message(self.run_, long_ticket, adapter=adapter, summary="summary")
+        self.assertEqual(len(out_long["result"]["subject"]), 72)
+        self.assertEqual(out_long["result"]["subject"], ("T-001: " + "a" * 100)[:72])
+
+        # 72-char boundary tests
+        ticket_72 = {"id": "T-001", "title": "b" * 65}
+        out_72 = router.commit_message(self.run_, ticket_72, adapter=adapter, summary="s")
+        self.assertEqual(len(out_72["result"]["subject"]), 72)
+        self.assertEqual(out_72["result"]["subject"], "T-001: " + "b" * 65)
+
+        ticket_73 = {"id": "T-001", "title": "b" * 66}
+        out_73 = router.commit_message(self.run_, ticket_73, adapter=adapter, summary="s")
+        self.assertEqual(len(out_73["result"]["subject"]), 72)
+        self.assertEqual(out_73["result"]["subject"], ("T-001: " + "b" * 66)[:72])
+
+        # Missing id or title
+        out_empty = router.commit_message(self.run_, {}, adapter=adapter, summary="s")
+        self.assertEqual(out_empty["result"]["subject"], ": ")
+
+    def test_default_mode_diffstat_body(self):
+        self.run_.update(config=config.deep_merge(
+            self.cfg, {"router": {"commit_message": "default"}}))
+        adapter = _exploding_adapter()
+
+        ticket = {"id": "T-001", "title": "title"}
+        out = router.commit_message(self.run_, ticket, diffstat="1 file changed", adapter=adapter, summary=None)
+        self.assertEqual(out["source"], "default")
+        self.assertEqual(out["result"]["subject"], "T-001: title")
+        self.assertEqual(out["result"]["body"], "1 file changed")
+        self.assertIsNone(out["fallback_reason"])
+
+        # Empty string summary falls back to diffstat
+        out_empty_summary = router.commit_message(self.run_, ticket, diffstat="2 files changed", adapter=adapter, summary="")
+        self.assertEqual(out_empty_summary["source"], "default")
+        self.assertEqual(out_empty_summary["result"]["subject"], "T-001: title")
+        self.assertEqual(out_empty_summary["result"]["body"], "2 files changed")
+
+    def test_agent_mode_unchanged(self):
+        self.run_.update(config=config.deep_merge(
+            self.cfg, {"router": {"commit_message": "agent"}}))
+        self.script_router({"structured_output": {"subject": "agent subject", "body": "agent body"}})
+        out = router.commit_message(self.run_, self.T, "", self.adapter)
+        self.assertEqual(out["source"], "fallback")
+        self.assertEqual(out["result"]["subject"], "agent subject")
+        self.assertEqual(out["result"]["body"], "agent body")
+
+    def test_repo_config_commit_message_and_deep_merge(self):
+        repo_root = os.path.join(self.tmp, "repo_cfg")
+        os.makedirs(repo_root)
+        with open(os.path.join(repo_root, ".yoke.json"), "w") as f:
+            json.dump({"roles": {"primary": "claude"}, "models": {},
+                       "test_command": "python3 tests/run_parallel.py",
+                       "router": {"commit_message": "default"}}, f)
+        cfg = config.load(repo=repo_root, home=self.tmp)
+        self.assertEqual(cfg["router"]["commit_message"], "default")
+        self.assertEqual(cfg["router"]["llm_model"], "claude-haiku-5-5")
+        self.assertEqual(cfg["test_command"], "python3 tests/run_parallel.py")
+        self.assertIn("roles", cfg)
+        self.assertIn("models", cfg)
 
 
 if __name__ == "__main__":

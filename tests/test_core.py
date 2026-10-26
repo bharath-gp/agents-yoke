@@ -1,6 +1,8 @@
 import io
 import json
 import os
+import signal
+import subprocess
 import tempfile
 import time
 import unittest
@@ -57,6 +59,7 @@ class TestConfig(Tmp):
         self.assertEqual(cfg["parallel"], 2)  # overrides beat repo
         self.assertEqual(cfg["timeouts_s"]["code"], 1)  # deep merge
         self.assertEqual(cfg["timeouts_s"]["qa"], 1800)  # untouched default
+        self.assertEqual(cfg["timeouts_s"]["test"], 600)  # default test timeout
         self.assertEqual(cfg["max_attempts_per_ticket"], 3)
 
     def test_invalid_json_names_file(self):
@@ -267,8 +270,23 @@ class TestAdapterCmds(Tmp):
         self.assertEqual(json.loads(cmd[cmd.index("--json-schema") + 1]), SCHEMA)
         self.assertEqual(cmd[cmd.index("--permission-mode") + 1], "plan")
         self.assertNotIn("acceptEdits", cmd)
-        self.assertNotIn("--disallowedTools", cmd)
+        self.assertEqual(cmd[cmd.index("--allowedTools") + 1], adapters.CLAUDE_READ_TOOLS)
+        self.assertIn("--disallowedTools", cmd)
+        i = cmd.index("--disallowedTools")
+        self.assertEqual(cmd[i + 1:i + 1 + len(adapters.CLAUDE_READ_DENY)], adapters.CLAUDE_READ_DENY)
+        self.assertEqual(cmd[i + 1 + len(adapters.CLAUDE_READ_DENY)], "--setting-sources")
+        self.assertNotIn("Bash", adapters.CLAUDE_READ_DENY)
         self.assertNotIn("--settings", cmd)
+
+    def test_claude_setting_sources(self):
+        for mode in ("read", "write"):
+            cmd = adapters.ClaudeAdapter().build_cmd(self.spec(mode=mode))
+            self.assertIn("--setting-sources", cmd)
+            self.assertEqual(cmd[cmd.index("--setting-sources") + 1], "project,local")
+            cmd_empty = adapters.ClaudeAdapter().build_cmd(self.spec(mode=mode, setting_sources=""))
+            self.assertNotIn("--setting-sources", cmd_empty)
+        cfg = config.load(home=self.tmp)
+        self.assertEqual(cfg["agents"]["claude"]["setting_sources"], "project,local")
 
     def test_claude_write_resume_model(self):
         cmd = adapters.ClaudeAdapter().build_cmd(self.spec(
@@ -464,6 +482,51 @@ class TestRunCall(Tmp):
             time.sleep(0.1)
         else:
             self.fail("grandchild survived timeout kill")
+
+    def test_kill_group_permission_error_fallback(self):
+        proc = mock.MagicMock(pid=12345)
+        proc.poll.side_effect = [None, 0]
+        with mock.patch("os.getpgid", return_value=99999), mock.patch("os.killpg", side_effect=PermissionError) as mock_killpg:
+            calls._kill_group(proc, grace=0.01)
+        self.assertEqual(proc.send_signal.call_args_list, [mock.call(signal.SIGTERM)])
+        self.assertEqual(mock_killpg.call_args_list, [mock.call(99999, signal.SIGTERM), mock.call(99999, signal.SIGKILL)])
+
+    def test_kill_group_process_lookup_error(self):
+        proc = mock.MagicMock(pid=12345)
+        proc.poll.return_value = 0
+        with mock.patch("os.getpgid", return_value=99999), mock.patch("os.killpg", side_effect=ProcessLookupError) as mock_killpg:
+            calls._kill_group(proc, grace=0.01)
+        proc.send_signal.assert_called_once_with(signal.SIGTERM)
+        mock_killpg.assert_called_once_with(99999, signal.SIGTERM)
+
+    def test_kill_group_getpgid_fails(self):
+        proc = mock.MagicMock(pid=12345)
+        proc.poll.return_value = 0
+        with mock.patch("os.getpgid", side_effect=ProcessLookupError) as mock_getpgid, mock.patch("os.killpg") as mock_killpg:
+            calls._kill_group(proc, grace=0.01)
+        mock_getpgid.assert_called_once_with(12345)
+        self.assertEqual(mock_killpg.call_args_list, [mock.call(12345, signal.SIGTERM), mock.call(12345, signal.SIGKILL)])
+
+    def test_kill_group_sigterm_escalates_to_sigkill(self):
+        proc = mock.MagicMock(pid=12345)
+        proc.poll.side_effect = [None, None]
+        proc.wait.side_effect = [subprocess.TimeoutExpired(cmd="fake", timeout=0.01), None]
+        with mock.patch("os.getpgid", return_value=99999), mock.patch("os.killpg") as mock_killpg:
+            calls._kill_group(proc, grace=0.01)
+        self.assertEqual(mock_killpg.call_args_list, [mock.call(99999, signal.SIGTERM), mock.call(99999, signal.SIGKILL)])
+
+    def test_kill_group_real_subprocess(self):
+        proc = subprocess.Popen(["sleep", "999"], start_new_session=True)
+        try:
+            calls._kill_group(proc, grace=0.1)
+            self.assertIsNotNone(proc.poll())
+        finally:
+            if proc.poll() is None:
+                try:
+                    proc.kill()
+                    proc.wait()
+                except OSError:
+                    pass
 
     def test_missing_executable(self):
         spec = adapters.CallSpec(prompt="t", schema_path=self.schema_path, cwd=self.tmp)
@@ -787,6 +850,7 @@ class ConfigGuardLayerTest(Tmp):
         self.assertIn("skills", cfg)
         self.assertIn("e2e", cfg)
         self.assertEqual(cfg["timeouts_s"]["e2e"], 900)
+        self.assertEqual(cfg["timeouts_s"]["test"], 600)
         self.assertEqual(cfg["roles"]["by_role"]["e2e"], "primary")
         self.assertTrue(cfg["router"]["retry_bump"])
         guard = cfg["guard"]

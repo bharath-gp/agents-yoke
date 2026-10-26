@@ -37,6 +37,7 @@ class McpCase(unittest.TestCase):
         env.pop("YOKE_RUN", None)
         self.proc = subprocess.Popen([sys.executable, "-m", "yoke.cli", "mcp"], cwd=self.repo, env=env,
                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.addCleanup(self.close)
         self.n = 0
 
@@ -95,6 +96,13 @@ class McpCase(unittest.TestCase):
         out = json.loads(self.call("yoke_status")["content"][0]["text"])
         self.assertEqual(out["run_id"], self.run_.run_id)
 
+    def test_commit_message_tool(self):
+        res = self.call("yoke_commit_message", {"id": "T-001", "title": "add login", "diffstat": "1 file changed"})
+        self.assertFalse(res.get("isError"))
+        out = json.loads(res["content"][0]["text"])
+        self.assertEqual(out["source"], "default")
+        self.assertEqual(out["result"]["subject"], "T-001: add login")
+
     def test_errors(self):
         self.assertEqual(self.rpc("nope")["error"]["code"], -32601)
         res = self.call("yoke_nope")
@@ -106,6 +114,7 @@ class McpCase(unittest.TestCase):
 class NoRunCase(unittest.TestCase):
     def test_status_without_run_is_tool_error(self):
         tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
         env = dict(os.environ, YOKE_HOME=tmp, PYTHONPATH=ROOT)
         env.pop("YOKE_RUN", None)
         req = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "yoke_status"}}
