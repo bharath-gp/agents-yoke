@@ -80,7 +80,9 @@ def wait_for(run, timeout, poll=2):
             return "died", "runner died; use /yoke:resume (yoke run --resume --detach)"
         if time.time() >= end:
             s = run.status()
-            return "timeout", "still running: %d/%d closed" % (s["tickets"].get("closed", 0), s["tickets_total"])
+            parked = s["tickets"].get("awaiting_gate", 0)
+            return "timeout", "still running: %d/%d closed%s" % (
+                s["tickets"].get("closed", 0), s["tickets_total"], ", %d awaiting gate" % parked if parked else "")
         time.sleep(poll)
 
 
@@ -314,10 +316,6 @@ def render_map(run):
         t for t in tickets
         if sts.get(t["id"]) in ("pending", "in_progress")
         and all(sts.get(d) == "closed" for d in t.get("depends_on", []))
-        and all(
-            ms_states.get(em["id"], {}).get("status") in ("passed", "waived")
-            for em in all_milestones[:ms_idx.get(t.get("milestone", "MS-00"), 0)]
-        )
     ]
 
     lines.append("\nFrontier:")
