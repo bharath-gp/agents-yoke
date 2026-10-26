@@ -77,7 +77,8 @@
     "wayfinder": 1200,
     "gate_hook": 300,
     "hypotheses": 600,
-    "e2e": 900
+    "e2e": 900,
+    "test": 600
   },
   "kill_grace_s": 15,
   "router": {

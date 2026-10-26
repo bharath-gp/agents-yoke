@@ -690,13 +690,88 @@ def _call_retry(run, adapter_for, env, ticket, stage, attempt, *args, **kw):
 
 
 def _rerun(run, cmd, wt):
-    """Runner's independent check: (exit_code, output tail)."""
-    try:
-        r = subprocess.run(cmd, shell=True, cwd=wt, capture_output=True, text=True,
-                           timeout=run.cfg["timeouts_s"]["qa"])  # ponytail: no process-group kill
-        return r.returncode, (r.stdout + r.stderr)[-2000:]
-    except subprocess.TimeoutExpired:
-        return -1, "timed out"
+    """Runner's independent check: (exit_code, output text)."""
+    timeouts = run.cfg.get("timeouts_s") if hasattr(run, "cfg") and isinstance(run.cfg, dict) else {}
+    if not isinstance(timeouts, dict):
+        timeouts = {}
+    timeout = timeouts.get("test") or 600
+    kill_grace = run.cfg.get("kill_grace_s", 1.0) if hasattr(run, "cfg") and isinstance(run.cfg, dict) else 1.0
+    if kill_grace is None:
+        kill_grace = 1.0
+    res = hooks.run_hook(cmd, cwd=wt, timeout_s=timeout, kill_grace_s=kill_grace)
+    if res.timed_out:
+        return -1, "timed out after %ds" % timeout
+    return res.exit_code, _failure_text(res.output)
+
+
+def _failure_text(output, limit=4000):
+    """Extract unittest or pytest failure details from command output."""
+    if not output:
+        return ""
+    lines = output.splitlines()
+
+    # 1. unittest: collect blocks from ^(FAIL|ERROR): up to separator after traceback
+    fail_error_re = re.compile(r"^(FAIL|ERROR): ")
+    sep_re = re.compile(r"^(-{20,}|={20,})$")
+    ran_re = re.compile(r"^Ran \d+ tests?")
+    failed_re = re.compile(r"^FAILED \(")
+
+    unittest_blocks = []
+    i = 0
+    n = len(lines)
+    while i < n:
+        if fail_error_re.match(lines[i]):
+            block = [lines[i]]
+            i += 1
+            saw_first_sep = False
+            while i < n:
+                line = lines[i]
+                if sep_re.match(line):
+                    if not saw_first_sep:
+                        saw_first_sep = True
+                        block.append(line)
+                        i += 1
+                    else:
+                        break
+                elif saw_first_sep and fail_error_re.match(line):
+                    break
+                else:
+                    block.append(line)
+                    i += 1
+            unittest_blocks.extend(block)
+        else:
+            i += 1
+
+    if unittest_blocks:
+        last_ran = None
+        last_failed = None
+        for line in lines:
+            if ran_re.match(line):
+                last_ran = line
+            if failed_re.match(line):
+                last_failed = line
+        if last_ran:
+            unittest_blocks.append(last_ran)
+        if last_failed:
+            unittest_blocks.append(last_failed)
+        return "\n".join(unittest_blocks)[-limit:]
+
+    # 2. pytest: lines matching ^FAILED or ^E plus last summary line
+    pytest_matched = [line for line in lines if re.match(r"^(FAILED |E\s+)", line)]
+    last_summary = None
+    summary_re = re.compile(r"^=+ .*(failed|passed|error).* =+$")
+    for line in lines:
+        if len(line) < 500 and summary_re.match(line):
+            last_summary = line
+
+    if pytest_matched or (last_summary and re.search(r"\b(failed|error)s?\b", last_summary)):
+        res = list(pytest_matched)
+        if last_summary:
+            res.append(last_summary)
+        return "\n".join(res)[-limit:]
+
+    # 3. fallback: output[-limit:]
+    return output[-limit:]
 
 
 def _test_evidence(test_cmd, rerun_rc):

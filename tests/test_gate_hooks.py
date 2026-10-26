@@ -463,7 +463,8 @@ class TestPipelineGateHooks(PipeBase):
         real_run_hook = hooks.run_hook
         timeouts_passed = []
         def spy_run_hook(*args, **kw):
-            timeouts_passed.append((kw.get("stage"), kw.get("timeout_s")))
+            if kw.get("stage") is not None:
+                timeouts_passed.append((kw.get("stage"), kw.get("timeout_s")))
             return real_run_hook(*args, **kw)
 
         with mock.patch("yoke.pipeline.hooks.run_hook", side_effect=spy_run_hook):

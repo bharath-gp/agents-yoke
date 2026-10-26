@@ -1,6 +1,9 @@
 import json
 import os
 import subprocess
+import tempfile
+import time
+import types
 import unittest
 from unittest import mock
 
@@ -340,6 +343,118 @@ class TestSettingSources(PipeBase):
             )
         self.assertEqual(len(captured), 1)
         self.assertEqual(captured[0].setting_sources, "project,local")
+
+
+class TestRerun(unittest.TestCase):
+    def test_timeout_returns_minus_one_fast(self):
+        fake_run = types.SimpleNamespace(cfg={"timeouts_s": {"test": 1}, "kill_grace_s": 0.5})
+        t0 = time.time()
+        rc, text = pipeline._rerun(fake_run, "python3 -c 'import time; time.sleep(30)'", None)
+        elapsed = time.time() - t0
+        self.assertLess(elapsed, 5.0)
+        self.assertEqual(rc, -1)
+        self.assertTrue(text.startswith("timed out after"))
+
+    def test_timeout_kills_children(self):
+        fake_run = types.SimpleNamespace(cfg={"timeouts_s": {"test": 1}, "kill_grace_s": 0.5})
+        with tempfile.TemporaryDirectory() as td:
+            pidfile = os.path.join(td, "pid")
+            cmd = "sh -c 'sleep 30 & echo $! > %s; wait'" % pidfile
+            rc, text = pipeline._rerun(fake_run, cmd, td)
+            self.assertEqual(rc, -1)
+            self.assertTrue(text.startswith("timed out after"))
+            self.assertTrue(os.path.exists(pidfile))
+            with open(pidfile) as f:
+                pid = int(f.read().strip())
+            for _ in range(40):
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.1)
+            else:
+                self.fail("child process %d survived timeout kill" % pid)
+
+    def test_failure_text_unittest(self):
+        noise = ["noise line %d" % i for i in range(50)]
+        lines = (
+            noise
+            + ["=" * 70]
+            + ["ERROR: test_x (tests.test_a.T)"]
+            + ["-" * 70]
+            + ["Traceback (most recent call last):", "  File 'test_a.py', line 10, in test_x", "KeyError: 'judge'"]
+            + ["-" * 70]
+            + ["Ran 3 tests in 0.1s"]
+            + ["FAILED (errors=1)"]
+        )
+        output = "\n".join(lines)
+        res = pipeline._failure_text(output)
+        self.assertIn("KeyError: 'judge'", res)
+        self.assertIn("Ran 3 tests", res)
+        self.assertIn("FAILED (errors=1)", res)
+        self.assertFalse(res.startswith("noise"))
+
+    def test_failure_text_pytest(self):
+        lines = [
+            "noise line 1",
+            "rootdir: /tmp",
+            "FAILED tests/test_a.py::test_x - AssertionError",
+            "E   assert 1 == 2",
+            "noise line 2",
+            "==== 1 failed, 2 passed in 0.1s ====",
+        ]
+        output = "\n".join(lines)
+        res = pipeline._failure_text(output)
+        expected = "FAILED tests/test_a.py::test_x - AssertionError\nE   assert 1 == 2\n==== 1 failed, 2 passed in 0.1s ===="
+        self.assertEqual(res, expected)
+
+    def test_failure_text_pytest_limit(self):
+        lines = [
+            "FAILED test_a.py::test_1 - AssertionError",
+            "E   assert 1 == 2",
+            "FAILED test_b.py::test_2 - AssertionError",
+            "E   assert 3 == 4",
+            "==== 2 failed in 0.1s ====",
+        ]
+        res = pipeline._failure_text("\n".join(lines), limit=50)
+        self.assertLessEqual(len(res), 50)
+        self.assertIn("2 failed", res)
+
+    def test_failure_text_fallback(self):
+        output = "a" * 5000
+        res = pipeline._failure_text(output, limit=4000)
+        self.assertEqual(res, output[-4000:])
+
+    def test_rerun_non_timeout_and_defaults(self):
+        fake_run = types.SimpleNamespace(cfg={})
+        rc, text = pipeline._rerun(fake_run, "sh -c 'echo hi; exit 3'", None)
+        self.assertEqual(rc, 3)
+        self.assertIn("hi", text)
+
+    def test_failure_text_unittest_multiple_blocks_and_limit(self):
+        lines = (
+            ["noise 1", "noise 2", "=" * 70]
+            + ["FAIL: test_f (tests.test_a.T)"]
+            + ["-" * 70]
+            + ["Traceback (most recent call last):", "AssertionError: 1 != 2"]
+            + ["=" * 70]
+            + ["ERROR: test_e (tests.test_a.T)"]
+            + ["-" * 70]
+            + ["Traceback (most recent call last):", "ValueError: bad"]
+            + ["-" * 70]
+            + ["Ran 5 tests in 0.2s"]
+            + ["FAILED (failures=1, errors=1)"]
+        )
+        res = pipeline._failure_text("\n".join(lines), limit=200)
+        self.assertIn("ValueError: bad", res)
+        self.assertIn("FAILED (failures=1, errors=1)", res)
+        self.assertNotIn("noise", res)
+        self.assertLessEqual(len(res), 200)
+
+    def test_failure_text_edge_cases(self):
+        self.assertEqual(pipeline._failure_text(""), "")
+        passed_output = "==== 5 passed in 0.1s ===="
+        self.assertEqual(pipeline._failure_text(passed_output), passed_output)
 
 
 if __name__ == "__main__":

@@ -468,9 +468,9 @@ def dispatch(args):
                 run.update(config=dict(run.cfg, parallel=max(1, args.parallel)))
             if args.detach:
                 scheduler.acquire_lock(run)  # fail fast in the parent
-                log = open(run.path("runner.log"), "a")
-                proc = subprocess.Popen([sys.executable, "-m", "yoke.cli", "run", "--run", run.run_id],
-                                        stdout=log, stderr=log, start_new_session=True)
+                with open(run.path("runner.log"), "a") as log:
+                    proc = subprocess.Popen([sys.executable, "-m", "yoke.cli", "run", "--run", run.run_id],
+                                            stdout=log, stderr=log, start_new_session=True)
                 state._write_atomic(run.path("runner.lock"), str(proc.pid))
                 print("runner started, pid %d, log %s" % (proc.pid, run.path("runner.log")))
                 return 0

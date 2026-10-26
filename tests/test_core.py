@@ -59,6 +59,7 @@ class TestConfig(Tmp):
         self.assertEqual(cfg["parallel"], 2)  # overrides beat repo
         self.assertEqual(cfg["timeouts_s"]["code"], 1)  # deep merge
         self.assertEqual(cfg["timeouts_s"]["qa"], 1800)  # untouched default
+        self.assertEqual(cfg["timeouts_s"]["test"], 600)  # default test timeout
         self.assertEqual(cfg["max_attempts_per_ticket"], 3)
 
     def test_invalid_json_names_file(self):
@@ -841,6 +842,7 @@ class ConfigGuardLayerTest(Tmp):
         self.assertIn("skills", cfg)
         self.assertIn("e2e", cfg)
         self.assertEqual(cfg["timeouts_s"]["e2e"], 900)
+        self.assertEqual(cfg["timeouts_s"]["test"], 600)
         self.assertEqual(cfg["roles"]["by_role"]["e2e"], "primary")
         self.assertTrue(cfg["router"]["retry_bump"])
         guard = cfg["guard"]
