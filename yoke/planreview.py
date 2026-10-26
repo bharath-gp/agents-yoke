@@ -135,9 +135,144 @@ def next_round(run):
     return len(done) + 1
 
 
+def debate_round(run, n, res, adapter_for=None, env=None):
+    """Run a planner rebuttal and judge pass when review has blocker/major findings in adversarial mode.
+    Returns debate dict or {} when skipped."""
+    cfg = run.cfg
+    if config.review_mode(cfg) != "adversarial":
+        return {}
+    if not (res.ok and res.schema_valid is not False):
+        return {}
+    raw_findings = (res.structured_output or {}).get("findings", []) if isinstance(res.structured_output, dict) else []
+    blocking = [f for f in raw_findings if isinstance(f, dict) and f.get("severity") in ("blocker", "major")]
+    if not blocking:
+        return {}
+
+    if adapter_for is None:
+        adapter_for = lambda role: adapters.get(config.agent_for(cfg, role))
+
+    items = []
+    for i, f in enumerate(blocking):
+        items.append({
+            "id": "p%d" % (i + 1),
+            "severity": f.get("severity"),
+            "section": f.get("section"),
+            "issue": f.get("issue"),
+            "suggestion": f.get("suggestion"),
+        })
+
+    plan = _read(run, "plan.md")
+    try:
+        requirements = _read(run, "requirements.md")
+    except ApprovalError:
+        requirements = "(none provided)"
+
+    planner_agent = config.agent_for(cfg, "planner")
+    rebut_model, rebut_effort = config.model_for_tier(cfg, planner_agent, "plan")
+    with open(os.path.join(PKG, "prompts", "plan_rebut.md")) as f:
+        rebut_prompt = string.Template(f.read()).safe_substitute(
+            requirements=requirements,
+            plan=plan,
+            round=n,
+            findings=json.dumps(items, indent=2),
+        )
+    repo = run.read_json("run.json")["repo"]
+    rebut_spec = adapters.CallSpec(
+        prompt=rebut_prompt,
+        schema_path=schema.schema_path("rebut"),
+        cwd=repo,
+        mode="read",
+        timeout_s=cfg["timeouts_s"].get("plan_rebut", 900),
+        model=rebut_model,
+        effort=rebut_effort,
+        env=env or {},
+    )
+    rebut_res = calls.run_call(run, adapter_for("planner"), rebut_spec, stage="plan_rebut", attempt=n)
+
+    if not (rebut_res.ok and rebut_res.schema_valid is not False):
+        debate_data = {
+            "upheld": list(blocking),
+            "overruled": [],
+            "rebuttals": [],
+            "rulings": [],
+            "error": rebut_res.error or "rebut failed",
+        }
+        run.write_json("plan-review/round-%d/debate.json" % n, debate_data)
+        run.event("plan_debate", round=n, upheld=len(debate_data["upheld"]), overruled=len(debate_data["overruled"]))
+        return debate_data
+
+    responses = (rebut_res.structured_output or {}).get("responses", []) if isinstance(rebut_res.structured_output, dict) else []
+    resp_by_id = {r.get("id"): r for r in responses if isinstance(r, dict)}
+
+    conceded_ids = set()
+    disputed_ids = set()
+    for item in items:
+        pid = item["id"]
+        if pid in resp_by_id and resp_by_id[pid].get("stance") == "concede":
+            conceded_ids.add(pid)
+        else:
+            disputed_ids.add(pid)
+
+    rulings = []
+    ruling_by_id = {}
+    judge_failed = False
+    if disputed_ids:
+        judge_agent = config.agent_for(cfg, "plan_review")
+        judge_model, judge_effort = config.model_for_tier(cfg, judge_agent, "plan")
+        disputed_items = [item for item in items if item["id"] in disputed_ids]
+        with open(os.path.join(PKG, "prompts", "plan_judge.md")) as f:
+            judge_prompt = string.Template(f.read()).safe_substitute(
+                requirements=requirements,
+                plan=plan,
+                round=n,
+                findings=json.dumps(disputed_items, indent=2),
+                rebuttals=json.dumps(responses, indent=2),
+            )
+        judge_spec = adapters.CallSpec(
+            prompt=judge_prompt,
+            schema_path=schema.schema_path("judge"),
+            cwd=repo,
+            mode="read",
+            timeout_s=cfg["timeouts_s"].get("plan_judge", 900),
+            model=judge_model,
+            effort=judge_effort,
+            env=env or {},
+        )
+        judge_res = calls.run_call(run, adapter_for("plan_review"), judge_spec, stage="plan_judge", attempt=n)
+        if judge_res.ok and judge_res.schema_valid is not False:
+            rulings = (judge_res.structured_output or {}).get("rulings", []) if isinstance(judge_res.structured_output, dict) else []
+            ruling_by_id = {r.get("id"): r for r in rulings if isinstance(r, dict)}
+        else:
+            judge_failed = True
+
+    upheld = []
+    overruled = []
+    for item, f in zip(items, blocking):
+        pid = item["id"]
+        if pid in conceded_ids:
+            upheld.append(f)
+        elif judge_failed:
+            upheld.append(f)
+        elif pid in ruling_by_id and ruling_by_id[pid].get("ruling") == "overruled":
+            overruled.append({"finding": f, "reason": ruling_by_id[pid].get("reason", "")})
+        else:
+            upheld.append(f)
+
+    debate_data = {
+        "upheld": upheld,
+        "overruled": overruled,
+        "rebuttals": responses,
+        "rulings": rulings,
+    }
+    run.write_json("plan-review/round-%d/debate.json" % n, debate_data)
+    run.event("plan_debate", round=n, upheld=len(upheld), overruled=len(overruled))
+    return debate_data
+
+
 def review_round(run, adapter=None, env=None):
     """One secondary read-only review of plan.md. Returns (round, CallResult). Raises
     RuntimeError when max_plan_review_rounds is used up."""
+    given_adapter = adapter
     cfg = run.cfg
     n = next_round(run)
     if n > cfg["max_plan_review_rounds"]:
@@ -165,4 +300,6 @@ def review_round(run, adapter=None, env=None):
     res = calls.run_call(run, adapter, spec, stage=role, attempt=n)
     run.event("plan_review", round=n, ok=res.ok and res.schema_valid is not False,
               plan_sha256=current_hash(run, "plan"))
+    if res.ok and res.schema_valid is not False:
+        debate_round(run, n, res, adapter_for=(lambda _role: given_adapter) if given_adapter is not None else None, env=env)
     return n, res

@@ -71,6 +71,8 @@ To see validator overhead, compare `duration_s` in `tickets/*/attempt-*/validate
 | 5 (M34) | F + G: notifications; commit message without an agent call | 0.13.2 | human wait; 2-4 min | [x] |
 | 6 | D2: overlap milestones | design decision | more parallelism | [ ] |
 
+Milestone numbers shifted by one when this work merged, because `main` took M30 for adversarial review: Phases 1-5 are [M31](PLAN.md#m31)-[M35](PLAN.md#m35) in PLAN.md. The headings below keep their original numbers so their anchors stay stable.
+
 The versions assume the phases land in order. Use the next free patch or minor version at the time, and keep `pyproject.toml` and `.claude-plugin/plugin.json` equal.
 
 ## Phase 0: fast, quiet test suite (repo only)

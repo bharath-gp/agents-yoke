@@ -1,0 +1,25 @@
+{
+  "type": "object",
+  "required": ["responses", "summary"],
+  "additionalProperties": false,
+  "properties": {
+    "responses": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "stance", "argument", "evidence"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string"},
+          "stance": {
+            "type": "string",
+            "enum": ["concede", "dispute"]
+          },
+          "argument": {"type": "string"},
+          "evidence": {"type": "string"}
+        }
+      }
+    },
+    "summary": {"type": "string"}
+  }
+}

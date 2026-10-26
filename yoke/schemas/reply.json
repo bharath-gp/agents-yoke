@@ -1,0 +1,24 @@
+{
+  "type": "object",
+  "required": ["replies", "summary"],
+  "additionalProperties": false,
+  "properties": {
+    "replies": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "stance", "argument"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string"},
+          "stance": {
+            "type": "string",
+            "enum": ["maintain", "withdraw"]
+          },
+          "argument": {"type": "string"}
+        }
+      }
+    },
+    "summary": {"type": "string"}
+  }
+}

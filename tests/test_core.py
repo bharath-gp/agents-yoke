@@ -410,6 +410,14 @@ class TestRunCall(Tmp):
                         stage="wayfinder", attempt=2)
         self.assertEqual(res.audit_dir, self.run_.path("chart/round-2"))
 
+    def test_audit_rel_plan_rebut_and_judge(self):
+        self.assertEqual(calls.audit_rel("plan_rebut", None, 2, "x"), "plan-review/round-2/rebut")
+        self.assertEqual(calls.audit_rel("plan_judge", None, 2, "x"), "plan-review/round-2/judge")
+        self.assertEqual(calls.audit_rel("plan_rebut", None, None, "x"), "plan-review/round-1/rebut")
+        self.assertEqual(calls.audit_rel("plan_judge", None, None, "x"), "plan-review/round-1/judge")
+        self.assertEqual(calls.audit_rel("plan_rebut", "T-001", 2, "x"), "tickets/T-001/attempt-2/plan_rebut")
+        self.assertEqual(calls.audit_rel("plan_judge", "T-001", 2, "x"), "tickets/T-001/attempt-2/plan_judge")
+
     def test_schema_reask_succeeds(self):
         res = self.call({"code": [{"structured_output": {"status": "bogus"}, "session_id": "s1"},
                                   {"structured_output": {"status": "done"}, "session_id": "s1"}]},

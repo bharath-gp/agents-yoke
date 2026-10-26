@@ -115,6 +115,23 @@ def review_lenses(cfg=None):
     return list(DEFAULT_REVIEW_LENSES)
 
 
+def review_mode(cfg=None):
+    """Return configured review mode, 'adversarial' (default) or 'independent'."""
+    if cfg is None:
+        cfg = load()
+    return "independent" if cfg.get("review_mode") == "independent" else "adversarial"
+
+
+def debate_rounds(cfg=None):
+    """Return configured debate rounds count, defaulting to 1."""
+    if cfg is None:
+        cfg = load()
+    try:
+        return max(1, int(cfg.get("debate_rounds", 1)))
+    except (TypeError, ValueError, OverflowError):
+        return 1
+
+
 def hypotheses_count(cfg=None):
     """Return configured hypotheses fan-out count, defaulting to 0."""
     if cfg is None:
