@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import unittest
+from unittest import mock
 
 from tests.test_core import FAKE_CLI
 from tests.test_gitops import GitBase, git
@@ -282,6 +283,63 @@ class TestCli(PipeBase):
         self.assertEqual(self.cli("unblock", "T-001")[0], 1)  # needs an action flag
         self.assertEqual(self.cli("unblock", "T-001", "--skip")[0], 0)
         self.assertEqual(self.tstate(1)["status"], "skipped")
+
+
+class TestSettingSources(PipeBase):
+    def test_cfg_value_reaches_callspec(self):
+        cfg = self.run_.cfg
+        cfg.setdefault("agents", {}).setdefault("claude", {})["setting_sources"] = "project"
+        self.run_.update(config=cfg)
+        captured = []
+
+        def fake_run_call(run, adapter, spec, **kwargs):
+            captured.append(spec)
+            return adapters.CallResult(structured_output={"status": "done"}, exit_code=0)
+
+        with mock.patch("yoke.calls.run_call", side_effect=fake_run_call):
+            pipeline._call(
+                self.run_,
+                adapter_for=lambda role: adapters.FakeAdapter(FAKE_CLI),
+                env=self.env,
+                ticket=ticket(1),
+                stage="code",
+                attempt=1,
+                wt=self.repo,
+                base="HEAD",
+                mode="write",
+                results={},
+                feedback="",
+            )
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0].setting_sources, "project")
+
+    def test_cfg_default_setting_sources_when_missing(self):
+        cfg = self.run_.cfg
+        if "agents" in cfg and "claude" in cfg["agents"]:
+            cfg["agents"]["claude"].pop("setting_sources", None)
+        self.run_.update(config=cfg)
+        captured = []
+
+        def fake_run_call(run, adapter, spec, **kwargs):
+            captured.append(spec)
+            return adapters.CallResult(structured_output={"status": "done"}, exit_code=0)
+
+        with mock.patch("yoke.calls.run_call", side_effect=fake_run_call):
+            pipeline._call(
+                self.run_,
+                adapter_for=lambda role: adapters.FakeAdapter(FAKE_CLI),
+                env=self.env,
+                ticket=ticket(1),
+                stage="code",
+                attempt=1,
+                wt=self.repo,
+                base="HEAD",
+                mode="write",
+                results={},
+                feedback="",
+            )
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0].setting_sources, "project,local")
 
 
 if __name__ == "__main__":

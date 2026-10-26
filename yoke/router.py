@@ -35,7 +35,8 @@ def _agent(run, name, prompt, adapter=None):
     spec = adapters.CallSpec(
         prompt=prompt, schema_path=schema.schema_path("router-" + name), cwd=run.read_json("run.json")["repo"],
         model=cfg["router"].get("llm_model") or fb.get("model"), effort=fb.get("effort"),
-        timeout_s=cfg["timeouts_s"]["router_fallback"])
+        timeout_s=cfg["timeouts_s"]["router_fallback"],
+        setting_sources=((cfg.get("agents") or {}).get("claude") or {}).get("setting_sources", "project,local"))
     try:
         res = calls.run_call(run, adapter or adapters.get(fb["agent"]), spec, stage="router")
     except Exception as e:  # never block the loop on a router problem

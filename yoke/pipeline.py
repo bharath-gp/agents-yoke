@@ -548,7 +548,8 @@ def _call(run, adapter_for, env, ticket, stage, attempt, wt, base, mode, results
         timeout_s=timeout, env=wenv,
         allowed_tools=tools,
         web_tools=tuple(cfg["search"]["tools"]) if stage in WEB_STAGES else (),
-        settings_path=run.read_json("run.json").get("agent_settings"))
+        settings_path=run.read_json("run.json").get("agent_settings"),
+        setting_sources=((cfg.get("agents") or {}).get("claude") or {}).get("setting_sources", "project,local"))
 
     if stage in ("code", "review", "qa", "validate", "docs") and not over.get("model") and not over.get("effort"):
         pick = router.pick_tier_effort(run, ticket, stage, attempt)

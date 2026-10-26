@@ -106,6 +106,7 @@ def chart_round(run, adapter=None, feedback=None, env=None):
         mode="read",
         timeout_s=cfg["timeouts_s"].get(role, 1200),
         env=env or {},
+        setting_sources=((cfg.get("agents") or {}).get("claude") or {}).get("setting_sources", "project,local"),
     )
     adapter = adapter or adapters.get(config.agent_for(cfg, role))
     res = calls.run_call(run, adapter, spec, stage=role, attempt=n)
