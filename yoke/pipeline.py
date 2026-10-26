@@ -991,6 +991,54 @@ def _run_gate_hook_stage(run, wt, ticket, attempt, stage_name, hook_list, env=No
     return None, (last_res[1] if last_res else None)
 
 
+def _test_fix_loop(run, adapter_for, env, ticket, st, wt, base, results, feedback, since):
+    """Re-run test command and resume coder up to max_test_fix_rounds times.
+
+    Stages changes, re-runs the test command after guard validation, and
+    resumes the coder session with failure feedback for up to max_test_fix_rounds.
+    Emits a test_fix event on each rerun check.
+    Returns error/failure feedback string if tests still fail after all rounds,
+    or None when the test command succeeds (rc == 0).
+    """
+    tid, attempt = ticket["id"], st["attempt"]
+    cmd = run.cfg.get("test_command") or st.get("last_test_cmd")
+    rounds = run.cfg.get("max_test_fix_rounds", 2)
+    if rounds is None:
+        rounds = 2
+    if not cmd or rounds <= 0:
+        return None
+
+    chk = guard.check_command(run.cfg, cmd, wt, run)
+    if chk.get("decision") == "deny":
+        return "Safety guard refused test command `%s`: %s" % (cmd, chk.get("reason"))
+    if chk.get("decision") != "allow":
+        raise Escalate("safety guard: %s" % chk.get("reason"))
+
+    gitops.git(wt, "add", "-A")
+    rc, text = _rerun(run, cmd, wt)
+    run.event("test_fix", ticket=tid, attempt=attempt, round=0, rc=rc)
+    if rc == 0:
+        return None
+
+    for k in range(1, rounds + 1):
+        fb_k = (feedback + "\n\n" if feedback else "") + (
+            "Runner re-ran `%s` after your change and it exited %s:\n%s" % (cmd, rc, text)
+        )
+        res = _call(run, adapter_for, env, ticket, "code", attempt, wt, base, "write",
+                    results, fb_k, resume=st["sessions"].get("code"), label="code-t%d" % k)
+        if not res.ok:
+            return "code call failed: %s" % res.error
+        results["code"] = res.structured_output
+        _post_code(run, ticket, st, wt, since, res)
+        gitops.git(wt, "add", "-A")
+        rc, text = _rerun(run, cmd, wt)
+        run.event("test_fix", ticket=tid, attempt=attempt, round=k, rc=rc)
+        if rc == 0:
+            return None
+
+    return "Runner re-ran `%s` after the coder's fixes and it exited %s:\n%s" % (cmd, rc, text)
+
+
 def _attempt_body(run, adapter_for, env, ticket, st, wt, stages, start_idx, results, test_cmd, rerun_rc):
     """Execute stages starting at start_idx with seeded results and test state."""
     tid, attempt, base = ticket["id"], st["attempt"], st["base_sha"]
@@ -1041,6 +1089,9 @@ def _attempt_body(run, adapter_for, env, ticket, st, wt, stages, start_idx, resu
             fb, info = _run_gate_hook_stage(run, wt, ticket, attempt, "code", code_hooks, env=env)
             if info:
                 st.setdefault("gate_hooks", {})["code"] = info
+            if fb:
+                return fb, results, test_cmd, rerun_rc
+            fb = _test_fix_loop(run, adapter_for, env, ticket, st, wt, base, results, feedback, since)
             if fb:
                 return fb, results, test_cmd, rerun_rc
         elif stage == "qa":

@@ -145,6 +145,7 @@ class BranchTest(PipeBase):
         self.assertEqual(pipeline._read_feedback(self.run_, "T-001", 2), "")
 
     def test_below_threshold_keeps_old_flow(self):
+        self.run_.update(config=dict(self.run_.cfg, max_test_fix_rounds=0))
         self.patch_ollama({"category": choice("testware", 0.5)})
         self.setup_tickets(
             [ticket(1, type_="refactor")],
@@ -170,6 +171,7 @@ class BranchTest(PipeBase):
         self.assertEqual(pos.get("code", 0), 2)
 
     def test_product_failure_keeps_old_flow(self):
+        self.run_.update(config=dict(self.run_.cfg, max_test_fix_rounds=0))
         self.patch_ollama({"category": choice("product", 0.9)})
         self.setup_tickets(
             [ticket(1, type_="refactor")],

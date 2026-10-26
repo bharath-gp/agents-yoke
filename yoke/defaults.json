@@ -26,6 +26,7 @@
   "max_attempts_per_ticket": 3,
   "max_plan_review_rounds": 3,
   "max_review_rounds": 2,
+  "max_test_fix_rounds": 2,
   "review_lenses": [
     "security",
     "performance",

@@ -457,5 +457,188 @@ class TestRerun(unittest.TestCase):
         self.assertEqual(pipeline._failure_text(passed_output), passed_output)
 
 
+class TestTestFixLoop(PipeBase):
+    def test_fix_events(self):
+        with open(self.run_.path("events.jsonl")) as f:
+            events = [json.loads(line) for line in f if line.strip()]
+        return [e for e in events if e.get("kind") == "test_fix"]
+
+    def test_fail_then_pass_closes_attempt_one(self):
+        self.run_.update(config=dict(self.run_.cfg, test_command="test -f ok"))
+        self.setup_tickets(
+            [ticket(1)],
+            {
+                "code": [resp(CODE, "cs")],
+                "code-t1": [resp(CODE, "cs", write={"ok": "1"})],
+                "review": [resp(REV)],
+                "validate": [resp(val())],
+                "router": [{"exit": 1}],
+            },
+        )
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+        self.assertFalse(os.path.exists(self.run_.path("tickets/T-001/attempt-2")))
+        with open(self.run_.path("tickets/T-001/attempt-1/code-t1/prompt.md")) as f:
+            prompt_t1 = f.read()
+        self.assertIn("Runner re-ran `test -f ok` after your change and it exited", prompt_t1)
+        with open(self.run_.path("tickets/T-001/attempt-1/code-t1/command.json")) as f:
+            cmd_t1 = json.load(f)
+        self.assertIn("--resume", cmd_t1)
+        self.assertIn("cs", cmd_t1)
+        events = self.test_fix_events()
+        self.assertEqual(len(events), 2)
+        self.assertEqual(events[0]["ticket"], "T-001")
+        self.assertEqual(events[0]["attempt"], 1)
+        self.assertEqual(events[0]["round"], 0)
+        self.assertNotEqual(events[0]["rc"], 0)
+        self.assertEqual(events[1]["ticket"], "T-001")
+        self.assertEqual(events[1]["attempt"], 1)
+        self.assertEqual(events[1]["round"], 1)
+        self.assertEqual(events[1]["rc"], 0)
+
+    def test_both_rounds_fail_starts_attempt_two(self):
+        self.run_.update(config=dict(self.run_.cfg, test_command="test -f ok"))
+        self.setup_tickets(
+            [ticket(1)],
+            {
+                "code": [
+                    resp(CODE, "cs"),
+                    resp(CODE, "cs", write={"ok": "1"}),
+                ],
+                "code-t1": [resp(CODE, "cs")],
+                "code-t2": [resp(CODE, "cs")],
+                "review": [resp(REV)],
+                "validate": [resp(val())],
+                "router": [{"exit": 1}],
+            },
+        )
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+        self.assertEqual(self.tstate(1)["attempt"], 2)
+        attempt1_fixes = [e for e in self.test_fix_events() if e.get("attempt") == 1]
+        self.assertEqual(len(attempt1_fixes), 3)
+        self.assertEqual([e["round"] for e in attempt1_fixes], [0, 1, 2])
+        self.assertTrue(all(e["rc"] != 0 for e in attempt1_fixes))
+        fb2 = pipeline._read_feedback(self.run_, "T-001", 2)
+        self.assertIn("after the coder's fixes", fb2)
+
+    def test_no_test_command_no_loop(self):
+        self.setup_tickets(
+            [ticket(1)],
+            {
+                "code": [resp(CODE, "cs", write={"f1.txt": "x"})],
+                "review": [resp(REV)],
+                "validate": [resp(val())],
+                "router": [{"exit": 1}],
+            },
+        )
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+        self.assertEqual(len(self.test_fix_events()), 0)
+
+    def test_zero_rounds_disables(self):
+        self.run_.update(config=dict(self.run_.cfg, test_command="test -f ok", max_test_fix_rounds=0))
+        self.setup_tickets(
+            [ticket(1)],
+            {
+                "code": [resp(CODE, "cs", write={"f1.txt": "x"})],
+                "review": [resp(REV)],
+                "validate": [resp(val())],
+                "router": [{"exit": 1}],
+            },
+        )
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+        self.assertEqual(len(self.test_fix_events()), 0)
+
+    def test_guard_deny_returns_feedback(self):
+        self.run_.update(config=dict(self.run_.cfg, test_command="test -f ok"))
+        self.setup_tickets(
+            [ticket(1)],
+            {
+                "code": [resp(CODE, "cs", write={"f1.txt": "x"})] * 2,
+                "review": [resp(REV)],
+                "validate": [resp(val())],
+                "router": [{"exit": 1}],
+            },
+        )
+        with mock.patch("yoke.guard.check_command", return_value={"decision": "deny", "reason": "danger"}):
+            self.assertEqual(self.go(), "needs_user")
+        self.assertEqual(self.tstate(1)["status"], "blocked")
+        fb2 = pipeline._read_feedback(self.run_, "T-001", 2)
+        self.assertTrue(fb2.startswith("Safety guard refused test command"))
+        self.assertIn("danger", fb2)
+        self.assertEqual(len(self.test_fix_events()), 0)
+
+    def test_guard_ask_escalates(self):
+        self.run_.update(config=dict(self.run_.cfg, test_command="test -f ok"))
+        self.setup_tickets(
+            [ticket(1)],
+            {
+                "code": [resp(CODE, "cs", write={"f1.txt": "x"})],
+                "review": [resp(REV)],
+                "validate": [resp(val())],
+                "router": [{"exit": 1}],
+            },
+        )
+        with mock.patch("yoke.guard.check_command", return_value={"decision": "ask", "reason": "operator required"}):
+            self.assertEqual(self.go(), "needs_user")
+        self.assertEqual(self.tstate(1)["status"], "blocked")
+        esc = self.run_.read_json("escalations.json")
+        self.assertTrue(any("safety guard: operator required" in e["reason"] for e in esc))
+        self.assertEqual(len(self.test_fix_events()), 0)
+
+    def test_code_call_failed_returns_feedback(self):
+        self.run_.update(config=dict(self.run_.cfg, test_command="test -f ok"))
+        self.setup_tickets(
+            [ticket(1)],
+            {
+                "code": [
+                    resp(CODE, "cs"),
+                    resp(CODE, "cs", write={"ok": "1"}),
+                ],
+                "code-t1": [{"exit": 1}],
+                "review": [resp(REV)],
+                "validate": [resp(val())],
+                "router": [{"exit": 1}],
+            },
+        )
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+        self.assertEqual(self.tstate(1)["attempt"], 2)
+        fb2 = pipeline._read_feedback(self.run_, "T-001", 2)
+        self.assertIn("code call failed: exit 1", fb2)
+
+    def test_last_test_cmd_fallback_enters_loop(self):
+        self.setup_tickets(
+            [ticket(1, type_="refactor")],
+            {
+                "code": [
+                    resp(CODE, "c1", write={"f1.txt": "x"}),
+                    resp(CODE, "c1"),
+                ],
+                "code-t1": [resp(CODE, "c1", write={"ok": "1"})],
+                "review": [resp(REV)] * 4,
+                "qa": [
+                    resp(qa("test -f ok", status="pass")),
+                    resp(qa("test -f ok", status="pass")),
+                ],
+                "validate": [resp(val())] * 4,
+                "router": [{"exit": 1}],
+            },
+        )
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+        self.assertEqual(self.tstate(1)["attempt"], 2)
+        attempt1_fixes = [e for e in self.test_fix_events() if e.get("attempt") == 1]
+        self.assertEqual(len(attempt1_fixes), 0)
+        attempt2_fixes = [e for e in self.test_fix_events() if e.get("attempt") == 2]
+        self.assertEqual(len(attempt2_fixes), 2)
+        self.assertEqual(attempt2_fixes[0]["round"], 0)
+        self.assertNotEqual(attempt2_fixes[0]["rc"], 0)
+        self.assertEqual(attempt2_fixes[1]["round"], 1)
+        self.assertEqual(attempt2_fixes[1]["rc"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -224,6 +224,21 @@ Gate verification commands can be configured under `gate_hooks`:
 - **Pipeline integration**: `after_stage` hooks run following `code` and `qa` stages; `before_close` hooks run prior to commit. Failures feed output tails back to the coder as feedback, and results are recorded in attempt audit logs (`attempt-N/hooks/<stage>.log`) and `close_gate` events.
 - **Process control**: On timeout, the entire process group is terminated using SIGTERM followed by SIGKILL.
 
+### Test-fix loop
+
+Following the `code` stage and any `after_stage.code` gate hooks, the runner can re-run the test command and resume the coder to fix failures before advancing to review and QA:
+
+```json
+{
+  "max_test_fix_rounds": 2
+}
+```
+
+- `max_test_fix_rounds`: Maximum number of resume rounds for test fixes (default: `2`). Set to `0` to disable the loop.
+- **Command source**: Uses `test_command` from run configuration (`run.cfg["test_command"]`), or falls back to `last_test_cmd` from a preceding QA attempt.
+- **Safety check**: Verifies the command with `guard.check_command` prior to execution. Denied commands return retryable feedback; other non-allow decisions escalate.
+- **Execution flow**: The runner stages changes (`git add -A`), re-runs the test command, and emits a `test_fix` audit event (`round=0`). If the test passes (`rc == 0`), execution proceeds directly. If it fails, the runner resumes the coder (audit labels `code-t1`, `code-t2`, ...) with test failure output for up to `max_test_fix_rounds` rounds until the test passes or rounds are exhausted.
+
 ### Failure hypotheses fan-out
 
 When repeated failures occur across attempts on a ticket, yoke can optionally generate competing hypotheses and rank them to provide advisory guidance:

@@ -34,6 +34,7 @@ class GuardPipelineTest(PipeBase):
         self.assertEqual(len(guard_events), 1)
 
     def test_denylisted_test_command_feedback(self):
+        self.run_.update(config=dict(self.run_.cfg, max_test_fix_rounds=0))
         self.setup_tickets(
             [ticket(1, type_="refactor")],
             {"code": [
