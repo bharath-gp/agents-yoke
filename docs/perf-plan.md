@@ -63,12 +63,12 @@ To see validator overhead, compare `duration_s` in `tickets/*/attempt-*/validate
 
 | Phase | Fixes (report option) | Bump | Expected gain on a large run | Status |
 |---|---|---|---|---|
-| 0 | C1: parallel, quiet test suite | no | about 2.5 min per suite run; 0.5h+ | [ ] |
-| 1 (M30) | B + E: validator stops testing; isolated Claude CLI | 0.12.0 | 50-80 min plus tokens | [ ] |
-| 2 (M31) | C2: test timeout, group kill, failure-focused tail | 0.12.1 | caps hangs at 10 min; clearer feedback | [ ] |
-| 3 (M32) | A: test-fix loop after code | 0.13.0 | 1.5-2.5h; fewer escalations | [ ] |
-| 4 (M33) | D1: wider charts, parallel default advice | 0.13.1 | up to the deps-only critical path | [ ] |
-| 5 (M34) | F + G: notifications; commit message without an agent call | 0.13.2 | human wait; 2-4 min | [ ] |
+| 0 | C1: parallel, quiet test suite | no | about 2.5 min per suite run; 0.5h+ | [x] |
+| 1 (M30) | B + E: validator stops testing; isolated Claude CLI | 0.12.0 | 50-80 min plus tokens | [x] |
+| 2 (M31) | C2: test timeout, group kill, failure-focused tail | 0.12.1 | caps hangs at 10 min; clearer feedback | [x] |
+| 3 (M32) | A: test-fix loop after code | 0.13.0 | 1.5-2.5h; fewer escalations | [x] |
+| 4 (M33) | D1: wider charts, parallel default advice | 0.13.1 | up to the deps-only critical path | [x] |
+| 5 (M34) | F + G: notifications; commit message without an agent call | 0.13.2 | human wait; 2-4 min | [x] |
 | 6 | D2: overlap milestones | design decision | more parallelism | [ ] |
 
 The versions assume the phases land in order. Use the next free patch or minor version at the time, and keep `pyproject.toml` and `.claude-plugin/plugin.json` equal.

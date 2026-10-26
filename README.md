@@ -21,7 +21,7 @@ Multi-agent loop for large work items. Claude (primary) gathers requirements, pl
 ## How it works
 
 1. Interactive: requirements, `plan.md`, one read-only secondary plan review, ticket split. You approve the plan and tickets (hash-bound).
-2. Unattended: a detached runner takes each ticket through code, review, QA, validate, docs. Failures retry with feedback up to a limit, then escalate to you. Independent tickets run in parallel, one git worktree each (`--parallel N`). When `parallel > 1`, ready tickets whose `files_hint` overlaps (exact file path or directory prefix) any currently running ticket are deferred until that ticket finishes, emitting a `ticket_deferred` audit event (tickets with empty hints never block). Upstream handoff notes (interface changes, new files, gotchas) from closed ancestor tickets are automatically stored at `tickets/<T>/handoff.json` and inlined into dependent `code`, `QA`, and `validate` prompts (`$upstream`). Pending or in-progress tickets can be steered with `yoke nudge T-xxx --note TEXT`, which appends user guidance to the next attempt or review round feedback without touching `tickets.json` or interrupting in-flight calls.
+2. Unattended: a detached runner takes each ticket through code, review, QA, validate, docs. Following the `code` stage, a test-fix loop can re-run the test command and resume the coder to fix failures before advancing to review and QA. The validator runs no tests and evaluates diffs alongside verified test evidence from the runner. Failures retry with feedback up to a limit, then escalate to you. Independent tickets run in parallel, one git worktree each (`--parallel N`). When `parallel > 1`, ready tickets whose `files_hint` overlaps (exact file path or directory prefix) any currently running ticket are deferred until that ticket finishes, emitting a `ticket_deferred` audit event (tickets with empty hints never block). Upstream handoff notes (interface changes, new files, gotchas) from closed ancestor tickets are automatically stored at `tickets/<T>/handoff.json` and inlined into dependent `code`, `QA`, and `validate` prompts (`$upstream`). Pending or in-progress tickets can be steered with `yoke nudge T-xxx --note TEXT`, which appends user guidance to the next attempt or review round feedback without touching `tickets.json` or interrupting in-flight calls.
 3. A ticket is committed to feature branch `yoke/<run_id>` only when QA passes and the validator approves. The runner never pushes; `yoke pr` does, after `approve final`.
 4. State and audit trail (prompts, commands, outputs) live in `~/.yoke/runs/<run_id>/` (`$YOKE_HOME` overrides), outside the target repo. Any session can resume from disk. An atomic usage ledger (`usage.json`) tracks token usage and costs by stage, ticket, agent and model at each ticket close and at run end; status, wait summaries, and the dashboard surface usage totals and top spenders.
 
@@ -275,7 +275,7 @@ Yoke can run an external shell command whenever a run finishes successfully (`ru
 
 ```json
 {
-  "notify_command": "notify-send \"$YOKE_MESSAGE\""
+  "notify_command": "osascript -e \"display notification \\\"$YOKE_MESSAGE\\\" with title \\\"yoke\\\"\""
 }
 ```
 
@@ -380,12 +380,26 @@ Decision thresholds, safety guard, skill discovery, and browser e2e settings can
     "ready_timeout_s": 60,
     "max_steps": 12,
     "candidates": 20
-  }
+  },
+  "agents": {
+    "claude": {
+      "setting_sources": "project,local"
+    }
+  },
+  "timeouts_s": {
+    "test": 600
+  },
+  "max_test_fix_rounds": 2,
+  "notify_command": null
 }
 ```
 
 - **Thresholds & retry bump**: `router.thresholds` sets per-point confidence cutoffs. Points omitted from `thresholds` fall back to `router.min_confidence` (default: 0.7). When `router.retry_bump` is enabled (default: `true`), repeated failed attempts dynamically step up reasoning effort (`low` -> `medium` -> `high`) and model tier (`cheap` -> `plan`).
 - **Commit message generation (`router.commit_message`)**: Controls how git commit messages are generated upon ticket close (`"agent"` or `"default"`, default `"agent"`). In `"agent"` mode, an LLM generates the commit subject and body with deterministic fallback on failure. In `"default"` mode, commit messages are built deterministically without an agent call: the subject is `<id>: <title>` (truncated to 72 characters) and the body is the validator summary (falling back to the diffstat).
+- **Claude setting sources (`agents.claude.setting_sources`)**: Controls which setting sources Claude CLI calls inherit (default: `"project,local"`). Setting to `""` disables the `--setting-sources` flag. Note: global user settings in `~/.claude/settings.json` no longer apply inside yoke calls.
+- **Test timeout (`timeouts_s.test`)**: Execution timeout in seconds for runner test command re-runs (default: `600`). If a test command hangs or exceeds this limit, its entire process group is terminated cleanly.
+- **Test-fix loop (`max_test_fix_rounds`)**: Maximum number of resume rounds for test fixes immediately after the `code` stage (default: `2`). Setting to `0` disables the test-fix loop.
+- **Run notifications (`notify_command`)**: External command executed upon run completion (`run_done`) or escalation (`run_needs_user`), default: `null`. Payload values are passed strictly through environment variables `YOKE_EVENT`, `YOKE_RUN`, and `YOKE_MESSAGE`. Example: `osascript -e "display notification \"$YOKE_MESSAGE\" with title \"yoke\""`.
 - **User config only**: For security reasons, `guard` and `router.thresholds.safety` are strictly enforced from user configuration (`~/.yoke/config.json`). Any definitions in repository configuration (`<repo>/.yoke.json`) are refused with a warning log to prevent untrusted repositories from tampering with safety policies.
 - **Environment override**: The `YOKE_OLLAMA_URL` environment variable overrides `router.ollama_url` across all runs, applied over user config and prior to repo config (used in tests to point to a dead port for offline verification).
 - **Dashboard decisions card**: The web dashboard aggregates decision points by source count (`ollama`, `none`, `default`, `fallback`) and tracks recent flagged guard events (`deny`, `ask`, `escalate`) with reasons and target paths in the Decision models card.

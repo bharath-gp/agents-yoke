@@ -60,6 +60,11 @@ Status legend per milestone: `[ ]` todo, `[~]` in progress, `[x]` done. Update t
    | [M27](#m27) | Model and effort pick | [2.4](#s2-4), [2.6](#s2-6), [2.10](#s2-10) |
    | [M28](#m28) | Skill pick | [2.4](#s2-4), [2.10](#s2-10) |
    | [M29](#m29) | Browser e2e stage | [2.6](#s2-6), [2.8](#s2-8), [2.10](#s2-10) |
+   | [M30](#m30) | Validator test evidence, read deny list, setting_sources | [2.4](#s2-4), [2.6](#s2-6), [2.8](#s2-8) |
+   | [M31](#m31) | Test rerun timeout, group kill, failure text | [2.6](#s2-6), [2.8](#s2-8) |
+   | [M32](#m32) | Test-fix loop | [2.6](#s2-6), [2.8](#s2-8) |
+   | [M33](#m33) | Dependency chain warning, chart rules, skill text | [2.5](#s2-5), [2.7](#s2-7) |
+   | [M34](#m34) | Notifications and commit message mode | [2.6](#s2-6), [2.10](#s2-10) |
 4. [Verification matrix](#s4)
 5. [Out of scope](#s5)
 - [Appendix A: Topic index](#appA)
@@ -273,6 +278,8 @@ attempt > max_attempts → blocked + escalation; dependents stay pending (shown 
 Close gate (checked explicitly, logged): code `done` ∧ QA `pass` ∧ runner test rerun exit 0 ∧ validate `approve` with every `exit_criteria.met` true ∧ docs `done|not_needed` (only for stages in this ticket's route) ∧ gate hooks (`after_stage` code/qa, `before_close`) passing. Hook failures return output tail as retry feedback to the coder.
 
 Retry feedback is a file `attempt-<n>/feedback.md` built from QA failures / validator issues / router triage hint or hypotheses fix plan, inlined into the next code prompt, and the coder session is resumed by ID.
+
+Notes (Test-fix loop): Following the `code` stage and any `after_stage.code` gate hooks, the runner re-runs the test command (up to `max_test_fix_rounds`, default 2; 0 disables) and resumes the coder session (`code-t1`, `code-t2`) with failure feedback before advancing to review and QA. The validator runs no tests and evaluates diffs alongside verified test evidence from the runner.
 
 Failure hypotheses fan-out: When `hypotheses > 0` in config, if a ticket failure repeats on the final attempt (`attempt == max_attempts_per_ticket`, `attempt >= 2` with matching failure evidence from the previous attempt), yoke triggers `N` read-only fan-out calls (role `hypotheses`, default `secondary`) round-robin across categories (`spec gap`, `environment`, `test bug`, `code bug`) seeded with failure evidence, followed by 1 primary ranking call (role `hypotheses_rank`, default `primary`). Each call is audited under `tickets/<tid>/attempt-<n>/hypotheses-<k>` and `hypotheses-rank`, and counted against `max_agent_calls_total`. The winning `fix_plan` is appended to retry feedback as `Hypothesis fix plan (advisory only): ...` for the coder. If the ranking call fails, the candidate with highest confidence is selected; if fan-out yields no candidates or fails, yoke falls back to the router triage hint. Confidence never decides pass or fail.
 
@@ -736,6 +743,51 @@ Files: `yoke/e2e.py`, `yoke/pipeline.py`, `yoke/config.py`, `yoke/defaults.json`
 - Exit criteria: picker and verdict tested with `FakeOllama` and a stub page driver; skip path tested without Playwright; one real run against a local sample app recorded in Notes.
 - Notes: Built optional browser e2e stage in `yoke/e2e.py` with element picker (`e2e_pick`), exit criteria verdict (`e2e_verdict`), and agent fallback on low confidence. Deviations: Live check (2026-10-23, orchestrator): Playwright 1.x with headless Chromium in a scratch venv, against a local static page (About, Help, Cancel, Save note) served by `start_command`. The first verdict was 0.13 (not met). The picker chose `e3` (Save note) at 0.94 over About, Help and Cancel. The verdict after the click was 0.96, so the stage passed in one click with no agent fallback, and the server was stopped afterwards.
 
+<a id="m30"></a>
+### M30: Validator test evidence, read deny list, setting_sources `[x]`
+Files: `yoke/prompts/validate.md`, `yoke/pipeline.py`, `yoke/adapters.py`, `yoke/defaults.json`, `tests/test_prompts.py`, `tests/test_core.py`, `tests/test_pipeline.py`.
+- Validator prompt receives runner test evidence (`$test_evidence`) and instructions not to run test suites or long commands, evaluating diffs and runner test evidence instead.
+- Read-only Claude calls block test runners via `--disallowedTools` (`CLAUDE_READ_DENY`: `Bash(python3:*) Bash(python:*) Bash(pytest:*) Bash(sleep:*) Bash(npm:*) Bash(make:*)`).
+- Claude CLI calls isolated from user configuration via `--setting-sources` (defaulting to `agents.claude.setting_sources = "project,local"`; empty string disables).
+- Exit criteria: unit tests pass; validate prompt contains test evidence; read mode denies test tools; setting_sources passed to Claude CLI calls.
+- Notes: Quota probes from docs/perf-plan.md Commit 1.2 step 1 and Commit 1.3 step 2 are pending; run them by hand. Phase 0 (tests/run_parallel.py, quiet tests) shipped repo-only.
+
+<a id="m31"></a>
+### M31: Test rerun timeout, group kill, failure text `[x]`
+Files: `yoke/pipeline.py`, `yoke/hooks.py`, `yoke/defaults.json`, `tests/test_pipeline.py`.
+- Runner test rerun (`_rerun`) executed with process-group isolation and timeout via `hooks.run_hook`, terminating child processes cleanly on timeout.
+- Test timeout configured via `timeouts_s.test` (default 600s).
+- Failure output formatted by `_failure_text` to extract actionable unittest/pytest failure blocks rather than generic tail truncation.
+- Exit criteria: tests pass; hanging commands terminate within timeout with exit code -1; failure blocks extracted from test runner output.
+- Notes: Built on `hooks.run_hook` process-group termination; replaced 2000-character tail truncation with failure-block extraction.
+
+<a id="m32"></a>
+### M32: Test-fix loop `[x]`
+Files: `yoke/pipeline.py`, `yoke/defaults.json`, `yoke/prompts/code.md`, `tests/test_pipeline.py`.
+- Test-fix loop runs immediately after the `code` stage and `after_stage.code` gate hooks, before review and QA.
+- Iteratively reruns the test command up to `max_test_fix_rounds` (default 2; 0 disables) and resumes coder session with failure feedback under audit labels `code-t1`, `code-t2`.
+- Emits `test_fix` audit events (`ticket`, `attempt`, `round`, `rc`).
+- Validator runs no tests and judges results from runner test evidence and diff.
+- Exit criteria: tests pass; coder resumed on test failure; loop terminates on test pass or round exhaustion; events recorded.
+- Notes: Closes the gap between code generation and QA verification, preventing repeated multi-stage failure cycles.
+
+<a id="m33"></a>
+### M33: Dependency chain warning, chart rules, skill text `[x]`
+Files: `yoke/tickets.py`, `yoke/prompts/chart.md`, `skills/tickets/SKILL.md`, `skills/run/SKILL.md`, `tests/test_tickets.py`, `tests/test_chart.py`.
+- Dependency chain warning in `tickets.warnings` flags long serial chains within milestones (chains >= 4 tickets, or full chaining of milestones with >= 3 tickets).
+- Chart prompt rules updated to encourage wide milestones, treat shared files as `files_hint` rather than hard dependencies, and target intermediate milestone exit checks to specific modules.
+- Skills updated: `skills/tickets/SKILL.md` offers re-charting on chain warnings; `skills/run/SKILL.md` recommends `parallel: 3` when independent tickets exist.
+- Exit criteria: chain warnings detect serial dependencies; charting rules enforced; prompt tests pass.
+- Notes: Encourages wide execution graphs to maximize concurrency under `--parallel`.
+
+<a id="m34"></a>
+### M34: Notifications and commit message mode `[x]`
+Files: `yoke/scheduler.py`, `yoke/router.py`, `yoke/defaults.json`, `tests/test_scheduler.py`, `tests/test_router.py`.
+- External notification command support via `notify_command` (default `null`), invoked on `run_done` and `run_needs_user` with environment variables `YOKE_EVENT`, `YOKE_RUN`, `YOKE_MESSAGE`. Failures log `notify_failed` event without raising.
+- Deterministic commit message generation mode via `router.commit_message` (`"agent"` or `"default"`, default `"agent"`). `"default"` mode constructs messages deterministically (`<id>: <title>` subject and validator summary or diffstat body) without invoking an LLM fallback call.
+- Exit criteria: notify command executed with environment variables on completion and escalation; notify failure logs event; deterministic commit message formats correctly without agent calls.
+- Notes: Lowers latency and token spend on run finalization and ticket commits.
+
 ---
 
 <a id="s4"></a>
@@ -793,6 +845,13 @@ Files: `yoke/e2e.py`, `yoke/pipeline.py`, `yoke/config.py`, `yoke/defaults.json`
 | Schemas (ticket, stage results, router) | [2.7](#s2-7) |
 | Type → stages routing table | [2.6](#s2-6) |
 | Worktrees, feature branch, commits | [2.9](#s2-9) |
+| Claude setting sources (`agents.claude.setting_sources`) | [2.4](#s2-4), [M30](#m30) |
+| Test rerun timeout and process-group kill (`timeouts_s.test`) | [2.6](#s2-6), [M31](#m31) |
+| Test-fix loop (`max_test_fix_rounds`) | [2.8](#s2-8), [M32](#m32) |
+| Dependency chain warning and parallel charting | [2.5](#s2-5), [M33](#m33) |
+| Run notifications (`notify_command`) | [2.6](#s2-6), [M34](#m34) |
+| Commit message generation mode (`router.commit_message`) | [2.10](#s2-10), [M34](#m34) |
+| Parallel test runner (`tests/run_parallel.py`) | [4](#s4), [M30](#m30) |
 
 <a id="appB"></a>
 ## Appendix B: File index
@@ -826,3 +885,4 @@ Files: `yoke/e2e.py`, `yoke/pipeline.py`, `yoke/config.py`, `yoke/defaults.json`
 | `yoke/skills.py` | skill catalog discovery for skill pick | [2.10](#s2-10) | [M28](#m28) |
 | `yoke/e2e.py` | browser e2e stage (optional Playwright) | [2.8](#s2-8) | [M29](#m29) |
 | `tests/fake_cli.py`, `tests/test_*.py`, `tests/e2e.sh` | fake CLI, unit + e2e tests | [4](#s4) | [M1](#m1)–[M9](#m9) |
+| `tests/run_parallel.py` | parallel, quiet test runner | [4](#s4) | [M30](#m30) |
