@@ -624,8 +624,19 @@ yoke factcheck docs/some-file.md         # per-claim verdicts for any markdown f
 
 ### Research screening
 
-Search sources and research claims can be screened by the local decision model (`tev1:4b`) using deterministic heuristics and confidence threshold checks:
-- **Configuration (`research.screen`)**: Configured under `research.screen` (`enabled: true`, `skip_factcheck: true`, `escalate_on_unsure: true`, `min_confidence: {"sources": 0.75, "claims": 0.8}`, `max_items: 25`).
+Search sources and research claims can be screened by the local decision model (`tev1:4b`) using deterministic heuristics and confidence threshold checks.
+
+**Configuration keys (`research.screen`)**:
+- `enabled`: enables decision model screening for research sources and claims (default: `true`).
+- `skip_factcheck`: bypasses the factcheck stage when all claims are confidently supported and no sources are unsure (default: `true`).
+- `escalate_on_unsure`: escalates to factcheck when sources or claims fall below confidence thresholds (default: `true`).
+- `min_confidence.sources`: minimum confidence score to keep a candidate source, overriding `router.thresholds.source_screen` (default: `0.75`).
+- `min_confidence.claims`: minimum confidence score to accept a claim as supported, overriding `router.thresholds.claim_screen` (default: `0.8`).
+- `max_items`: maximum number of candidate sources or claims screened per call (default: `25`).
+- `router.thresholds.source_screen`: global baseline confidence threshold for `source_screen` decisions (default: `0.75`) when not overridden by `min_confidence.sources`.
+- `router.thresholds.claim_screen`: global baseline confidence threshold for `claim_screen` decisions (default: `0.8`) when not overridden by `min_confidence.claims`.
+
+**Screening pipeline**:
 - **Source screening (`source_screen`)**: Filters invalid schemes, duplicates, and empty excerpts via heuristics, then queries the decision model to keep or discard candidate sources. If all candidate sources are discarded, search fails with per-source feedback.
 - **Claim screening (`claim_screen`)**: Evaluates whether cited kept sources support each claim against excerpt evidence. If any claim is unsupported, research fails with per-claim feedback.
 - **Fact-check skip and narrowing**: In ticket execution (active when `research.screen.enabled` is true and `"research"` is in ticket stages):
