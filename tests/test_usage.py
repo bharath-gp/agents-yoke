@@ -304,6 +304,100 @@ class TestUsageSummarize(UsageTestBase):
         self.assertEqual(summary["by_model"], {})
         self.assertEqual(summary["top_spenders"], [])
 
+    def test_screen_counts_in_ledger(self):
+        p1 = self.run_.path("tickets/T-001/attempt-1/screen.json")
+        p2 = self.run_.path("tickets/T-001/attempt-2/screen.json")
+        os.makedirs(os.path.dirname(p1), exist_ok=True)
+        os.makedirs(os.path.dirname(p2), exist_ok=True)
+        try:
+            # 1. Standard fixture
+            fixture = {
+                "factcheck_skipped": True,
+                "discarded_sources": [{"url": "https://bad.example", "reason": "spam"}],
+                "supported": ["C1"],
+                "unsupported": [],
+                "escalated": [],
+            }
+            with open(p1, "w", encoding="utf-8") as f:
+                json.dump(fixture, f)
+            summary = usage.summarize(self.run_)
+            self.assertEqual(summary.get("screen"), {
+                "factcheck_skipped": 1,
+                "sources_discarded": 1,
+                "claims_screened": 1,
+            })
+
+            # 2. All-zero screen.json leaves 'screen' absent
+            with open(p1, "w", encoding="utf-8") as f:
+                json.dump({
+                    "factcheck_skipped": False,
+                    "discarded_sources": [],
+                    "supported": [],
+                    "unsupported": [],
+                    "escalated": [],
+                }, f)
+            self.assertNotIn("screen", usage.summarize(self.run_))
+
+            # 3. Malformed JSON and non-dict JSON are skipped safely
+            with open(p1, "w", encoding="utf-8") as f:
+                f.write("corrupted json {{")
+            self.assertNotIn("screen", usage.summarize(self.run_))
+
+            with open(p1, "w", encoding="utf-8") as f:
+                json.dump(["not", "a", "dict"], f)
+            self.assertNotIn("screen", usage.summarize(self.run_))
+
+            # 4. Multiple attempts sum across attempt directories; factcheck_skipped false still records counts
+            fixture_att1 = {
+                "factcheck_skipped": False,
+                "discarded_sources": [{"url": "https://bad1.example"}],
+                "supported": ["C1"],
+                "unsupported": ["C2"],
+                "escalated": ["C3"],
+            }
+            fixture_att2 = {
+                "factcheck_skipped": True,
+                "discarded_sources": [{"url": "https://bad2.example"}],
+                "supported": ["C1", "C2"],
+                "unsupported": [],
+                "escalated": [],
+            }
+            with open(p1, "w", encoding="utf-8") as f:
+                json.dump(fixture_att1, f)
+            with open(p2, "w", encoding="utf-8") as f:
+                json.dump(fixture_att2, f)
+            s_multi = usage.summarize(self.run_)
+            self.assertEqual(s_multi.get("screen"), {
+                "factcheck_skipped": 1,
+                "sources_discarded": 2,
+                "claims_screened": 5,
+            })
+
+            # 5. Numeric fallback values sum correctly
+            os.remove(p2)
+            with open(p1, "w", encoding="utf-8") as f:
+                json.dump({
+                    "factcheck_skipped": False,
+                    "discarded_sources": 3,
+                    "supported": 2,
+                    "unsupported": 1,
+                    "escalated": 0,
+                }, f)
+            s_num = usage.summarize(self.run_)
+            self.assertEqual(s_num.get("screen"), {
+                "factcheck_skipped": 0,
+                "sources_discarded": 3,
+                "claims_screened": 3,
+            })
+        finally:
+            if os.path.isfile(p1):
+                os.remove(p1)
+            if os.path.isfile(p2):
+                os.remove(p2)
+
+        summary_clean = usage.summarize(self.run_)
+        self.assertNotIn("screen", summary_clean)
+
 
 class TestUsagePersistence(UsageTestBase):
     def test_write_usage_writes_atomically(self):

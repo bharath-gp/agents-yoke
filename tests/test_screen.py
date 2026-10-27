@@ -576,6 +576,25 @@ class TestScreen(PipeBase):
             self.assertEqual(len(res_c["unsupported"]), 1)
             self.assertEqual(res_c["unsupported"][0]["reason"], "no cited source among kept sources")
 
+    def test_write_audit(self):
+        m_run = mock.MagicMock()
+        screen.write_audit(m_run, "T-001", 1, {"test": True})
+        m_run.write_json.assert_called_once_with("tickets/T-001/attempt-1/screen.json", {"test": True})
+
+        # No write_json attribute or None run does not raise
+        screen.write_audit(None, "T-001", 1, {})
+        screen.write_audit(object(), "T-001", 1, {})
+
+        # Swallows OSError, TypeError, ValueError
+        m_run.write_json.side_effect = OSError("disk full")
+        screen.write_audit(m_run, "T-001", 1, {})
+
+        m_run.write_json.side_effect = TypeError("not serializable")
+        screen.write_audit(m_run, "T-001", 1, {})
+
+        m_run.write_json.side_effect = ValueError("invalid value")
+        screen.write_audit(m_run, "T-001", 1, {})
+
 
 if __name__ == "__main__":
     unittest.main()

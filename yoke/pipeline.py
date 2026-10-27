@@ -1256,6 +1256,7 @@ def _attempt_body(run, adapter_for, env, ticket, st, wt, stages, start_idx, resu
         if stage == "factcheck" and scr_on and results.get("screen") is not None and screen.should_skip(run.cfg, results["screen"]):
             results["factcheck"] = screen.synthetic_factcheck(results["research"], results["search"]["sources"], results["screen"])
             results["screen"]["factcheck_skipped"] = True
+            screen.write_audit(run, tid, attempt, results["screen"])
             run.event("screen", ticket=tid, attempt=attempt, stage="factcheck", factcheck_skipped=True, supported=len(results["screen"]["supported"]))
             continue
         mode = "read" if stage in READ_STAGES else "write"
@@ -1322,9 +1323,11 @@ def _attempt_body(run, adapter_for, env, ticket, st, wt, stages, start_idx, resu
                 scr = screen.screen_sources(run, ticket, out, attempt)
                 out["sources"] = scr["kept"]
                 results["screen"] = {
+                    "kept_sources": len(scr["kept"]),
                     "discarded_sources": scr["discarded"],
                     "unsure_sources": scr["unsure"],
                 }
+                screen.write_audit(run, tid, attempt, results["screen"])
                 if not scr["kept"]:
                     lines = ["- %s: %s" % (d.get("url", ""), d.get("reason", "")) for d in scr["discarded"]]
                     return "Search screen discarded every source:\n" + "\n".join(lines), results, test_cmd, rerun_rc
@@ -1342,6 +1345,7 @@ def _attempt_body(run, adapter_for, env, ticket, st, wt, stages, start_idx, resu
                     "escalated": cl["escalated"],
                     "conf_by_id": cl["conf_by_id"],
                 })
+                screen.write_audit(run, tid, attempt, results["screen"])
                 if cl["unsupported"]:
                     lines = ["- %s: %s" % (u.get("id", ""), u.get("reason", "")) for u in cl["unsupported"]]
                     return "Claim screen failed:\n" + "\n".join(lines), results, test_cmd, rerun_rc
@@ -1349,6 +1353,7 @@ def _attempt_body(run, adapter_for, env, ticket, st, wt, stages, start_idx, resu
             if scr_on and results.get("screen") is not None:
                 out = results["factcheck"] = screen.merge_supported(out, results["research"], results["screen"])
                 results["screen"]["factcheck_skipped"] = False
+                screen.write_audit(run, tid, attempt, results["screen"])
             bad = factcheck_failures(out)
             if bad:
                 return "Fact check failed:\n" + "\n".join(bad), results, test_cmd, rerun_rc
@@ -1507,6 +1512,17 @@ def _append_decision(run, ticket, results):
         map_line = "- %s %s: %s\n" % (tid, ticket["title"], str(val_summary).strip())
     else:
         map_line = "- %s %s\n" % (tid, ticket["title"])
+    if isinstance(results.get("screen"), dict):
+        scr = results["screen"]
+        kept = scr.get("kept_sources", 0)
+        discarded = len(scr.get("discarded_sources") or [])
+        supported = len(scr.get("supported") or [])
+        unsupported = len(scr.get("unsupported") or [])
+        escalated = len(scr.get("escalated") or [])
+        fc_str = "skipped" if scr.get("factcheck_skipped") else "run"
+        map_line += "  - screen: %d sources kept, %d discarded; %d claims supported, %d unsupported, %d escalated; factcheck %s\n" % (
+            kept, discarded, supported, unsupported, escalated, fc_str
+        )
     map_path = run.path("map.md")
     with state._LOCK:
         if os.path.exists(map_path):

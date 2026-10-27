@@ -89,6 +89,17 @@ class TestResearchTicket(PipeBase):
         self.scripted(research=[resp(dict(RESEARCH, status="blocked", blocked_reason="no web"))])
         self.assertEqual(self.go(), "needs_user")
 
+    def test_ollama_down_map_line_says_run(self):
+        self.scripted()
+        self.assertEqual(self.go(), "done")
+        map_path = self.run_.path("map.md")
+        self.assertTrue(os.path.isfile(map_path))
+        with open(map_path) as f:
+            content = f.read()
+        self.assertIn("factcheck run", content)
+        self.assertIn("1 escalated", content)
+        self.assertIn("  - screen: 1 sources kept, 0 discarded; 0 claims supported, 0 unsupported, 1 escalated; factcheck run\n", content)
+
 
 class TestResearchScreen(PipeBase):
     def patch_ollama(self, answers_by_key):
@@ -175,6 +186,11 @@ class TestResearchScreen(PipeBase):
         )
         self.assertEqual(self.go(), "done")
         self.assertEqual(self.tstate(1)["attempt"], 2)
+        screen_path1 = self.run_.path("tickets/T-001/attempt-1/screen.json")
+        self.assertTrue(os.path.isfile(screen_path1))
+        with open(screen_path1) as f:
+            sc1 = json.load(f)
+        self.assertEqual([u["id"] for u in sc1.get("unsupported", [])], ["C1"])
         with open(self.run_.path("tickets/T-001/attempt-2/feedback.md")) as f:
             fb = f.read()
         self.assertIn("Claim screen failed", fb)
@@ -195,6 +211,12 @@ class TestResearchScreen(PipeBase):
         )
         self.assertEqual(self.go(), "done")
         self.assertEqual(self.tstate(1)["attempt"], 2)
+        screen_path1 = self.run_.path("tickets/T-001/attempt-1/screen.json")
+        self.assertTrue(os.path.isfile(screen_path1))
+        with open(screen_path1) as f:
+            sc1 = json.load(f)
+        self.assertEqual(len(sc1.get("discarded_sources", [])), 1)
+        self.assertEqual(sc1.get("kept_sources"), 0)
         with open(self.run_.path("tickets/T-001/attempt-2/feedback.md")) as f:
             fb = f.read()
         self.assertIn("Search screen discarded every source", fb)
@@ -236,6 +258,23 @@ class TestResearchScreen(PipeBase):
             mock_s.assert_not_called()
             mock_c.assert_not_called()
         self.assertTrue(ok)
+
+    def test_screen_json_and_map_line(self):
+        self.patch_ollama({"v": [choice("keep", 0.9), choice("supported", 0.9)]})
+        self.scripted(factcheck=[])
+        self.assertEqual(self.go(), "done")
+        screen_path = self.run_.path("tickets/T-001/attempt-1/screen.json")
+        self.assertTrue(os.path.isfile(screen_path))
+        with open(screen_path) as f:
+            sc = json.load(f)
+        self.assertTrue(sc.get("factcheck_skipped"))
+        map_path = self.run_.path("map.md")
+        self.assertTrue(os.path.isfile(map_path))
+        with open(map_path) as f:
+            content = f.read()
+        self.assertIn("factcheck skipped", content)
+        self.assertIn("1 sources kept", content)
+        self.assertIn("  - screen: 1 sources kept, 0 discarded; 1 claims supported, 0 unsupported, 0 escalated; factcheck skipped\n", content)
 
 
 class TestStandalone(PipeBase):

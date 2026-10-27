@@ -473,3 +473,13 @@ def should_skip(cfg, screen_state):
     if screen_state.get("unsure_sources"):
         return False
     return True
+
+
+def write_audit(run, tid, attempt, screen_state):
+    """Write screen state to tickets/<tid>/attempt-<n>/screen.json atomically. Never raises."""
+    if not run or not hasattr(run, "write_json"):
+        return
+    try:
+        run.write_json("tickets/%s/attempt-%d/screen.json" % (tid, int(attempt)), screen_state)
+    except (OSError, TypeError, ValueError):
+        pass

@@ -632,6 +632,9 @@ Search sources and research claims can be screened by the local decision model (
   - When all claims are confidently supported without escalations or unsure sources, the fact-check stage is bypassed with synthetic results (`factcheck_skipped: True`, emitting a `screen` event).
   - When claims escalate or sources are unsure, the fact-check agent evaluates only the escalated claim IDs, unsure sources, and unverified statements; previously screened supported claims are merged back into results before verification checks.
   - Standalone `yoke factcheck FILE` remains unscreened.
+- **Screen audit state (`screen.json`)**: Screen state (`kept_sources`, `discarded_sources`, `supported`, `unsupported`, `escalated`, `factcheck_skipped`) is atomically written to `tickets/<tid>/attempt-<n>/screen.json` after search and claim screening, after factcheck bypass or merge, and on failed attempts.
+- **Implementation map (`map.md`)**: Research ticket entries in `map.md` append an indented screening summary line under the ticket decision: `  - screen: N sources kept, D discarded; C claims supported, U unsupported, E escalated; factcheck skipped|run`.
+- **Usage ledger aggregation**: `usage.summarize` collects `screen.json` across attempts, reporting a `screen` section (`{"factcheck_skipped": n, "sources_discarded": n, "claims_screened": n}`) in `usage.json` when any counter is non-zero.
 
 ## Tests
 
