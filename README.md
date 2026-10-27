@@ -338,6 +338,8 @@ yoke routes small, high-frequency decisions to a local Ollama decision model (`t
 | `skill` | 0.6 | noul | Scores and selects discovered allowlisted skills for `$skills` prompt injection. |
 | `e2e_pick` | 0.6 | choice | Selects interactive element candidate action during browser e2e verification. |
 | `e2e_verdict` | 0.8 | noul | Evaluates whether page text satisfies an exit criterion during browser e2e verification. |
+| `source_screen` | 0.75 | choice | Screens search result sources for relevance and credibility (keep vs discard). |
+| `claim_screen` | 0.8 | choice | Screens research claims against cited kept source excerpts (supported vs unsupported). |
 
 ### Configuration
 
@@ -359,7 +361,9 @@ Decision thresholds, safety guard, skill discovery, and browser e2e settings can
       "effort": 0.7,
       "skill": 0.6,
       "e2e_pick": 0.6,
-      "e2e_verdict": 0.8
+      "e2e_verdict": 0.8,
+      "source_screen": 0.75,
+      "claim_screen": 0.8
     },
     "retry_bump": true,
     "commit_message": "agent"
@@ -617,6 +621,31 @@ yoke factcheck docs/some-file.md         # per-claim verdicts for any markdown f
 ```
 
 `research` is also a ticket type (`search`, `research`, `factcheck` stages). Web tools come from `search.tools` in the config; depth presets from `research.depths`.
+
+### Research screening
+
+Search sources and research claims can be screened by the local decision model (`tev1:4b`) using deterministic heuristics and confidence threshold checks.
+
+**Configuration keys (`research.screen`)**:
+- `enabled`: enables decision model screening for research sources and claims (default: `true`).
+- `skip_factcheck`: bypasses the factcheck stage when all claims are confidently supported and no sources are unsure (default: `true`).
+- `escalate_on_unsure`: escalates to factcheck when sources or claims fall below confidence thresholds (default: `true`).
+- `min_confidence.sources`: minimum confidence score to keep a candidate source, overriding `router.thresholds.source_screen` (default: `0.75`).
+- `min_confidence.claims`: minimum confidence score to accept a claim as supported, overriding `router.thresholds.claim_screen` (default: `0.8`).
+- `max_items`: maximum number of candidate sources or claims screened per call (default: `25`).
+- `router.thresholds.source_screen`: global baseline confidence threshold for `source_screen` decisions (default: `0.75`) when not overridden by `min_confidence.sources`.
+- `router.thresholds.claim_screen`: global baseline confidence threshold for `claim_screen` decisions (default: `0.8`) when not overridden by `min_confidence.claims`.
+
+**Screening pipeline**:
+- **Source screening (`source_screen`)**: Filters invalid schemes, duplicates, and empty excerpts via heuristics, then queries the decision model to keep or discard candidate sources. If all candidate sources are discarded, search fails with per-source feedback.
+- **Claim screening (`claim_screen`)**: Evaluates whether cited kept sources support each claim against excerpt evidence. If any claim is unsupported, research fails with per-claim feedback.
+- **Fact-check skip and narrowing**: In ticket execution (active when `research.screen.enabled` is true and `"research"` is in ticket stages):
+  - When all claims are confidently supported without escalations or unsure sources, the fact-check stage is bypassed with synthetic results (`factcheck_skipped: True`, emitting a `screen` event).
+  - When claims escalate or sources are unsure, the fact-check agent evaluates only the escalated claim IDs, unsure sources, and unverified statements; previously screened supported claims are merged back into results before verification checks.
+  - Standalone `yoke factcheck FILE` remains unscreened.
+- **Screen audit state (`screen.json`)**: Screen state (`kept_sources`, `discarded_sources`, `supported`, `unsupported`, `escalated`, `factcheck_skipped`) is atomically written to `tickets/<tid>/attempt-<n>/screen.json` after search and claim screening, after factcheck bypass or merge, and on failed attempts.
+- **Implementation map (`map.md`)**: Research ticket entries in `map.md` append an indented screening summary line under the ticket decision: `  - screen: N sources kept, D discarded; C claims supported, U unsupported, E escalated; factcheck skipped|run`.
+- **Usage ledger aggregation**: `usage.summarize` collects `screen.json` across attempts, reporting a `screen` section (`{"factcheck_skipped": n, "sources_discarded": n, "claims_screened": n}`) in `usage.json` when any counter is non-zero.
 
 ## Tests
 

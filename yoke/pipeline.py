@@ -11,7 +11,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from . import adapters, calls, config, gitops, guard, hooks, milestones, planreview, router, schema, skills, state, tracker, usage
+from . import adapters, calls, config, gitops, guard, hooks, milestones, planreview, router, schema, screen, skills, state, tracker, usage
 
 PKG = os.path.dirname(os.path.abspath(__file__))
 
@@ -1219,7 +1219,7 @@ def _test_fix_loop(run, adapter_for, env, ticket, st, wt, base, results, feedbac
 
 
 def _attempt_body(run, adapter_for, env, ticket, st, wt, stages, start_idx, results, test_cmd, rerun_rc):
-    """Execute stages starting at start_idx with seeded results and test state."""
+    """Execute stages starting at start_idx with seeded results, test state, and screening hooks."""
     tid, attempt, base = ticket["id"], st["attempt"], st["base_sha"]
     st["gate_hooks"] = {}
     if "review" in stages[start_idx:]:
@@ -1232,6 +1232,7 @@ def _attempt_body(run, adapter_for, env, ticket, st, wt, stages, start_idx, resu
         write_feedback(run, tid, attempt, nudge_str, append=True)
         feedback = _read_feedback(run, tid, attempt)
     since = gitops.head_sha(wt)
+    scr_on = screen.enabled(run.cfg) and "research" in stages
     for stage in stages[start_idx:]:
         if stage in ("review", "validate"):
             gitops.git(wt, "add", "-A")  # new files become visible to `git diff <base>`
@@ -1251,6 +1252,12 @@ def _attempt_body(run, adapter_for, env, ticket, st, wt, stages, start_idx, resu
                 if not lines:
                     lines = "- " + out.get("summary", "failed")
                 return "e2e failed:\n" + lines, results, test_cmd, rerun_rc
+            continue
+        if stage == "factcheck" and scr_on and results.get("screen") is not None and screen.should_skip(run.cfg, results["screen"]):
+            results["factcheck"] = screen.synthetic_factcheck(results["research"], results["search"]["sources"], results["screen"])
+            results["screen"]["factcheck_skipped"] = True
+            screen.write_audit(run, tid, attempt, results["screen"])
+            run.event("screen", ticket=tid, attempt=attempt, stage="factcheck", factcheck_skipped=True, supported=len(results["screen"]["supported"]))
             continue
         mode = "read" if stage in READ_STAGES else "write"
         call = _call if stage == "code" else _call_retry  # a failed code call restarts the attempt anyway
@@ -1312,13 +1319,41 @@ def _attempt_body(run, adapter_for, env, ticket, st, wt, stages, start_idx, resu
         elif stage == "search":
             if out["status"] == "none" or not out["sources"]:
                 return "Search found no sources: " + out["summary"], results, test_cmd, rerun_rc
+            if scr_on:
+                scr = screen.screen_sources(run, ticket, out, attempt)
+                out["sources"] = scr["kept"]
+                results["screen"] = {
+                    "kept_sources": len(scr["kept"]),
+                    "discarded_sources": scr["discarded"],
+                    "unsure_sources": scr["unsure"],
+                }
+                screen.write_audit(run, tid, attempt, results["screen"])
+                if not scr["kept"]:
+                    lines = ["- %s: %s" % (d.get("url", ""), d.get("reason", "")) for d in scr["discarded"]]
+                    return "Search screen discarded every source:\n" + "\n".join(lines), results, test_cmd, rerun_rc
         elif stage == "research":
             if out["status"] == "blocked":
                 raise Escalate("researcher blocked: %s" % out.get("blocked_reason", "no reason given"))
             doc = doc_path_for(run.cfg, ticket)
             if not os.path.isfile(os.path.join(wt, doc)):
                 return "The research document was not written to %s." % doc, results, test_cmd, rerun_rc
+            if scr_on and results.get("screen") is not None:
+                cl = screen.screen_claims(run, ticket, out, results["search"]["sources"], attempt)
+                results["screen"].update({
+                    "supported": cl["supported"],
+                    "unsupported": cl["unsupported"],
+                    "escalated": cl["escalated"],
+                    "conf_by_id": cl["conf_by_id"],
+                })
+                screen.write_audit(run, tid, attempt, results["screen"])
+                if cl["unsupported"]:
+                    lines = ["- %s: %s" % (u.get("id", ""), u.get("reason", "")) for u in cl["unsupported"]]
+                    return "Claim screen failed:\n" + "\n".join(lines), results, test_cmd, rerun_rc
         elif stage == "factcheck":
+            if scr_on and results.get("screen") is not None:
+                out = results["factcheck"] = screen.merge_supported(out, results["research"], results["screen"])
+                results["screen"]["factcheck_skipped"] = False
+                screen.write_audit(run, tid, attempt, results["screen"])
             bad = factcheck_failures(out)
             if bad:
                 return "Fact check failed:\n" + "\n".join(bad), results, test_cmd, rerun_rc
@@ -1477,6 +1512,17 @@ def _append_decision(run, ticket, results):
         map_line = "- %s %s: %s\n" % (tid, ticket["title"], str(val_summary).strip())
     else:
         map_line = "- %s %s\n" % (tid, ticket["title"])
+    if isinstance(results.get("screen"), dict):
+        scr = results["screen"]
+        kept = scr.get("kept_sources", 0)
+        discarded = len(scr.get("discarded_sources") or [])
+        supported = len(scr.get("supported") or [])
+        unsupported = len(scr.get("unsupported") or [])
+        escalated = len(scr.get("escalated") or [])
+        fc_str = "skipped" if scr.get("factcheck_skipped") else "run"
+        map_line += "  - screen: %d sources kept, %d discarded; %d claims supported, %d unsupported, %d escalated; factcheck %s\n" % (
+            kept, discarded, supported, unsupported, escalated, fc_str
+        )
     map_path = run.path("map.md")
     with state._LOCK:
         if os.path.exists(map_path):

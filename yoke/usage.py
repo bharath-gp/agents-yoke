@@ -94,20 +94,26 @@ def project_summary(runs):
 
 
 def summarize(run):
-    """Walk every call's meta.json under run dir and sum usage & cost.
+    """Walk every call's meta.json and screen.json under run dir and sum usage, cost & screen counts.
 
     Sums observed.usage token fields and observed.cost by stage, ticket, agent and model,
     plus totals and top 3 spenders. Missing cost is recorded as 'unreported', never 0.
+    Also collects attempt screen.json files to aggregate factcheck_skipped, sources_discarded,
+    and claims_screened under a 'screen' key when any counter is non-zero.
     """
     run_dir = run.dir if hasattr(run, "dir") else str(run)
 
     meta_files = []
+    screen_files = []
     if os.path.isdir(run_dir):
         for root, dirs, files in os.walk(run_dir):
             dirs[:] = [d for d in dirs if d != ".git" and d != "worktrees"]
             if "meta.json" in files:
                 meta_files.append(os.path.join(root, "meta.json"))
+            if "screen.json" in files:
+                screen_files.append(os.path.join(root, "screen.json"))
     meta_files.sort()
+    screen_files.sort()
 
     all_calls = []
     stage_groups = {}
@@ -210,7 +216,46 @@ def summarize(run):
     sorted_tickets = sorted(by_ticket.items(), key=_spender_sort_key, reverse=True)
     top_spenders = [dict(ticket=tid, **data) for tid, data in sorted_tickets[:3]]
 
-    return {
+    factcheck_skipped = 0
+    sources_discarded = 0
+    claims_screened = 0
+
+    for sf in screen_files:
+        try:
+            with open(sf, "r", encoding="utf-8") as f:
+                sc = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(sc, dict):
+            continue
+        if sc.get("factcheck_skipped"):
+            factcheck_skipped += 1
+        discarded = sc.get("discarded_sources")
+        if isinstance(discarded, list):
+            sources_discarded += len(discarded)
+        elif isinstance(discarded, (int, float)) and not isinstance(discarded, bool):
+            try:
+                sources_discarded += int(discarded)
+            except (OverflowError, ValueError):
+                pass
+
+        sup = sc.get("supported")
+        unsup = sc.get("unsupported")
+        esc = sc.get("escalated")
+
+        def _count(val):
+            if isinstance(val, list):
+                return len(val)
+            if isinstance(val, (int, float)) and not isinstance(val, bool):
+                try:
+                    return int(val)
+                except (OverflowError, ValueError):
+                    return 0
+            return 0
+
+        claims_screened += _count(sup) + _count(unsup) + _count(esc)
+
+    ret = {
         "by_stage": by_stage,
         "by_ticket": by_ticket,
         "by_agent": by_agent,
@@ -220,6 +265,13 @@ def summarize(run):
         "top_spenders": top_spenders,
         "session_ids": sorted(session_ids),
     }
+    if factcheck_skipped > 0 or sources_discarded > 0 or claims_screened > 0:
+        ret["screen"] = {
+            "factcheck_skipped": factcheck_skipped,
+            "sources_discarded": sources_discarded,
+            "claims_screened": claims_screened,
+        }
+    return ret
 
 
 def empty_summary():

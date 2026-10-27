@@ -67,6 +67,7 @@ Status legend per milestone: `[ ]` todo, `[~]` in progress, `[x]` done. Update t
    | [M34](#m34) | Dependency chain warning, chart rules, skill text | [2.5](#s2-5), [2.7](#s2-7) |
    | [M35](#m35) | Notifications and commit message mode | [2.6](#s2-6), [2.10](#s2-10) |
    | [M36](#m36) | Look-ahead start, merge after gate | [2.8](#s2-8), [2.9](#s2-9) |
+   | [M37](#m37) | Research screening by decision model | [2.6](#s2-6), [2.8](#s2-8), [2.10](#s2-10) |
 4. [Verification matrix](#s4)
 5. [Out of scope](#s5)
 - [Appendix A: Topic index](#appA)
@@ -814,6 +815,16 @@ Files: `yoke/scheduler.py`, `yoke/pipeline.py`, `yoke/milestones.py`, `yoke/runc
 - Display: `ticket_waiting_for` reports `awaiting gate MS-xx` for parked tickets and no longer reports "blocked by gate" for tickets that may start. `yoke status` counts, `yoke map`, `yoke wait` timeout text and the dashboard (progress `awaiting_gate`, status chip) show it as its own state. `yoke map` frontier no longer filters by gate.
 - Exit criteria: a k+1 ticket with no deps starts while a k ticket runs, parks, and merges only after the gate passes (merge order asserted); a parked ticket merges after a fix ticket and gate pass; a rebase conflict at deferred close re-enters the coder retry; a restart resumes a parked ticket without losing its worktree or double merging; `done` still needs every ticket `closed`/`skipped`.
 - Notes: Recovery needs no new code: `awaiting_gate` is a persisted status the scheduler picks up each loop. Parked tickets are not `closed`, so their dependents wait. Deviation from M14: merged code is still always on top of a passed gate; only the start is early. Tickets whose `files_hint` overlap still only defer against running tickets, not parked ones, so a conflict surfaces at deferred close.
+
+<a id="m37"></a>
+### M37: Research screening by decision model (0.15.0) `[x]`
+Files: `yoke/screen.py`, `yoke/pipeline.py`, `yoke/usage.py`, `yoke/defaults.json`, `tests/test_screen.py`, `README.md`, `CLAUDE.md`, `docs/PLAN.md`.
+- Search source screening: heuristic deduplication and filtering (invalid schemes, duplicate URLs, empty excerpts) followed by decision-model screening (`source_screen`) via `router.decide` with fallback to unsure on low confidence. If all candidate sources are discarded, search fails with per-source feedback.
+- Claim screening: evaluates whether cited kept sources support each research claim against excerpt evidence (`claim_screen`). If any claim is unsupported, research fails with per-claim feedback.
+- Pipeline integration and factcheck narrowing: when enabled, confident supported claims bypass fact-checking with synthetic results (`factcheck_skipped: True`); escalated claims or unsure sources narrow the fact-check agent scope, merging previously screened claims back into results.
+- Audit and reporting: atomic screen audit state saved to `screen.json` per attempt, research ticket screen summary line logged to `map.md`, and screen counters aggregated into `usage.json`.
+- Exit criteria: source and claim screening filter low-quality items; factcheck bypassed on full support and narrowed on escalations; screen state persisted in `screen.json`, `map.md`, and `usage.json`; all unit tests pass.
+- Notes: Built `yoke/screen.py` and integrated with pipeline research flow. Deviations: (a) no dead-URL heuristic; (b) claim question binary; (c) `min_confidence` overrides `router.thresholds`.
 
 ---
 

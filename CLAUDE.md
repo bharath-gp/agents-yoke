@@ -37,3 +37,4 @@ tests/e2e.sh [normal|fallback]                        # manual, real agents, spe
 - `tracker.py`: GitHub milestones and issues on `approve tickets`, gate close/fix tracking, `yoke pr`; plugin files are `.claude-plugin/`, `hooks/`, `skills/`.
 - `dashboard.py`: local read-only HTTP server and JSON API (`/api/runs`, `/api/runs/<id>`) serving single-file UI (`dashboard.html`) on 127.0.0.1; run picker, stage strip, milestone gate status, ticket table, usage & cost summary card with top spenders, and live polling.
 - `usage.py`: per-run usage ledger (`usage.json`) walking `meta.json` files to aggregate token usage and costs across stages, tickets, agents, and models, written atomically at ticket close and run end; formatted into status, wait summaries, and dashboard.
+- `screen.py`: advisory screening of research sources and claims via `router.decide`, with deterministic heuristics, threshold overrides, Ollama-down short circuit, and synthetic factcheck generation.
