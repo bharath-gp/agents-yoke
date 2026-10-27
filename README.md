@@ -626,8 +626,12 @@ yoke factcheck docs/some-file.md         # per-claim verdicts for any markdown f
 
 Search sources and research claims can be screened by the local decision model (`tev1:4b`) using deterministic heuristics and confidence threshold checks:
 - **Configuration (`research.screen`)**: Configured under `research.screen` (`enabled: true`, `skip_factcheck: true`, `escalate_on_unsure: true`, `min_confidence: {"sources": 0.75, "claims": 0.8}`, `max_items: 25`).
-- **Source screening (`source_screen`)**: Filters invalid schemes, duplicates, and empty excerpts via heuristics, then queries the decision model to keep or discard candidate sources.
-- **Claim screening (`claim_screen`)**: Evaluates whether cited kept sources support each claim. When `skip_factcheck` is enabled and all claims are supported without escalations or unsure sources, synthetic fact-checks can bypass full fact-checking.
+- **Source screening (`source_screen`)**: Filters invalid schemes, duplicates, and empty excerpts via heuristics, then queries the decision model to keep or discard candidate sources. If all candidate sources are discarded, search fails with per-source feedback.
+- **Claim screening (`claim_screen`)**: Evaluates whether cited kept sources support each claim against excerpt evidence. If any claim is unsupported, research fails with per-claim feedback.
+- **Fact-check skip and narrowing**: In ticket execution (active when `research.screen.enabled` is true and `"research"` is in ticket stages):
+  - When all claims are confidently supported without escalations or unsure sources, the fact-check stage is bypassed with synthetic results (`factcheck_skipped: True`, emitting a `screen` event).
+  - When claims escalate or sources are unsure, the fact-check agent evaluates only the escalated claim IDs, unsure sources, and unverified statements; previously screened supported claims are merged back into results before verification checks.
+  - Standalone `yoke factcheck FILE` remains unscreened.
 
 ## Tests
 

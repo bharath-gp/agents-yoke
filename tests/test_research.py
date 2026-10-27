@@ -1,15 +1,17 @@
 import argparse
 import contextlib
+import copy
 import io
 import json
 import os
 import unittest
 from unittest import mock
 
+from tests.test_branch_points import choice, patch_ollama
 from tests.test_core import FAKE_CLI
 from tests.test_gitops import git
 from tests.test_pipeline import PipeBase, resp, ticket
-from yoke import adapters, pipeline, research, schema, state, tickets
+from yoke import adapters, pipeline, research, schema, screen, state, tickets
 
 os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
 
@@ -86,6 +88,154 @@ class TestResearchTicket(PipeBase):
     def test_researcher_blocked_escalates(self):
         self.scripted(research=[resp(dict(RESEARCH, status="blocked", blocked_reason="no web"))])
         self.assertEqual(self.go(), "needs_user")
+
+
+class TestResearchScreen(PipeBase):
+    def patch_ollama(self, answers_by_key):
+        patcher = patch_ollama(answers_by_key)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return patcher
+
+    def scripted(self, **kw):
+        base = {"search": [resp(SEARCH)], "research": [doc_resp()], "factcheck": [resp(fc())],
+                "router": [{"exit": 1}]}
+        base.update(kw)
+        self.setup_tickets([ticket(1, "research")], base)
+
+    def test_all_confident_supported_skips_factcheck(self):
+        self.patch_ollama({"v": [choice("keep", 0.9), choice("supported", 0.9)]})
+        self.scripted(factcheck=[])
+        self.assertEqual(self.go(), "done")
+        self.assertFalse(os.path.exists(self.run_.path("tickets/T-001/attempt-1/factcheck")))
+        with open(self.script + ".pos") as f:
+            pos = json.load(f)
+        self.assertEqual(pos.get("search", 0), 1)
+        self.assertEqual(pos.get("research", 0), 1)
+        self.assertEqual(pos.get("factcheck", 0), 0)
+        with open(self.run_.path("events.jsonl")) as f:
+            events = [json.loads(line) for line in f if line.strip()]
+        fc_screen = [e for e in events if e.get("kind") == "screen" and e.get("stage") == "factcheck"]
+        self.assertEqual(len(fc_screen), 1)
+        self.assertTrue(fc_screen[0].get("factcheck_skipped"))
+        self.assertEqual(fc_screen[0].get("supported"), 1)
+        last_results = self.tstate(1)["last_results"]
+        last_fc = last_results["factcheck"]
+        self.assertEqual(last_fc.get("verdict"), "pass")
+        self.assertEqual([c["id"] for c in last_fc.get("claims", [])], ["C1"])
+        self.assertTrue(last_results["screen"].get("factcheck_skipped"))
+
+    def test_unsure_claim_runs_factcheck(self):
+        self.patch_ollama({"v": [choice("keep", 0.9), choice("supported", 0.4)]})
+        self.scripted(factcheck=[resp(fc())])
+        self.assertEqual(self.go(), "done")
+        self.assertTrue(os.path.exists(self.run_.path("tickets/T-001/attempt-1/factcheck")))
+        with open(self.script + ".pos") as f:
+            pos = json.load(f)
+        self.assertEqual(pos.get("factcheck", 0), 1)
+
+    def test_only_sources_unsure_factcheck_runs_with_empty_claims_ok(self):
+        self.patch_ollama({"v": [choice("keep", 0.5), choice("supported", 0.9)]})
+        self.scripted(factcheck=[resp(dict(fc(), claims=[]))])
+        self.assertEqual(self.go(), "done")
+        with open(self.script + ".pos") as f:
+            pos = json.load(f)
+        self.assertEqual(pos.get("factcheck", 0), 1)
+        last_results = self.tstate(1)["last_results"]
+        last_fc = last_results["factcheck"]
+        c_ids = [c["id"] for c in last_fc["claims"]]
+        self.assertEqual(c_ids, ["C1"])
+        self.assertEqual(len(last_results["search"]["sources"]), 1)
+        self.assertEqual(last_results["search"]["sources"][0]["url"], "https://a.example")
+        self.assertFalse(last_results["screen"]["factcheck_skipped"])
+
+    def test_empty_research_claims_runs_factcheck(self):
+        self.patch_ollama({"v": [choice("keep", 0.9)]})
+        no_claims_research = dict(RESEARCH, claims=[])
+        self.scripted(research=[resp(no_claims_research, "r1", write={DOC: "doc"})],
+                      factcheck=[resp(fc())])
+        self.assertEqual(self.go(), "done")
+        with open(self.script + ".pos") as f:
+            pos = json.load(f)
+        self.assertEqual(pos.get("factcheck", 0), 1)
+
+    def test_unsupported_claim_fails_with_feedback(self):
+        self.patch_ollama({
+            "v": [
+                choice("keep", 0.9),
+                choice("unsupported", 0.9),
+                choice("keep", 0.9),
+                choice("supported", 0.9),
+            ]
+        })
+        self.scripted(
+            search=[resp(SEARCH), resp(SEARCH)],
+            research=[doc_resp("v1"), doc_resp("v2")],
+            factcheck=[],
+        )
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["attempt"], 2)
+        with open(self.run_.path("tickets/T-001/attempt-2/feedback.md")) as f:
+            fb = f.read()
+        self.assertIn("Claim screen failed", fb)
+        self.assertIn("- C1:", fb)
+
+    def test_all_sources_discarded_fails_search(self):
+        self.patch_ollama({
+            "v": [
+                choice("discard", 0.9),
+                choice("keep", 0.9),
+                choice("supported", 0.9),
+            ]
+        })
+        self.scripted(
+            search=[resp(SEARCH), resp(SEARCH)],
+            research=[doc_resp()],
+            factcheck=[],
+        )
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["attempt"], 2)
+        with open(self.run_.path("tickets/T-001/attempt-2/feedback.md")) as f:
+            fb = f.read()
+        self.assertIn("Search screen discarded every source", fb)
+        self.assertIn("- https://a.example:", fb)
+
+    def test_ollama_down_matches_today(self):
+        self.scripted(factcheck=[resp(fc())])
+        self.assertEqual(self.go(), "done")
+        prompt_path = self.run_.path("tickets/T-001/attempt-1/factcheck/prompt.md")
+        self.assertTrue(os.path.isfile(prompt_path))
+        with open(prompt_path) as f:
+            prompt = f.read()
+        self.assertIn("sky is blue", prompt)
+        self.assertIn("https://a.example", prompt)
+
+    def test_screen_disabled_runs_factcheck(self):
+        self.scripted(factcheck=[resp(fc())])
+        cfg = copy.deepcopy(self.run_.cfg)
+        cfg.setdefault("research", {}).setdefault("screen", {})["enabled"] = False
+        self.run_.update(config=cfg)
+        with mock.patch("yoke.router._ollama") as mock_ollama:
+            self.assertEqual(self.go(), "done")
+            mock_ollama.assert_not_called()
+        self.assertTrue(os.path.exists(self.run_.path("tickets/T-001/attempt-1/factcheck")))
+        with open(self.script + ".pos") as f:
+            pos = json.load(f)
+        self.assertEqual(pos.get("factcheck", 0), 1)
+
+    def test_standalone_factcheck_unaffected(self):
+        with open(self.script, "w") as f:
+            json.dump({"factcheck": [resp(fc())]}, f)
+        run = research.new_run(self.repo)
+        t = research._ticket(DOC, DOC)
+        with mock.patch.object(screen, "screen_sources") as mock_s, \
+             mock.patch.object(screen, "screen_claims") as mock_c:
+            ok, res, fb = research.drive(run, t, ["factcheck"], attempts=1,
+                                         adapter_for=lambda r: adapters.FakeAdapter(FAKE_CLI),
+                                         env=self.env)
+            mock_s.assert_not_called()
+            mock_c.assert_not_called()
+        self.assertTrue(ok)
 
 
 class TestStandalone(PipeBase):
