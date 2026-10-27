@@ -338,6 +338,8 @@ yoke routes small, high-frequency decisions to a local Ollama decision model (`t
 | `skill` | 0.6 | noul | Scores and selects discovered allowlisted skills for `$skills` prompt injection. |
 | `e2e_pick` | 0.6 | choice | Selects interactive element candidate action during browser e2e verification. |
 | `e2e_verdict` | 0.8 | noul | Evaluates whether page text satisfies an exit criterion during browser e2e verification. |
+| `source_screen` | 0.75 | choice | Screens search result sources for relevance and credibility (keep vs discard). |
+| `claim_screen` | 0.8 | choice | Screens research claims against cited kept source excerpts (supported vs unsupported). |
 
 ### Configuration
 
@@ -359,7 +361,9 @@ Decision thresholds, safety guard, skill discovery, and browser e2e settings can
       "effort": 0.7,
       "skill": 0.6,
       "e2e_pick": 0.6,
-      "e2e_verdict": 0.8
+      "e2e_verdict": 0.8,
+      "source_screen": 0.75,
+      "claim_screen": 0.8
     },
     "retry_bump": true,
     "commit_message": "agent"
@@ -617,6 +621,13 @@ yoke factcheck docs/some-file.md         # per-claim verdicts for any markdown f
 ```
 
 `research` is also a ticket type (`search`, `research`, `factcheck` stages). Web tools come from `search.tools` in the config; depth presets from `research.depths`.
+
+### Research screening
+
+Search sources and research claims can be screened by the local decision model (`tev1:4b`) using deterministic heuristics and confidence threshold checks:
+- **Configuration (`research.screen`)**: Configured under `research.screen` (`enabled: true`, `skip_factcheck: true`, `escalate_on_unsure: true`, `min_confidence: {"sources": 0.75, "claims": 0.8}`, `max_items: 25`).
+- **Source screening (`source_screen`)**: Filters invalid schemes, duplicates, and empty excerpts via heuristics, then queries the decision model to keep or discard candidate sources.
+- **Claim screening (`claim_screen`)**: Evaluates whether cited kept sources support each claim. When `skip_factcheck` is enabled and all claims are supported without escalations or unsure sources, synthetic fact-checks can bypass full fact-checking.
 
 ## Tests
 
