@@ -6,7 +6,7 @@ requires-python = ">=3.9"
 dependencies = []
 
 [project.optional-dependencies]
-e2e = ["playwright>=1.40"]
+e2e = ["playwright>=1.64.1"]
 
 [project.scripts]
 yoke = "yoke.cli:main"
