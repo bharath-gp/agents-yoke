@@ -55,6 +55,17 @@ def check_approval(run, kind):
     return entry
 
 
+def approval_stage(run):
+    """First of "plan", "tickets" not approved at its current hash, else "run".
+    The one stage check shared by `yoke status` (runcmds.next_step) and the dashboard."""
+    for kind in ("plan", "tickets"):
+        try:
+            check_approval(run, kind)
+        except ApprovalError:
+            return kind
+    return "run"
+
+
 def approve(run, kind):
     """Record sha256 for `kind`. tickets needs plan approved+unchanged; final needs tickets."""
     if kind == "final":

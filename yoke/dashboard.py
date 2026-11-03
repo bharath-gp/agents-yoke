@@ -7,7 +7,7 @@ import re
 import sys
 import urllib.parse
 
-from . import config, milestones, runcmds, scheduler, state
+from . import config, milestones, planreview, runcmds, scheduler, state
 
 
 def read_events_tail(path_or_run, limit=50):
@@ -62,20 +62,18 @@ def read_events_tail(path_or_run, limit=50):
 
 
 def derive_stage(run):
-    """Derive stage from state plus approvals.json: grill, plan, tickets, run, finish."""
+    """Derive stage from state plus hash-checked approvals: grill, plan, tickets, run, finish."""
     info = _read_json_safe(run, "run.json", {})
     st = info.get("state")
     if st == "done":
         return "finish"
 
-    approvals = _read_json_safe(run, "approvals.json", {})
-    if not isinstance(approvals, dict):
-        approvals = {}
-
-    if "tickets" in approvals:
-        return "run"
-    if "plan" in approvals:
-        return "tickets"
+    try:
+        stage = planreview.approval_stage(run)
+    except Exception:  # corrupt approvals.json or tickets.json: never break the dashboard
+        stage = "plan"
+    if stage != "plan":
+        return stage
     if _file_exists(run, "plan.md") or _file_exists(run, "requirements.md"):
         return "plan"
     return "grill"

@@ -111,10 +111,11 @@ class TestDashboard(unittest.TestCase):
             "MS-02": {"id": "MS-02", "status": "open", "fix_count": 0},
         })
 
-        run.write_json("approvals.json", {
-            "plan": {"sha256": "sha-plan", "at": "2026-10-19T10:00:00+05:30"},
-            "tickets": {"sha256": "sha-tickets", "at": "2026-10-19T10:05:00+05:30"},
-        })
+        with open(run.path("plan.md"), "w", encoding="utf-8") as f:
+            f.write("plan text")
+        from yoke import planreview
+        planreview.approve(run, "plan")
+        planreview.approve(run, "tickets")
 
         # Ticket states
         run.write_json("tickets/T-001/state.json", {"status": "closed", "attempt": 1})
@@ -180,6 +181,27 @@ class TestDashboard(unittest.TestCase):
 
         # JSON serialisable
         json.dumps(detail)
+
+    def test_stage_agrees_with_next_step_after_edits(self):
+        from yoke import planreview
+        run = self._create_run()
+        with open(run.path("plan.md"), "w", encoding="utf-8") as f:
+            f.write("plan text")
+        run.write_json("tickets.json", {"tickets": []})
+        planreview.approve(run, "plan")
+        planreview.approve(run, "tickets")
+        self.assertEqual(planreview.approval_stage(run), "run")
+        self.assertEqual(dashboard.derive_stage(run), "run")
+
+        run.write_json("tickets.json", {"tickets": [{"id": "T-001"}]})
+        self.assertEqual(planreview.approval_stage(run), "tickets")
+        self.assertEqual(dashboard.derive_stage(run), runcmds.next_step(run))
+
+        with open(run.path("plan.md"), "w", encoding="utf-8") as f:
+            f.write("edited plan")
+        self.assertEqual(planreview.approval_stage(run), "plan")
+        self.assertEqual(dashboard.derive_stage(run), "plan")
+        self.assertEqual(runcmds.next_step(run), "plan")
 
     def test_done_run(self):
         run = self._create_run()

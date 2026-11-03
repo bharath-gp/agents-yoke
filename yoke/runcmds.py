@@ -187,17 +187,9 @@ def next_step(run):
         except planreview.ApprovalError:
             return "finish"
 
-    if not os.path.exists(run.path("plan.md")):
-        return "plan"
-    try:
-        planreview.check_approval(run, "plan")
-    except planreview.ApprovalError:
-        return "plan"
-
-    try:
-        planreview.check_approval(run, "tickets")
-    except planreview.ApprovalError:
-        return "tickets"
+    stage = planreview.approval_stage(run)  # a missing plan.md fails the plan check
+    if stage != "run":
+        return stage
 
     pid = scheduler.read_lock(run)
     if pid and scheduler._alive(pid):
