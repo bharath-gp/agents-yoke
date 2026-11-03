@@ -4,7 +4,7 @@ import unittest
 from unittest import mock
 
 from tests.test_pipeline import CODE, DOCS, PipeBase, REV, qa, resp, ticket, val
-from yoke import pipeline, router
+from yoke import pipeline, router, ticketstate
 
 os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
 
@@ -207,10 +207,10 @@ class BranchTest(PipeBase):
                 "router": [{"exit": 1}],
             },
         )
-        st = pipeline.ticket_state(self.run_, "T-001")
+        st = ticketstate.load(self.run_, "T-001")
         st["start_stage"] = "qa"
         st["last_results"] = {}
-        pipeline.save_state(self.run_, "T-001", st)
+        ticketstate.save(self.run_, "T-001", st)
 
         self.assertEqual(self.go(), "done")
         self.assertEqual(self.tstate(1)["status"], "closed")

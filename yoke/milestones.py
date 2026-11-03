@@ -2,7 +2,7 @@
 import copy
 import os
 
-from . import state
+from . import state, ticketstate
 
 
 def milestones_of(run_or_doc):
@@ -191,9 +191,7 @@ def unblock_milestone(run, milestone, note=None, waive=None):
             st["note"] = note
         save_states(run, states)
 
-    with state._LOCK:
-        esc = [e for e in run.read_json("escalations.json", []) if e.get("ticket") != milestone]
-        run.write_json("escalations.json", esc)
+    ticketstate.clear_escalations(run, milestone)
     run.event("unblock", milestone=milestone, note=note, waive=waive)
 
 

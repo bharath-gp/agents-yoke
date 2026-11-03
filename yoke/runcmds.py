@@ -8,7 +8,7 @@ import subprocess
 import sys
 import time
 
-from . import config, gitops, guard, milestones, pipeline, planreview, scheduler, state
+from . import config, gitops, guard, milestones, pipeline, planreview, scheduler, state, ticketstate
 
 CMDS = ("run", "status", "escalations", "unblock", "stop", "wait", "clean", "runs", "map", "dashboard", "nudge", "guard")
 
@@ -70,7 +70,7 @@ def wait_for(run, timeout, poll=2):
     end = time.time() + timeout
     while True:
         info = run.read_json("run.json")
-        esc = run.read_json("escalations.json", [])
+        esc = ticketstate.escalations(run)
         pid = scheduler.read_lock(run)
         if esc:
             return "escalation", "; ".join("#%d %s: %s" % (e["id"], e["ticket"] or "-", e["reason"]) for e in esc)
@@ -284,7 +284,7 @@ def render_map(run):
     ms_states = milestones.load_states(run)
     ms_idx = {m["id"]: i for i, m in enumerate(all_milestones)}
     tickets = milestones.merged_tickets(run)
-    sts = {t["id"]: run.read_json("tickets/%s/state.json" % t["id"], {}).get("status", "pending") for t in tickets}
+    sts = {t["id"]: ticketstate.status(run, t["id"]) for t in tickets}
 
     lines.append("\nMilestones:")
     for m in all_milestones:
@@ -488,7 +488,7 @@ def dispatch(args):
     if args.cmd == "status":
         print(json.dumps(run.status(), indent=2) if args.json else brief(run) if args.brief else run.render_status())
     elif args.cmd == "escalations":
-        for e in run.read_json("escalations.json", []):
+        for e in ticketstate.escalations(run):
             print("#%d %s: %s" % (e["id"], e["ticket"] or "-", e["reason"]))
     elif args.cmd == "unblock":
         if not args.ticket and not args.milestone:

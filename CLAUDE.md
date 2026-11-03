@@ -29,6 +29,7 @@ tests/e2e.sh [normal|fallback]                        # manual, real agents, spe
 ## Architecture
 
 - `yoke run` is a detached runner walking a per-ticket state machine (`scheduler.py`, `pipeline.py`), resumable from disk (`scheduler.recover`). The chat session only calls `yoke wait` and reads short summaries; the plugin's SessionStart hook injects `yoke status --brief --active`.
+- `ticketstate.py` owns the ticket record: `tickets/<tid>/state.json`, its status transitions (`start`, `close`, `await_gate`, `block`, `unblock`) and `escalations.json`. No other module writes ticket status or escalations.
 - Agent CLIs sit behind `adapters.py`. Every call goes through `calls.run_call`: audit dir, process-group timeout kill, schema validation, one re-ask. `FakeAdapter` plus `tests/fake_cli.py` replay scripted responses so the loop is testable offline.
 - Ticket type picks stages from the `routing` config (code, review, qa, validate, docs). Close gate: coder `done`, QA `pass`, runner re-run of QA's `test_command` exits 0, validator `approve` with all exit criteria met, docs done. Failures retry with feedback (coder session resumed by ID) up to `max_attempts_per_ticket`, then escalate.
 - Milestones and charting: wayfinder maps plan to destination, milestones, and tickets (`chart.py`); runner enforces sequential milestone gates with integration exit checks and auto-generates fix tickets (`F-xxx`) on failure; `yoke map` renders destination, out-of-scope boundaries, gate status, frontier, and decisions log.

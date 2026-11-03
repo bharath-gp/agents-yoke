@@ -10,7 +10,7 @@ from unittest import mock
 
 from tests.test_gitops import ENV, git
 from tests.test_planreview import Base
-from yoke import cli, pipeline, planreview, tracker
+from yoke import cli, planreview, ticketstate, tracker
 
 os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
 
@@ -191,18 +191,18 @@ class TestIssues(TrackerBase):
 class TestComment(TrackerBase):
     def test_escalation_comments_on_issue_and_never_raises(self):
         self.approve_all()
-        pipeline.escalate(self.run_, "T-001", "max attempts")
+        ticketstate.escalate(self.run_, "T-001", "max attempts")
         c = [c for c in self.calls() if c[:2] == ["issue", "comment"]]
         self.assertEqual(c[0][2], "40")
         self.assertIn("max attempts", c[0][-1])
         os.environ["FAKE_GH_FAIL"] = "issue comment"
         self.addCleanup(os.environ.pop, "FAKE_GH_FAIL", None)
-        pipeline.escalate(self.run_, "T-001", "again")  # gh down: no exception
+        ticketstate.escalate(self.run_, "T-001", "again")  # gh down: no exception
         self.assertEqual(len(self.run_.read_json("escalations.json")), 2)
 
     def test_no_issue_no_comment(self):
-        pipeline.escalate(self.run_, "T-001", "x")
-        pipeline.escalate(self.run_, None, "budget")
+        ticketstate.escalate(self.run_, "T-001", "x")
+        ticketstate.escalate(self.run_, None, "budget")
         self.assertEqual(self.calls(), [])
 
 

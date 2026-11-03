@@ -150,10 +150,10 @@ class Run:
     def status(self):
         info = self.read_json("run.json")
         counts = {}
-        from . import milestones, usage
+        from . import milestones, ticketstate, usage
         tickets = milestones.merged_tickets(self)
         for t in tickets:
-            st = self.read_json("tickets/%s/state.json" % t["id"], {}).get("status", "pending")
+            st = ticketstate.status(self, t["id"])
             counts[st] = counts.get(st, 0) + 1
         try:
             u = usage.summarize(self)
@@ -164,7 +164,7 @@ class Run:
             "state": info["state"], "agent_calls": info["agent_calls"],
             "max_agent_calls": info["config"].get("max_agent_calls_total"),
             "tickets_total": len(tickets), "tickets": counts,
-            "escalations": len(self.read_json("escalations.json", [])),
+            "escalations": len(ticketstate.escalations(self)),
             "usage": u,
         }
         if info.get("waiting_limit"):

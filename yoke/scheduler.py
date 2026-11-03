@@ -8,7 +8,7 @@ import signal
 import threading
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
-from . import config, gitops, guard, hooks, milestones, pipeline, planreview, router, state, tracker, usage
+from . import config, gitops, guard, hooks, milestones, pipeline, planreview, router, state, ticketstate, tracker, usage
 
 
 class LockError(Exception):
@@ -43,10 +43,6 @@ def acquire_lock(run):
 def release_lock(run):
     if read_lock(run) == os.getpid():
         os.remove(run.path("runner.lock"))
-
-
-def _status(run, tid):
-    return pipeline.ticket_state(run, tid)["status"]
 
 
 def kill_workers(run):
@@ -173,7 +169,7 @@ def run(run_, adapter_for=None, env=None):
                 if final == "done":
                     msg = "run %s done" % run_.run_id
                 else:
-                    esc = run_.read_json("escalations.json", [])
+                    esc = ticketstate.escalations(run_)
                     last_esc = esc[-1] if (isinstance(esc, list) and esc) else None
                     if isinstance(last_esc, dict):
                         reason = (last_esc.get("reason") or "")[:200]
@@ -206,14 +202,12 @@ def _loop(run_, adapter_for, env):
         with ThreadPoolExecutor(max_workers=parallel) as pool:
             while True:
                 tickets = milestones.merged_tickets(run_)
-                sts = {t["id"]: _status(run_, t["id"]) for t in tickets}
+                sts = {t["id"]: ticketstate.status(run_, t["id"]) for t in tickets}
                 for t in tickets:  # dependents of a skipped ticket cannot ever run
                     bad = [d for d in t.get("depends_on", []) if sts.get(d) == "skipped"]
                     if sts.get(t["id"]) == "pending" and bad:
-                        st = pipeline.ticket_state(run_, t["id"])
-                        st["status"] = "blocked"
-                        pipeline.save_state(run_, t["id"], st)
-                        pipeline.escalate(run_, t["id"], "depends on skipped %s" % ", ".join(bad))
+                        ticketstate.block(run_, t["id"], ticketstate.load(run_, t["id"]),
+                                          "depends on skipped %s" % ", ".join(bad))
                         sts[t["id"]] = "blocked"
 
                 all_milestones = milestones.milestones_of(run_)
@@ -302,7 +296,7 @@ def _loop(run_, adapter_for, env):
                         reason = out_of_budget if isinstance(out_of_budget, str) else "budget exhausted: max_agent_calls_total reached"
                         if is_cap:
                             run_.update(budget_escalated=True)
-                        pipeline.escalate(run_, None, reason)
+                        ticketstate.escalate(run_, None, reason)
                         return "needs_user"
 
                     if unfinished_ms:
@@ -339,7 +333,7 @@ def _loop(run_, adapter_for, env):
                                 if d["source"] == "ollama" and d["result"] == "escalate":
                                     ms_states[m_id]["status"] = "failed"
                                     milestones.save_states(run_, ms_states)
-                                    pipeline.escalate(
+                                    ticketstate.escalate(
                                         run_,
                                         m_id,
                                         "milestone %s gate failed; decision model escalated: %s" % (m_id, tail),
@@ -372,7 +366,7 @@ def _loop(run_, adapter_for, env):
                                 else:
                                     ms_states[m_id]["status"] = "failed"
                                     milestones.save_states(run_, ms_states)
-                                    pipeline.escalate(
+                                    ticketstate.escalate(
                                         run_,
                                         m_id,
                                         ("milestone %s gate failed after %d fix tickets: %s" % (m_id, fix_count, tail)).strip(),
@@ -405,16 +399,11 @@ def unblock_milestone(run_, milestone, note=None, waive=None):
 
 def unblock(run_, tid, note=None, skip=False, reset_attempts=False):
     """User's answer to an escalation. Attempts are kept (the blocked attempt re-runs) unless reset."""
-    st = pipeline.ticket_state(run_, tid)
-    st["status"] = "skipped" if skip else "pending"
-    if reset_attempts:
-        st["attempt"] = 1
-    if note and not skip:
-        pipeline.write_feedback(run_, tid, st["attempt"], "User note: " + note, append=True)
-    pipeline.save_state(run_, tid, st)
+    if note and not skip:  # written before the status flips, so a live runner sees it
+        attempt = 1 if reset_attempts else ticketstate.load(run_, tid)["attempt"]
+        pipeline.write_feedback(run_, tid, attempt, "User note: " + note, append=True)
+    ticketstate.unblock(run_, tid, skip=skip, reset_attempts=reset_attempts)
     with state._LOCK:
-        esc = [e for e in run_.read_json("escalations.json", []) if e["ticket"] != tid]
-        run_.write_json("escalations.json", esc)
         info = run_.read_json("run.json", {})
         lw = dict(info.get("limit_waits", {}))
         new_lw = {k: v for k, v in lw.items() if not k.startswith(tid + ":")}

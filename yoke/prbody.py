@@ -5,7 +5,7 @@ import re
 import string
 import subprocess
 
-from . import adapters, calls, config, schema, state
+from . import adapters, calls, config, schema, state, ticketstate
 
 TICKET_TYPE_PRIORITY = (
     "feature",
@@ -368,7 +368,7 @@ def collect(run):
     total_closed = 0
     for t in tickets:
         tid = t.get("id")
-        st = _read_json(f"tickets/{tid}/state.json", {})
+        st = _read_json(ticketstate.rel(tid), {})
         is_closed = st.get("status") == "closed" or (tid in close_gates and close_gates[tid].get("ok") is True)
         if is_closed:
             total_closed += 1
