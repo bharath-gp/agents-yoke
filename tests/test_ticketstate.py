@@ -37,6 +37,7 @@ class TestTicketState(Base):
         self.assertEqual(ticketstate.status(self.run_, "T-002"), "blocked")
         esc = ticketstate.escalations(self.run_)
         self.assertEqual([(e["id"], e["ticket"], e["reason"]) for e in esc], [(1, "T-002", "stuck")])
+        self.assertTrue(esc[0]["at"])
         self.assertEqual([e["kind"] for e in self.events("ticket_state", "escalation")], ["ticket_state", "escalation"])
 
     def test_unblock_and_skip_clear_only_own_escalations(self):

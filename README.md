@@ -472,7 +472,7 @@ The runner leverages Ollama decision models at key pipeline branch points:
   - `split`, `replan`, or `escalate`: escalates immediately with the model recommendation (`Escalate("decision model recommends <choice> after attempt <attempt>: <feedback>")`). The runner does not rewrite tickets automatically on split or replan.
   - `retry` or below threshold (`source == "none"`): proceeds with standard retry up to `max_attempts_per_ticket`.
 - **Milestone gate failure decision (`gate_failure`)**: When a milestone `exit_check` fails, Ollama evaluates the failure under decision point `gate_failure` (`fix_ticket` or `escalate`):
-  - `escalate`: marks the milestone as failed, records an escalation (`pipeline.escalate`), and returns `needs_user`.
+  - `escalate`: marks the milestone as failed, records an escalation (`ticketstate.escalate`), and returns `needs_user`.
   - `fix_ticket` or below threshold (`source == "none"`): falls through to the standard fix-ticket flow (up to `max_fix_tickets_per_milestone`).
 - **Start-stage execution**: Tickets can resume execution at later stages (`start_stage`) using persisted `last_results`, `last_test_cmd`, and `last_rerun_rc` in `state.json`. When all prior stages have saved results, preceding stages are skipped, emitting a `stage_skip` audit event (`ticket`, `attempt`, `start_stage`). Pre-seeded QA command and exit code are preserved across skipped stages so close gates evaluate the passing QA re-run.
 
