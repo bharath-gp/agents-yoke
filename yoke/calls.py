@@ -11,6 +11,22 @@ from . import config, schema, state
 from .adapters import CallResult
 
 
+class BudgetExhausted(Exception):
+    def __init__(self, reason="budget exhausted: max_agent_calls_total reached"):
+        super().__init__(reason)
+        self.reason = reason
+
+
+def check_budget(run):
+    """Raise BudgetExhausted when max_agent_calls_total or the usage budget is spent."""
+    # Concurrent multi-lens calls under parallel>1 may check agent_calls non-atomically, allowing up to (lenses-1) overshoot.
+    if run.read_json("run.json")["agent_calls"] >= run.cfg["max_agent_calls_total"]:
+        raise BudgetExhausted()
+    exceeded, reason = config.check_budget(run)
+    if exceeded:
+        raise BudgetExhausted(reason)
+
+
 def audit_rel(stage, ticket, attempt, call_id, label=None):
     tag = label or stage
     if ticket:
@@ -149,14 +165,16 @@ def _check(run, res, meta, spec, rel):
     return errs
 
 
-def run_call(run, adapter, spec, *, stage, ticket=None, attempt=None, label=None, charge=True):
-    """Run one agent call.
+def run_call(run, adapter, spec, *, stage, ticket=None, attempt=None, label=None, charge=True, budget=False):
+    """Run one agent call. With budget=True, check_budget runs first and may raise BudgetExhausted.
 
     Resolves unset spec.model and spec.effort via config.model_for(cfg, adapter, stage).
     If a call with spec.model fails with a model error, retries once without model or effort
     in audit subdir fallback/ and emits a model_fallback event.
     On schema failure re-asks once in the same session (audit subdir reask/).
     """
+    if budget:
+        check_budget(run)
     cfg = getattr(run, "cfg", None) or {}
     model, effort = config.model_for(cfg, getattr(adapter, "name", adapter), stage)
     if spec.model is None or spec.effort is None:

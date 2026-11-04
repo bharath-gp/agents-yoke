@@ -461,25 +461,20 @@ class TestSkillPipelineInjection(PipeBase):
         dummy_adapter = DummyClaudeAdapter()
 
         with mock.patch("yoke.router._ollama", return_value={"s0": {"noul": 0.9}}):
-            with mock.patch("yoke.calls.run_call") as mock_rc:
-                mock_rc.return_value = adapters.CallResult(structured_output={"status": "done"}, session_id="s1")
-                pipeline._call(
-                    self.run_,
-                    adapter_for=lambda role: dummy_adapter,
-                    env={},
-                    ticket=t,
-                    stage="code",
-                    attempt=1,
-                    wt=self.repo,
-                    base="HEAD",
-                    mode="write",
-                    results={},
-                    feedback="",
-                    adapter=dummy_adapter,
-                )
-                self.assertTrue(mock_rc.called)
-                spec = mock_rc.call_args[0][2]
-                self.assertIn("Skill", spec.allowed_tools)
+            spec = pipeline.build_spec(
+                self.run_,
+                adapter=dummy_adapter,
+                env={},
+                ticket=t,
+                stage="code",
+                attempt=1,
+                wt=self.repo,
+                base="HEAD",
+                mode="write",
+                results={},
+                feedback="",
+            )
+            self.assertIn("Skill", spec.allowed_tools)
 
     def test_call_allowed_tools_no_skill_for_non_claude_adapter(self):
         from yoke import adapters, pipeline
@@ -501,27 +496,22 @@ class TestSkillPipelineInjection(PipeBase):
         dummy_adapter = DummyAgyAdapter()
 
         with mock.patch("yoke.router._ollama", return_value={"s0": {"noul": 0.9}}):
-            with mock.patch("yoke.calls.run_call") as mock_rc:
-                mock_rc.return_value = adapters.CallResult(structured_output={"status": "done"}, session_id="s1")
-                pipeline._call(
-                    self.run_,
-                    adapter_for=lambda role: dummy_adapter,
-                    env={},
-                    ticket=t,
-                    stage="code",
-                    attempt=1,
-                    wt=self.repo,
-                    base="HEAD",
-                    mode="write",
-                    results={},
-                    feedback="",
-                    adapter=dummy_adapter,
-                )
-                self.assertTrue(mock_rc.called)
-                spec = mock_rc.call_args[0][2]
-                self.assertNotIn("Skill", spec.allowed_tools)
-                self.assertIn("### demo", spec.prompt)
-                self.assertIn("Demo skill body", spec.prompt)
+            spec = pipeline.build_spec(
+                self.run_,
+                adapter=dummy_adapter,
+                env={},
+                ticket=t,
+                stage="code",
+                attempt=1,
+                wt=self.repo,
+                base="HEAD",
+                mode="write",
+                results={},
+                feedback="",
+            )
+            self.assertNotIn("Skill", spec.allowed_tools)
+            self.assertIn("### demo", spec.prompt)
+            self.assertIn("Demo skill body", spec.prompt)
 
     def test_call_allowed_tools_no_skill_when_empty_pick(self):
         from yoke import adapters, pipeline
@@ -534,27 +524,22 @@ class TestSkillPipelineInjection(PipeBase):
         with mock.patch("yoke.router._ollama", return_value={}), mock.patch(
             "yoke.router.pick_skills"
         ) as mock_pick_skills:
-            with mock.patch("yoke.calls.run_call") as mock_rc:
-                mock_rc.return_value = adapters.CallResult(structured_output={"status": "done"}, session_id="s1")
-                pipeline._call(
-                    self.run_,
-                    adapter_for=lambda role: dummy_adapter,
-                    env={},
-                    ticket=t,
-                    stage="code",
-                    attempt=1,
-                    wt=self.repo,
-                    base="HEAD",
-                    mode="write",
-                    results={},
-                    feedback="",
-                    adapter=dummy_adapter,
-                )
-                self.assertTrue(mock_rc.called)
-                mock_pick_skills.assert_not_called()
-                spec = mock_rc.call_args[0][2]
-                self.assertNotIn("Skill", spec.allowed_tools)
-                self.assertIn("## Skills\n\n(none)", spec.prompt)
+            spec = pipeline.build_spec(
+                self.run_,
+                adapter=dummy_adapter,
+                env={},
+                ticket=t,
+                stage="code",
+                attempt=1,
+                wt=self.repo,
+                base="HEAD",
+                mode="write",
+                results={},
+                feedback="",
+            )
+            mock_pick_skills.assert_not_called()
+            self.assertNotIn("Skill", spec.allowed_tools)
+            self.assertIn("## Skills\n\n(none)", spec.prompt)
 
     def test_call_injects_skills_into_qa_and_docs_prompts(self):
         from yoke import adapters, pipeline
@@ -577,27 +562,22 @@ class TestSkillPipelineInjection(PipeBase):
 
         for stg in ("qa", "docs"):
             with mock.patch("yoke.router._ollama", return_value={"s0": {"noul": 0.9}}):
-                with mock.patch("yoke.calls.run_call") as mock_rc:
-                    mock_rc.return_value = adapters.CallResult(structured_output={"status": "done"}, session_id="s1")
-                    pipeline._call(
-                        self.run_,
-                        adapter_for=lambda role: dummy_adapter,
-                        env={},
-                        ticket=t,
-                        stage=stg,
-                        attempt=1,
-                        wt=self.repo,
-                        base="HEAD",
-                        mode="write",
-                        results={},
-                        feedback="",
-                        adapter=dummy_adapter,
-                    )
-                    self.assertTrue(mock_rc.called)
-                    spec = mock_rc.call_args[0][2]
-                    self.assertIn("Skill", spec.allowed_tools)
-                    self.assertIn("Relevant skills (invoke with the Skill tool):", spec.prompt)
-                    self.assertIn("- demo: demo skill description", spec.prompt)
+                spec = pipeline.build_spec(
+                    self.run_,
+                    adapter=dummy_adapter,
+                    env={},
+                    ticket=t,
+                    stage=stg,
+                    attempt=1,
+                    wt=self.repo,
+                    base="HEAD",
+                    mode="write",
+                    results={},
+                    feedback="",
+                )
+                self.assertIn("Skill", spec.allowed_tools)
+                self.assertIn("Relevant skills (invoke with the Skill tool):", spec.prompt)
+                self.assertIn("- demo: demo skill description", spec.prompt)
 
     def test_call_non_empty_catalog_all_low_scores_gives_no_skill_and_none_in_prompt(self):
         from yoke import adapters, pipeline
@@ -619,26 +599,21 @@ class TestSkillPipelineInjection(PipeBase):
         dummy_adapter = DummyClaudeAdapter()
 
         with mock.patch("yoke.router._ollama", return_value={"s0": {"noul": 0.1}}):
-            with mock.patch("yoke.calls.run_call") as mock_rc:
-                mock_rc.return_value = adapters.CallResult(structured_output={"status": "done"}, session_id="s1")
-                pipeline._call(
-                    self.run_,
-                    adapter_for=lambda role: dummy_adapter,
-                    env={},
-                    ticket=t,
-                    stage="code",
-                    attempt=1,
-                    wt=self.repo,
-                    base="HEAD",
-                    mode="write",
-                    results={},
-                    feedback="",
-                    adapter=dummy_adapter,
-                )
-                self.assertTrue(mock_rc.called)
-                spec = mock_rc.call_args[0][2]
-                self.assertNotIn("Skill", spec.allowed_tools)
-                self.assertIn("## Skills\n\n(none)", spec.prompt)
+            spec = pipeline.build_spec(
+                self.run_,
+                adapter=dummy_adapter,
+                env={},
+                ticket=t,
+                stage="code",
+                attempt=1,
+                wt=self.repo,
+                base="HEAD",
+                mode="write",
+                results={},
+                feedback="",
+            )
+            self.assertNotIn("Skill", spec.allowed_tools)
+            self.assertIn("## Skills\n\n(none)", spec.prompt)
 
     def test_call_read_only_stages_skip_skills(self):
         from yoke import adapters, pipeline
@@ -665,26 +640,22 @@ class TestSkillPipelineInjection(PipeBase):
             ), mock.patch(
                 "yoke.router.pick_tier_effort", return_value={"tier": None, "effort": None, "source": "none"}
             ):
-                with mock.patch("yoke.calls.run_call") as mock_rc:
-                    mock_rc.return_value = adapters.CallResult(structured_output={"verdict": "approve"}, session_id="s1")
-                    pipeline._call(
-                        self.run_,
-                        adapter_for=lambda role: dummy_adapter,
-                        env={},
-                        ticket=t,
-                        stage=ro_stage,
-                        attempt=1,
-                        wt=self.repo,
-                        base="HEAD",
-                        mode="read",
-                        results={},
-                        feedback="",
-                        adapter=dummy_adapter,
-                    )
-                    mock_pick_skills.assert_not_called()
-                    spec = mock_rc.call_args[0][2]
-                    self.assertNotIn("Skill", spec.allowed_tools)
-                    self.assertNotIn("demo", spec.prompt)
+                spec = pipeline.build_spec(
+                    self.run_,
+                    adapter=dummy_adapter,
+                    env={},
+                    ticket=t,
+                    stage=ro_stage,
+                    attempt=1,
+                    wt=self.repo,
+                    base="HEAD",
+                    mode="read",
+                    results={},
+                    feedback="",
+                )
+                mock_pick_skills.assert_not_called()
+                self.assertNotIn("Skill", spec.allowed_tools)
+                self.assertNotIn("demo", spec.prompt)
 
 
 if __name__ == "__main__":
