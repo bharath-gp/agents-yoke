@@ -340,6 +340,22 @@ class TestChartPrompt(unittest.TestCase):
         for rule in ("destination", "milestones", "exit_check", "out of scope"):
             self.assertIn(rule, content)
 
+    def test_chart_prompt_asks_for_files(self):
+        content = _read("chart")
+        for expected in ("files:", "create", "modify", "delete"):
+            self.assertIn(expected, content)
+        bullet = (
+            "- files: every file the coder writes for this ticket, from the work item's file list, "
+            "as {path, action} with action create (new file), modify or delete. "
+            "tests/**, docs/** and README.md are always allowed and may be left out. "
+            "The runner fails the close gate when the ticket writes outside files, so list every source file."
+        )
+        self.assertIn(bullet, content)
+        lines = [line.strip() for line in content.splitlines()]
+        files_hint_idx = next(i for i, line in enumerate(lines) if line.startswith("- files_hint:"))
+        files_idx = next(i for i, line in enumerate(lines) if line.startswith("- files:"))
+        self.assertEqual(files_idx, files_hint_idx + 1)
+
 
 class TestReviewLensPrompts(unittest.TestCase):
     LENSES = ("review_security", "review_performance", "review_tests")

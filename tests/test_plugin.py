@@ -104,6 +104,21 @@ class TestPackaging(unittest.TestCase):
             with open(os.path.join(ROOT, "skills", name, "SKILL.md")) as f:
                 self.assertIn("--run", f.read(), name)
 
+    def test_plan_and_tickets_mention_files_write_boundary(self):
+        with open(os.path.join(ROOT, "skills", "plan", "SKILL.md")) as f:
+            plan_text = f.read()
+        self.assertIn(
+            "files to change, each marked create, modify or delete (tickets copy these into `files`, the write boundary)",
+            plan_text,
+        )
+
+        with open(os.path.join(ROOT, "skills", "tickets", "SKILL.md")) as f:
+            tickets_text = f.read()
+        self.assertIn(
+            "`files` (`[{path, action}]`, the write boundary; required in practice for feature, bugfix and refactor tickets)",
+            tickets_text,
+        )
+
     def test_dashboard_skill(self):
         path = os.path.join(ROOT, "skills", "dashboard", "SKILL.md")
         self.assertTrue(os.path.exists(path))

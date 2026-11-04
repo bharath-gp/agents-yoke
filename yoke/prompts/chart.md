@@ -23,6 +23,7 @@ The coder, QA and validator agents that work each ticket have no shell and canno
 - impacted_tests: existing tests that exercise the changed code and may break (search the test dir for the modules and functions touched), with how each must be updated, or "none found".
 - risks: what could go wrong in this ticket (callers, ordering, shared files) and how to avoid it.
 - files_hint: every file in steps, test_plan and impacted_tests.
+- files: every file the coder writes for this ticket, from the work item's file list, as {path, action} with action create (new file), modify or delete. tests/**, docs/** and README.md are always allowed and may be left out. The runner fails the close gate when the ticket writes outside files, so list every source file.
 - exit_criteria: commands or specific observations, including the full test command.
 Docs-only and chore tickets may leave interfaces, steps and test_plan empty.
 
