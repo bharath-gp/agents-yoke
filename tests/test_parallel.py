@@ -198,10 +198,10 @@ class TestParallel(PipeBase):
         self.cfg(2)
         t1 = ticket(1)
         t1["files_hint"] = []
-        t1["files"] = [{"path": "yoke/scheduler.py", "action": "modify"}]
+        t1["files"] = [{"path": "yoke/scheduler.py", "action": "modify"}, {"path": "f1.txt", "action": "create"}]
         t2 = ticket(2)
         t2["files_hint"] = []
-        t2["files"] = [{"path": "yoke/scheduler.py", "action": "modify"}]
+        t2["files"] = [{"path": "yoke/scheduler.py", "action": "modify"}, {"path": "f2.txt", "action": "create"}]
         self.setup_tickets(
             [t1, t2],
             {"code": [resp(CODE, "c1", write={"f1.txt": "x"}, sleep=1),
@@ -225,10 +225,10 @@ class TestParallel(PipeBase):
         self.cfg(2)
         t1 = ticket(1)
         t1["files_hint"] = ["a.py"]
-        t1["files"] = [{"path": "yoke/scheduler.py", "action": "modify"}]
+        t1["files"] = [{"path": "yoke/scheduler.py", "action": "modify"}, {"path": "f1.txt", "action": "create"}]
         t2 = ticket(2)
         t2["files_hint"] = ["b.py"]
-        t2["files"] = [{"path": "yoke/scheduler.py", "action": "modify"}]
+        t2["files"] = [{"path": "yoke/scheduler.py", "action": "modify"}, {"path": "f2.txt", "action": "create"}]
         self.setup_tickets(
             [t1, t2],
             {"code": [resp(CODE, "c1", write={"f1.txt": "x"}),

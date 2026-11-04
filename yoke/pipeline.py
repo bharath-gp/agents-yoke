@@ -1266,8 +1266,9 @@ def write_boundary_violations(cfg, ticket, wt, base):
     """Return sorted list of repo-relative paths modified outside allowed files and extra globs.
 
     Compares staged and untracked worktree changes against base using normalized paths
-    and fnmatch glob patterns from write_boundary_extra. Returns [] when write_boundary
-    is disabled or ticket has no non-empty files. Raises Escalate if base is empty.
+    and fnmatch glob patterns from write_boundary_extra. Untracked files are staged
+    via 'git add -A' (honouring .gitignore). Returns [] when write_boundary is disabled
+    or ticket has no non-empty files. Raises Escalate if base is empty.
     """
     if not (config.write_boundary(cfg) and ticket.get("files")):
         return []
@@ -1288,7 +1289,7 @@ def write_boundary_violations(cfg, ticket, wt, base):
     extra = config.write_boundary_extra(cfg)
     outside = []
     for p in paths:
-        if p in allowed or any(fnmatch.fnmatch(p, g) for g in extra):
+        if milestones.normalize_hint(p) in allowed or any(fnmatch.fnmatch(p, g) for g in extra):
             continue
         outside.append(p)
     return sorted(outside)

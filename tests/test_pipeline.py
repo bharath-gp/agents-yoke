@@ -912,6 +912,20 @@ class TestWriteBoundary(PipeBase):
         outside = pipeline.write_boundary_violations(cfg, t, self.repo, "HEAD")
         self.assertEqual(outside, ["tests/t.txt"])
 
+    def test_write_boundary_violations_normalized_paths_and_deep_globs(self):
+        t = dict(ticket(1), files=[{"path": "./f1.txt", "action": "create"}])
+        os.makedirs(os.path.join(self.repo, "tests", "sub", "deep"), exist_ok=True)
+        os.makedirs(os.path.join(self.repo, "docs", "guide"), exist_ok=True)
+        with open(os.path.join(self.repo, "f1.txt"), "w") as f:
+            f.write("f1\n")
+        with open(os.path.join(self.repo, "tests", "sub", "deep", "test_foo.py"), "w") as f:
+            f.write("test\n")
+        with open(os.path.join(self.repo, "docs", "guide", "intro.md"), "w") as f:
+            f.write("docs\n")
+        with open(os.path.join(self.repo, "README.md"), "w") as f:
+            f.write("readme\n")
+        outside = pipeline.write_boundary_violations(self.run_.cfg, t, self.repo, "HEAD")
+        self.assertEqual(outside, [])
 
 
 if __name__ == "__main__":

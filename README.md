@@ -343,6 +343,7 @@ The runner enforces write boundaries at the close gate for tickets with declared
 - **Close gate check**: When a ticket defines a non-empty `files` field, `pipeline._close` captures tracked and untracked worktree modifications against `base_sha` (`git add -A` followed by `git diff --cached --name-only --no-renames -z <base_sha>`).
 - **Retry feedback on violations**: Any path outside the ticket's normalized `files` and `write_boundary_extra` globs fails the close gate and emits a `close_gate` audit event (`gate.write_boundary = False`, `outside = [paths]`), returning retry feedback directing the coder to undo the extraneous changes.
 - **Unrestricted tickets**: Tickets without a `files` field bypass the write boundary check and record no `write_boundary` gate key.
+- **Ignored files**: Because `git add -A` honours `.gitignore`, modifications to gitignored paths are not staged and are excluded from write boundary enforcement.
 
 ## Decision models
 
