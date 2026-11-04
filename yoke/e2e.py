@@ -8,7 +8,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from . import router
+from . import router, ticketstate
 
 SELECTOR = "a,button,[role=button],[role=link],input,select,textarea,[role=tab],[role=menuitem]"
 STATE_CHARS = 6000
@@ -336,7 +336,7 @@ def run_stage(run, ticket, wt, adapter_for, attempt, driver=None, env=None, base
                 base_sha = base
                 if base_sha is None:
                     try:
-                        base_sha = pipeline.ticket_state(run, tid).get("base_sha")
+                        base_sha = ticketstate.load(run, tid).get("base_sha")
                     except Exception:
                         base_sha = None
                 shot = os.path.join(run.path("tickets/%s" % tid), "e2e-%d.png" % n)

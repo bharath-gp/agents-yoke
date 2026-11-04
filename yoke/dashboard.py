@@ -7,7 +7,7 @@ import re
 import sys
 import urllib.parse
 
-from . import config, milestones, planreview, runcmds, scheduler, state
+from . import config, milestones, planreview, runcmds, scheduler, state, ticketstate
 
 
 def read_events_tail(path_or_run, limit=50):
@@ -109,7 +109,7 @@ def _read_text_safe(run, rel):
 
 
 def _get_ticket_state(run, tid):
-    return _read_json_safe(run, os.path.join("tickets", str(tid), "state.json"), {}) or {}
+    return _read_json_safe(run, ticketstate.rel(tid), {}) or {}
 
 
 def _get_ticket_last_stage_and_updated(run, tid, recent_events=None):
@@ -172,7 +172,7 @@ def _get_ticket_last_stage_and_updated(run, tid, recent_events=None):
     # 3. Fall back to state.json mtime
     if not updated:
         try:
-            state_path = run.path(os.path.join("tickets", str(tid), "state.json"))
+            state_path = run.path(ticketstate.rel(tid))
             if os.path.isfile(state_path):
                 mtime = os.path.getmtime(state_path)
                 updated = datetime.datetime.fromtimestamp(mtime).astimezone().isoformat(timespec="seconds")

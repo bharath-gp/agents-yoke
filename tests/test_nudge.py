@@ -6,7 +6,7 @@ from unittest import mock
 
 from tests.test_core import FAKE_CLI
 from tests.test_pipeline import PipeBase, ticket, resp, CODE, REV, val
-from yoke import adapters, cli, gitops, pipeline, planreview
+from yoke import adapters, cli, gitops, pipeline, planreview, ticketstate
 
 os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
 
@@ -58,9 +58,9 @@ class TestNudge(PipeBase):
         self.assertEqual(lines[1]["note"], "second pending note")
 
         # Works on in-progress ticket
-        st = pipeline.ticket_state(self.run_, "T-001")
+        st = ticketstate.load(self.run_, "T-001")
         st["status"] = "in_progress"
-        pipeline.save_state(self.run_, "T-001", st)
+        ticketstate.save(self.run_, "T-001", st)
         pipeline.nudge(self.run_, "T-001", "in progress note")
         buf = io.StringIO()
         with mock.patch("sys.stdout", buf):
@@ -70,7 +70,7 @@ class TestNudge(PipeBase):
 
         # Refused on closed ticket
         st["status"] = "closed"
-        pipeline.save_state(self.run_, "T-001", st)
+        ticketstate.save(self.run_, "T-001", st)
         with self.assertRaises(ValueError):
             pipeline.nudge(self.run_, "T-001", "closed note")
         buf = io.StringIO()
@@ -130,7 +130,7 @@ class TestNudge(PipeBase):
         info = self.run_.read_json("run.json")
         gitops.ensure_feature_branch(info["repo"], info["branch"], info["base_sha"], self.run_.path("worktrees/_integration"))
         gitops.add_worktree(info["repo"], wt, info["branch"] + "-T-001", info["branch"])
-        st = pipeline.ticket_state(self.run_, "T-001")
+        st = ticketstate.load(self.run_, "T-001")
         st["base_sha"] = gitops.head_sha(wt)
         st["review"] = {"rounds": 0, "unresolved": []}
 

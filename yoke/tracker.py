@@ -2,14 +2,13 @@
 Issue numbers live in issues.json and milestone numbers in gh_milestones.json, not tickets.json,
 so creating them never invalidates the tickets approval hash. The runner never pushes; only pr() does,
 after `approve final`."""
-import glob
 import json
 import os
 import re
 import subprocess
 import sys
 
-from . import gitops, planreview, prbody, state
+from . import gitops, planreview, prbody, state, ticketstate
 
 LABEL = "yoke"
 
@@ -203,9 +202,8 @@ def pr_body(run):
         pass
     body = "\n\n".join(p for p in [(filled or "").strip(), "\n".join(closes)] if p)
     findings_by_ticket = {}
-    for td in sorted(glob.glob(run.path("tickets/*/state.json"))):
-        tid = os.path.basename(os.path.dirname(td))
-        st = run.read_json("tickets/%s/state.json" % tid, {})
+    for tid in ticketstate.ids(run):
+        st = ticketstate.load(run, tid)
         unres = st.get("review", {}).get("unresolved", [])
         if unres and st.get("status") == "closed":  # failed or escalated attempts never merged
             findings_by_ticket[tid] = unres

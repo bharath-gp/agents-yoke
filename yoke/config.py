@@ -341,10 +341,11 @@ def check_budget(run):
         return False, None
 
     # Cap is one-shot: check run.json flag and past escalations
+    from . import ticketstate
     info = run.read_json("run.json", {})
     if info.get("budget_escalated"):
         return False, None
-    for e in run.read_json("escalations.json", []):
+    for e in ticketstate.escalations(run):
         if e.get("ticket") is None and str(e.get("reason", "")).startswith(BUDGET_CAP_PREFIX):
             return False, None
 

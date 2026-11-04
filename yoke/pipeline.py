@@ -11,7 +11,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from . import adapters, calls, config, gitops, guard, hooks, milestones, planreview, router, schema, screen, skills, state, tracker, usage
+from . import adapters, calls, config, gitops, guard, hooks, milestones, planreview, router, schema, screen, skills, state, ticketstate, tracker, usage
 
 PKG = os.path.dirname(os.path.abspath(__file__))
 
@@ -41,26 +41,6 @@ def default_adapter_for(cfg):
             return adapters.get(cfg["router"]["fallback"]["agent"])
         return adapters.get(config.agent_for(cfg, role))
     return adapter_for
-
-
-def ticket_state(run, tid):
-    return run.read_json("tickets/%s/state.json" % tid,
-                         {"status": "pending", "attempt": 1, "sessions": {}})
-
-
-def save_state(run, tid, st):
-    run.write_json("tickets/%s/state.json" % tid, st)
-    run.event("ticket_state", ticket=tid, status=st["status"], attempt=st["attempt"])
-
-
-def escalate(run, tid, reason):
-    with state._LOCK:
-        esc = run.read_json("escalations.json", [])
-        esc.append({"id": len(esc) + 1, "ticket": tid, "reason": reason, "at": state.now()})
-        run.write_json("escalations.json", esc)
-    run.event("escalation", ticket=tid, reason=reason)
-    if tid:
-        tracker.comment(run, tid, "yoke escalation: " + reason)
 
 
 def _feedback_path(run, tid, attempt):
@@ -181,7 +161,7 @@ def _run_hypotheses(run, adapter_for, tid, attempt, fb, ticket=None, wt=None, en
     if wt is None:
         wt = run.path("worktrees/" + tid)
     if base is None:
-        st = ticket_state(run, tid)
+        st = ticketstate.load(run, tid)
         base = st.get("base_sha") or "HEAD"
 
     hypo_adapter = None
@@ -282,7 +262,7 @@ def nudge(run, tid, note):
     all_tickets = milestones.merged_tickets(run)
     if not any(t["id"] == tid for t in all_tickets):
         raise ValueError("no such ticket %s" % tid)
-    st = ticket_state(run, tid)
+    st = ticketstate.load(run, tid)
     if st.get("status") == "closed":
         raise ValueError("ticket %s is closed" % tid)
 
@@ -476,7 +456,7 @@ def upstream_notes(run, ticket):
 
     notes_blocks = []
     for anc_id in ordered_ancestors:
-        st = ticket_state(run, anc_id)
+        st = ticketstate.load(run, anc_id)
         if st.get("status") != "closed":
             continue
         try:
@@ -795,7 +775,7 @@ def _post_code(run, ticket, st, wt, since, res):
     tid, attempt = ticket["id"], st["attempt"]
     if res.session_id:
         st["sessions"]["code"] = res.session_id
-        save_state(run, tid, st)
+        ticketstate.save(run, tid, st)
     if gitops.agent_made_commits(wt, since):
         run.event("agent_commit", ticket=tid, attempt=attempt)
         gitops.undo_commits(wt, since)
@@ -990,7 +970,7 @@ def _debate(run, adapter_for, env, ticket, st, wt, base, results, feedback, bloc
     st.setdefault("review", {"rounds": 0, "unresolved": [], "overruled": []})
     st["review"].setdefault("overruled", [])
     st["review"]["overruled"].extend(overruled)
-    save_state(run, tid, st)
+    ticketstate.save(run, tid, st)
 
     run.event("review_debate", ticket=tid, attempt=attempt, round=n, upheld=len(upheld), overruled=len(overruled))
 
@@ -1083,18 +1063,18 @@ def _review_loop(run, adapter_for, env, ticket, st, wt, base, results, feedback)
         if not blocking:
             st["review"]["rounds"] = n
             st["review"]["unresolved"] = []
-            save_state(run, tid, st)
+            ticketstate.save(run, tid, st)
             return None
         if n >= max_rounds:
             st["review"]["rounds"] = n
             st["review"]["unresolved"] = blocking
-            save_state(run, tid, st)
+            ticketstate.save(run, tid, st)
             run.event("review_unresolved", ticket=tid, attempt=attempt, findings=blocking, rounds=n)
             tracker.comment(run, tid, "Unresolved review findings:\n" + _format_findings(blocking))
             return None
         n += 1
         st["review"]["rounds"] = n
-        save_state(run, tid, st)
+        ticketstate.save(run, tid, st)
         fb_parts = [_format_findings(blocking, "Required review fixes:")]
         suggestions = [f for f in findings if f.get("severity") in ("minor", "nit")]
         if suggestions:
@@ -1224,7 +1204,7 @@ def _attempt_body(run, adapter_for, env, ticket, st, wt, stages, start_idx, resu
     st["gate_hooks"] = {}
     if "review" in stages[start_idx:]:
         st["review"] = {"rounds": 0, "unresolved": [], "overruled": []}
-        save_state(run, tid, st)
+        ticketstate.save(run, tid, st)
     feedback = _read_feedback(run, tid, attempt)
     nudges = consume_nudges(run, tid)
     if nudges:
@@ -1298,7 +1278,7 @@ def _attempt_body(run, adapter_for, env, ticket, st, wt, stages, start_idx, resu
                 cat = d["result"] if d.get("source") == "ollama" else None
                 if cat == "environment" and not st.get("env_rerun"):
                     st["env_rerun"] = True
-                    save_state(run, tid, st)
+                    ticketstate.save(run, tid, st)
                     rerun_rc, tail = _rerun(run, test_cmd, wt)
                     if rerun_rc != 0:
                         raise Escalate("environment failure running `%s`: %s" % (test_cmd, tail[-500:]))
@@ -1397,14 +1377,14 @@ def _attempt(run, adapter_for, env, ticket, st, wt, stages):
     else:
         start_idx = 0
         results, test_cmd, rerun_rc = {}, None, None
-    save_state(run, tid, st)
+    ticketstate.save(run, tid, st)
     fb, results, test_cmd, rerun_rc = _attempt_body(
         run, adapter_for, env, ticket, st, wt, stages, start_idx, results, test_cmd, rerun_rc
     )
     st["last_results"] = dict(results)
     st["last_test_cmd"] = test_cmd
     st["last_rerun_rc"] = rerun_rc
-    save_state(run, tid, st)
+    ticketstate.save(run, tid, st)
     return fb, results, test_cmd, rerun_rc
 
 
@@ -1490,7 +1470,7 @@ def _close(run, adapter_for, ticket, st, wt, stages, results, test_cmd, rerun_rc
             files = gitops.reapply_on(wt, tip) or files
             st["base_sha"] = tip  # validate diffs against the new base
             st["commit"] = None
-            save_state(run, tid, st)
+            ticketstate.save(run, tid, st)
             return ("Rebase conflict on files %s. Your changes were re-applied on the latest %s and the "
                     "conflict markers are in the working tree; resolve them keeping both sides' intent."
                     % (", ".join(files), info["branch"]))
@@ -1547,11 +1527,10 @@ def run_ticket(run, ticket, adapter_for=None, env=None, merge_lock=None):
     merge_lock = merge_lock or contextlib.nullcontext()
     wt = run.path("worktrees/" + tid)
     gitops.add_worktree(info["repo"], wt, info["branch"] + "-" + tid, info["branch"])
-    st = ticket_state(run, tid)
+    st = ticketstate.load(run, tid)
     st["base_sha"] = st.get("base_sha") or gitops.head_sha(wt)
     resume_close = st.get("status") == "awaiting_gate"
-    st["status"] = "in_progress"
-    save_state(run, tid, st)
+    ticketstate.start(run, tid, st)
     stages = cfg["routing"][ticket["type"]]["stages"]
     try:
         while True:
@@ -1565,8 +1544,7 @@ def run_ticket(run, ticket, adapter_for=None, env=None, merge_lock=None):
                 fb = _close(run, adapter_for, ticket, st, wt, stages, results, test_cmd, rc, merge_lock, env=env)
             if fb is None:
                 _append_decision(run, ticket, results)
-                st["status"] = "closed"
-                save_state(run, tid, st)
+                ticketstate.close(run, tid, st)
                 gitops.remove_worktree(info["repo"], wt)
                 try:
                     usage.write_usage(run)
@@ -1583,14 +1561,10 @@ def run_ticket(run, ticket, adapter_for=None, env=None, merge_lock=None):
             st["attempt"] += 1
             fb = _maybe_triage_hint(run, adapter_for, tid, st["attempt"], fb, ticket=ticket, wt=wt, env=env, base=st.get("base_sha"))
             write_feedback(run, tid, st["attempt"], fb)
-            save_state(run, tid, st)
+            ticketstate.save(run, tid, st)
     except AwaitGate as e:
-        st["status"] = "awaiting_gate"
-        save_state(run, tid, st)
-        run.event("ticket_awaiting_gate", ticket=tid, gates=str(e))
+        ticketstate.await_gate(run, tid, st, str(e))
         return "awaiting_gate"
     except Escalate as e:
-        st["status"] = "blocked"
-        save_state(run, tid, st)
-        escalate(run, tid, str(e))
+        ticketstate.block(run, tid, st, str(e))
         return "blocked"
