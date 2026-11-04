@@ -122,6 +122,13 @@ def review_mode(cfg=None):
     return "independent" if cfg.get("review_mode") == "independent" else "adversarial"
 
 
+def goldfish_context(cfg=None):
+    """Return configured goldfish_context, defaulting to True."""
+    if cfg is None:
+        cfg = load()
+    return cfg.get("goldfish_context", True) is not False
+
+
 def debate_rounds(cfg=None):
     """Return configured debate rounds count, defaulting to 1."""
     if cfg is None:

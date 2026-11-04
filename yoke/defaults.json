@@ -34,6 +34,7 @@
   ],
   "review_mode": "adversarial",
   "debate_rounds": 1,
+  "goldfish_context": true,
   "hypotheses": 0,
   "max_fix_tickets_per_milestone": 2,
   "max_chart_rounds": 3,

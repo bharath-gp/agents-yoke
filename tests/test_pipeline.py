@@ -662,5 +662,94 @@ class TestTestFixLoop(PipeBase):
         self.assertEqual(attempt2_fixes[1]["rc"], 0)
 
 
+class TestGoldfish(PipeBase):
+    def test_goldfish_results_drops_code_and_qa_keeps_test_command(self):
+        inp = {"code": CODE, "qa": qa("x"), "review": REV}
+        inp_copy = dict(inp)
+        out = pipeline.goldfish_results(inp)
+        self.assertEqual(out, {"review": REV, "qa": {"test_command": "x"}})
+        self.assertEqual(inp, inp_copy)
+
+        inp_no_qa = {"code": CODE, "review": REV}
+        out_no_qa = pipeline.goldfish_results(inp_no_qa)
+        self.assertEqual(out_no_qa, {"review": REV})
+        self.assertNotIn("qa", out_no_qa)
+
+        # Non-dict inputs returned unchanged
+        self.assertIsNone(pipeline.goldfish_results(None))
+        self.assertEqual(pipeline.goldfish_results("not_a_dict"), "not_a_dict")
+
+        # Non-dict qa and empty test_command
+        self.assertEqual(pipeline.goldfish_results({"code": CODE, "qa": "not_a_dict"}), {})
+        self.assertEqual(pipeline.goldfish_results({"code": CODE, "qa": {"test_command": ""}}), {})
+        self.assertEqual(pipeline.goldfish_results({"code": CODE, "qa": {"test_command": None}}), {})
+
+        # config.goldfish_context helper tests
+        self.assertTrue(config.goldfish_context({}))
+        self.assertTrue(config.goldfish_context({"goldfish_context": True}))
+        self.assertFalse(config.goldfish_context({"goldfish_context": False}))
+        self.assertTrue(config.goldfish_context({"goldfish_context": "truthy"}))
+
+    def test_validate_prompt_has_no_code_summary(self):
+        code_res = dict(CODE, summary="CODER_SELF_REPORT")
+        qa_res = dict(qa(PASS_CMD % "f1.txt"), summary="QA_SELF_REPORT")
+        self.setup_tickets(
+            [ticket(1, type_="feature")],
+            {
+                "code": [resp(code_res, "c1", write={"f1.txt": "x"})],
+                "review": [resp(REV)],
+                "qa": [resp(qa_res)],
+                "validate": [resp(val())],
+                "docs": [resp(DOCS)],
+                "router": [{"exit": 1}],
+            },
+        )
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+        val_prompt_path = self.run_.path("tickets/T-001/attempt-1/validate/prompt.md")
+        with open(val_prompt_path) as f:
+            val_prompt = f.read()
+        self.assertNotIn("CODER_SELF_REPORT", val_prompt)
+        self.assertNotIn("QA_SELF_REPORT", val_prompt)
+        self.assertIn("test -f f1.txt", val_prompt)
+        self.assertIn("exited 0", val_prompt)
+        self.assertIn('"test_command"', val_prompt)
+
+        rev_prompt_path = self.run_.path("tickets/T-001/attempt-1/review/prompt.md")
+        with open(rev_prompt_path) as f:
+            rev_prompt = f.read()
+        self.assertNotIn("CODER_SELF_REPORT", rev_prompt)
+
+    def test_off_restores_full_results(self):
+        self.run_.update(config=dict(self.run_.cfg, goldfish_context=False))
+        code_res = dict(CODE, summary="CODER_SELF_REPORT")
+        qa_res = dict(qa(PASS_CMD % "f1.txt"), summary="QA_SELF_REPORT")
+        self.setup_tickets(
+            [ticket(1, type_="feature")],
+            {
+                "code": [resp(code_res, "c1", write={"f1.txt": "x"})],
+                "review": [resp(REV)],
+                "qa": [resp(qa_res)],
+                "validate": [resp(val())],
+                "docs": [resp(DOCS)],
+                "router": [{"exit": 1}],
+            },
+        )
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+        val_prompt_path = self.run_.path("tickets/T-001/attempt-1/validate/prompt.md")
+        with open(val_prompt_path) as f:
+            val_prompt = f.read()
+        self.assertIn("CODER_SELF_REPORT", val_prompt)
+        self.assertIn("QA_SELF_REPORT", val_prompt)
+        self.assertIn('"files_changed"', val_prompt)
+
+        rev_prompt_path = self.run_.path("tickets/T-001/attempt-1/review/prompt.md")
+        with open(rev_prompt_path) as f:
+            rev_prompt = f.read()
+        self.assertIn("CODER_SELF_REPORT", rev_prompt)
+        self.assertIn('"files_changed"', rev_prompt)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -962,6 +962,30 @@ class TestAdversarialReview(PipeBase):
         self.assertEqual(len(deb_events), 2)
         self.assertEqual([e["round"] for e in deb_events], [0, 1])
 
+    def test_judge_prompt_goldfish_rebut_full(self):
+        self.run_.update(config=dict(self.run_.cfg, review_lenses=["security"]))
+        code_marker = "CODER_SUMMARY_MARKER_XYZ"
+        code_custom = dict(CODE, summary=code_marker)
+        f = finding(severity="blocker", file="a.py", line=1, comment="disputed finding", suggestion="fix a.py")
+        script = self.script_dict(
+            code=[resp(code_custom, "c1", write={"f1.txt": "1"}), resp(code_custom, "c1", write={"f1.txt": "2"})],
+            **{
+                "review-security": [resp(rev_changes([f]))],
+                "review-security-r1": [resp(REV_APPROVE)],
+                "rebut": [resp({"responses": [{"id": "f1", "stance": "dispute", "argument": "not a bug", "evidence": "a.py:1"}], "summary": "disputing"})],
+                "judge": [resp({"rulings": [{"id": "f1", "ruling": "upheld", "reason": "it is a bug"}], "summary": "ruling"})],
+            }
+        )
+        self.setup_tickets([ticket(1)], script)
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+        with open(self.run_.path("tickets/T-001/attempt-1/judge-r0/prompt.md")) as f_j:
+            judge_prompt = f_j.read()
+        with open(self.run_.path("tickets/T-001/attempt-1/rebut-r0-1/prompt.md")) as f_r:
+            rebut_prompt = f_r.read()
+        self.assertNotIn(code_marker, judge_prompt)
+        self.assertIn(code_marker, rebut_prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

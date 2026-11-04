@@ -94,6 +94,7 @@ Yoke supports adversarial review debates during ticket review and plan review:
 {
   "review_mode": "adversarial",
   "debate_rounds": 1,
+  "goldfish_context": true,
   "timeouts_s": {
     "rebut": 900,
     "reply": 900,
@@ -106,6 +107,7 @@ Yoke supports adversarial review debates during ticket review and plan review:
 
 - **Review mode**: Configured via `review_mode` (`"adversarial"` by default). Set to `"independent"` to run reviews without adversarial debate rounds. Any unknown or missing value defaults to `"adversarial"`.
 - **Debate rounds**: Configured via `debate_rounds` (default: `1`). Controls the number of debate exchanges, clamped to at least `1`.
+- **Goldfish context diet**: Configured via `goldfish_context` (default: `true`). When enabled, `build_spec` filters `$prior_results` for the `review`, `judge`, and `validate` stages by dropping `code` and `qa` stage results while preserving `qa.test_command`. The `rebut` and `reply` stages retain full results. Setting `goldfish_context: false` restores full prior results for byte-identical 0.16.x prompts.
 - **Debate timeouts**: Timeout limits in seconds under `timeouts_s`: `rebut` (900s), `reply` (900s), `judge` (900s), `plan_rebut` (900s), and `plan_judge` (900s).
 - **Debate schemas**: Governed by strict JSON schemas (`yoke/schemas/rebut.json`, `yoke/schemas/reply.json`, `yoke/schemas/judge.json`) validating structured responses (`concede` or `dispute`), replies (`maintain` or `withdraw`), and judge rulings (`upheld` or `overruled`).
 - **Ticket code review debate lifecycle**: When `review_mode` is `"adversarial"`, merged and deduplicated blocking findings (`blocker` and `major`) undergo an adversarial debate flow: lenses attack, the coder rebuts on its resumed session, an optional reviewer reply occurs when `debate_rounds > 1`, and a plan-tier judge rules on disputes:
