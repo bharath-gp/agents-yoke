@@ -68,6 +68,7 @@ Status legend per milestone: `[ ]` todo, `[~]` in progress, `[x]` done. Update t
    | [M35](#m35) | Notifications and commit message mode | [2.6](#s2-6), [2.10](#s2-10) |
    | [M36](#m36) | Look-ahead start, merge after gate | [2.8](#s2-8), [2.9](#s2-9) |
    | [M37](#m37) | Research screening by decision model | [2.6](#s2-6), [2.8](#s2-8), [2.10](#s2-10) |
+   | [M38](#m38) | Architecture refactor: ticket record, gate, call split | [2.2](#s2-2), [2.8](#s2-8), [2.12](#s2-12) |
 4. [Verification matrix](#s4)
 5. [Out of scope](#s5)
 - [Appendix A: Topic index](#appA)
@@ -826,6 +827,19 @@ Files: `yoke/screen.py`, `yoke/pipeline.py`, `yoke/usage.py`, `yoke/defaults.jso
 - Exit criteria: source and claim screening filter low-quality items; factcheck bypassed on full support and narrowed on escalations; screen state persisted in `screen.json`, `map.md`, and `usage.json`; all unit tests pass.
 - Notes: Built `yoke/screen.py` and integrated with pipeline research flow. Deviations: (a) no dead-URL heuristic; (b) claim question binary; (c) `min_confidence` overrides `router.thresholds`.
 
+
+<a id="m38"></a>
+### M38: Architecture refactor: ticket record, gate, call split (0.16.0) `[x]`
+Files: `yoke/planreview.py`, `yoke/dashboard.py`, `yoke/runcmds.py`, `yoke/ticketstate.py`, `yoke/milestones.py`, `yoke/scheduler.py`, `yoke/pipeline.py`, `yoke/calls.py`, `yoke/pause.py`, `.github/workflows/ci.yml`, `tests/test_*.py`, `CLAUDE.md`, `docs/PLAN.md`.
+- Goal: one owner per piece of run state and one place per rule, with behaviour unchanged except the stage fix in (A).
+- (A) Lifecycle stage: `planreview.approval_stage` is the one hash-checked stage function; `dashboard.derive_stage` and `runcmds.next_step` both call it, so an edited `plan.md` shows `plan` in both (PR #134).
+- (B) Ticket record: `yoke/ticketstate.py` owns `tickets/<tid>/state.json`, its status transitions and `escalations.json` (PR #135).
+- (C) Milestone gate: `milestones.gate_cleared` is the gate rule, `milestones.evaluate_gate` the verdict and `milestones.set_milestone_state` the only writer of gate state; `scheduler._gate_step` applies the verdict (PR #137).
+- (D) Call split: `pipeline.build_spec` builds a stage's `CallSpec` without running it; the budget check lives in `calls.run_call(budget=True)` (`calls.check_budget`); `yoke/pause.py` is the only writer of `RunPauseState` and of `run.json` `limit_waits`/`waiting_limit` (PR #138).
+- CI: the `check` job is pinned to `ubuntu-24.04`, because `ubuntu-latest` (26.04) has no Python 3.9 build for `setup-python` (PR #136).
+- Exit criteria: dashboard and `yoke status` agree on the stage after a post-approval edit; a single-writer test covers pause state; model-pick and skills tests no longer patch `calls.run_call`; all unit tests pass.
+- Notes: Deviations: (a) when `tickets.json` is corrupt the dashboard now shows `plan` where it showed `run`; (b) milestone state is re-read from disk on each write. Known follow-up: `runcmds.is_active` treats an `approvals.json` `"final"` key as done without checking its hash.
+
 ---
 
 <a id="s4"></a>
@@ -919,6 +933,8 @@ Files: `yoke/screen.py`, `yoke/pipeline.py`, `yoke/usage.py`, `yoke/defaults.jso
 | `yoke/hooks.py` | hook runner with process-group kill on timeout | [2.6](#s2-6), [2.8](#s2-8) | [M17](#m17) |
 | `yoke/dashboard.py`, `yoke/dashboard.html` | read-only dashboard server and UI | [2.16](#s2-16) | [M15](#m15) |
 | `yoke/limits.py` | limit pattern matching, timestamp parsing, pool pause & retry | [2.6](#s2-6), [2.12](#s2-12) | [M22](#m22) |
+| `yoke/pause.py` | rate-limit pause state, limit-wait loop, pause recovery | [2.12](#s2-12) | [M38](#m38) |
+| `yoke/ticketstate.py` | ticket `state.json`, status transitions, escalations | [2.2](#s2-2), [2.8](#s2-8) | [M38](#m38) |
 | `yoke/guard.py` | safety guard: diff scan, tool-call and test-command checks | [2.10](#s2-10) | [M25](#m25) |
 | `yoke/skills.py` | skill catalog discovery for skill pick | [2.10](#s2-10) | [M28](#m28) |
 | `yoke/e2e.py` | browser e2e stage (optional Playwright) | [2.8](#s2-8) | [M29](#m29) |
