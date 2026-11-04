@@ -149,8 +149,9 @@ def warnings(tickets, milestones=None):
     """Runner-level warnings (non-fatal); returns warning strings.
 
     Flags tickets with >6 files_hint or >6 exit_criteria, feature/bugfix/refactor tickets
-    without steps or test_plan, milestones with >12 tickets, and milestones with
-    dependency chains of 4 or more tickets or full chains of 3 or more tickets.
+    without steps or test_plan, feature/bugfix/refactor tickets without files, milestones
+    with >12 tickets, and milestones with dependency chains of 4 or more tickets or full
+    chains of 3 or more tickets.
     """
     if isinstance(tickets, dict):
         doc = tickets
@@ -172,6 +173,9 @@ def warnings(tickets, milestones=None):
             if missing:
                 warns.append("ticket %s (%s) has no %s; the coder will have to plan it" %
                              (t.get("id"), t["type"], " or ".join(missing)))
+            if not t.get("files"):
+                warns.append("ticket %s (%s) has no files; its write boundary will not be checked" %
+                             (t.get("id"), t.get("type")))
 
     if milestones:
         counts = {}

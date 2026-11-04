@@ -194,6 +194,55 @@ class TestParallel(PipeBase):
         for n in (1, 2):
             self.assertEqual(self.tstate(n)["status"], "closed")
 
+    def test_overlap_uses_files_when_hint_empty(self):
+        self.cfg(2)
+        t1 = ticket(1)
+        t1["files_hint"] = []
+        t1["files"] = [{"path": "yoke/scheduler.py", "action": "modify"}]
+        t2 = ticket(2)
+        t2["files_hint"] = []
+        t2["files"] = [{"path": "yoke/scheduler.py", "action": "modify"}]
+        self.setup_tickets(
+            [t1, t2],
+            {"code": [resp(CODE, "c1", write={"f1.txt": "x"}, sleep=1),
+                      resp(CODE, "c2", write={"f2.txt": "x"}, sleep=1)],
+             "review": [resp(REV)] * 2,
+             "validate": [resp(val())], "router": [{"exit": 1}]})
+        t0 = time.time()
+        self.assertEqual(self.go(), "done")
+        self.assertGreaterEqual(time.time() - t0, 1.8)
+        with open(self.run_.path("events.jsonl")) as f:
+            events = [json.loads(l) for l in f if l.strip()]
+        deferred = [e for e in events if e.get("kind") == "ticket_deferred"]
+        self.assertEqual(len(deferred), 1)
+        self.assertEqual(deferred[0]["ticket"], "T-002")
+        self.assertEqual(deferred[0]["running"], "T-001")
+        self.assertEqual(deferred[0]["overlaps"], "T-001")
+        for n in (1, 2):
+            self.assertEqual(self.tstate(n)["status"], "closed")
+
+    def test_files_ignored_when_hint_set(self):
+        self.cfg(2)
+        t1 = ticket(1)
+        t1["files_hint"] = ["a.py"]
+        t1["files"] = [{"path": "yoke/scheduler.py", "action": "modify"}]
+        t2 = ticket(2)
+        t2["files_hint"] = ["b.py"]
+        t2["files"] = [{"path": "yoke/scheduler.py", "action": "modify"}]
+        self.setup_tickets(
+            [t1, t2],
+            {"code": [resp(CODE, "c1", write={"f1.txt": "x"}),
+                      resp(CODE, "c2", write={"f2.txt": "x"})],
+             "review": [resp(REV)] * 2,
+             "validate": [resp(val())], "router": [{"exit": 1}]})
+        self.assertEqual(self.go(), "done")
+        with open(self.run_.path("events.jsonl")) as f:
+            events = [json.loads(l) for l in f if l.strip()]
+        deferred = [e for e in events if e.get("kind") == "ticket_deferred"]
+        self.assertEqual(len(deferred), 0)
+        for n in (1, 2):
+            self.assertEqual(self.tstate(n)["status"], "closed")
+
 
 class TestHintsOverlap(PipeBase):
     def test_hints_overlap_logic(self):
@@ -213,6 +262,12 @@ class TestHintsOverlap(PipeBase):
         self.assertFalse(milestones.hints_overlap(["."], ["a.py"]))
         self.assertFalse(milestones.hints_overlap(None, ["a.py"]))
         self.assertFalse(milestones.hints_overlap(["a.py"], None))
+        self.assertEqual(milestones.overlap_paths({"files_hint": ["a.py"], "files": [{"path": "b.py", "action": "modify"}]}), ["a.py"])
+        self.assertEqual(milestones.overlap_paths({"files_hint": [], "files": [{"path": "b.py", "action": "modify"}]}), ["b.py"])
+        self.assertEqual(milestones.overlap_paths({"files": [{"path": "b.py", "action": "modify"}]}), ["b.py"])
+        self.assertEqual(milestones.overlap_paths({"files": ["bad", {"action": "modify"}, {"path": "c.py", "action": "create"}]}), ["c.py"])
+        self.assertEqual(milestones.overlap_paths({}), [])
+        self.assertEqual(milestones.overlap_paths(None), [])
 
 
 class TestGitopsConflict(PipeBase):

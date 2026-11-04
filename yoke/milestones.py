@@ -249,6 +249,18 @@ def hints_overlap(hints_a, hints_b):
     return False
 
 
+def overlap_paths(ticket):
+    """Return files_hint when non-empty, else paths from files [{path, action}]."""
+    if not isinstance(ticket, dict):
+        return []
+    hints = ticket.get("files_hint")
+    if hints:
+        return list(hints)
+    raw_files = ticket.get("files")
+    files_list = raw_files if isinstance(raw_files, list) else []
+    return [f["path"] for f in files_list if isinstance(f, dict) and f.get("path")]
+
+
 def ticket_waiting_for(ticket, all_milestones, ms_states, sts, ms_idx=None):
     """Return list of reasons why ticket is waiting/blocked, or empty list."""
     if ms_idx is None:

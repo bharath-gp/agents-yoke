@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 
-from yoke import adapters, cli, config, milestones, state, tickets
+from yoke import adapters, cli, config, milestones, planreview, schema, state, tickets
 try:
     from tests.test_core import FAKE_CLI
 except ImportError:
@@ -297,6 +297,200 @@ class TestChainWarning(unittest.TestCase):
         self.assertEqual(len(chain_warns), 2)
         self.assertIn("MS-02", chain_warns[0])
         self.assertIn("MS-01", chain_warns[1])
+
+
+class TestFilesField(unittest.TestCase):
+    def test_schema_accepts_files_and_rejects_bad_action(self):
+        s_list = schema.load_schema("ticket-list")
+        doc_list = {
+            "tickets": [
+                {
+                    "id": "T-001",
+                    "title": "t1",
+                    "type": "feature",
+                    "description": "d",
+                    "exit_criteria": ["ok"],
+                    "depends_on": [],
+                    "files_hint": [],
+                    "plan_excerpt": "",
+                    "files": [{"path": "a.py", "action": "modify"}],
+                }
+            ]
+        }
+        self.assertEqual(schema.validate(doc_list, s_list), [])
+
+        doc_bad_action = {
+            "tickets": [
+                {
+                    "id": "T-001",
+                    "title": "t1",
+                    "type": "feature",
+                    "description": "d",
+                    "exit_criteria": ["ok"],
+                    "depends_on": [],
+                    "files_hint": [],
+                    "plan_excerpt": "",
+                    "files": [{"path": "a.py", "action": "rename"}],
+                }
+            ]
+        }
+        errs = schema.validate(doc_bad_action, s_list)
+        self.assertTrue(errs)
+        self.assertTrue(any("action" in e or "rename" in e for e in errs))
+
+        doc_missing_path = {
+            "tickets": [
+                {
+                    "id": "T-001",
+                    "title": "t1",
+                    "type": "feature",
+                    "description": "d",
+                    "exit_criteria": ["ok"],
+                    "depends_on": [],
+                    "files_hint": [],
+                    "plan_excerpt": "",
+                    "files": [{"action": "modify"}],
+                }
+            ]
+        }
+        errs = schema.validate(doc_missing_path, s_list)
+        self.assertTrue(errs)
+        self.assertTrue(any("path" in e for e in errs))
+
+        s_ticket = schema.load_schema("ticket")
+        ticket_doc = {
+            "id": "T-001",
+            "title": "t1",
+            "type": "feature",
+            "description": "d",
+            "exit_criteria": ["ok"],
+            "depends_on": [],
+            "files_hint": [],
+            "plan_excerpt": "",
+            "milestone": "MS-01",
+            "files": [{"path": "a.py", "action": "modify"}],
+        }
+        self.assertEqual(schema.validate(ticket_doc, s_ticket), [])
+        bad_ticket = dict(ticket_doc, files=[{"path": "a.py", "action": "rename"}])
+        self.assertTrue(schema.validate(bad_ticket, s_ticket))
+        missing_path_ticket = dict(ticket_doc, files=[{"action": "modify"}])
+        self.assertTrue(schema.validate(missing_path_ticket, s_ticket))
+
+        s_chart = schema.load_schema("chart")
+        chart_doc = {
+            "tickets": [
+                {
+                    "id": "T-001",
+                    "title": "t1",
+                    "type": "feature",
+                    "description": "d",
+                    "exit_criteria": ["ok"],
+                    "depends_on": [],
+                    "files_hint": [],
+                    "plan_excerpt": "",
+                    "files": [{"path": "a.py", "action": "modify"}],
+                }
+            ]
+        }
+        self.assertEqual(schema.validate(chart_doc, s_chart), [])
+        bad_chart = {
+            "tickets": [
+                {
+                    "id": "T-001",
+                    "title": "t1",
+                    "type": "feature",
+                    "description": "d",
+                    "exit_criteria": ["ok"],
+                    "depends_on": [],
+                    "files_hint": [],
+                    "plan_excerpt": "",
+                    "files": [{"path": "a.py", "action": "rename"}],
+                }
+            ]
+        }
+        self.assertTrue(schema.validate(bad_chart, s_chart))
+
+    def test_old_tickets_import_hash_unchanged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = os.path.join(tmp, "repo")
+            os.makedirs(repo)
+            run = planreview.init_run(repo, home=tmp)
+            doc = {
+                "tickets": [
+                    {
+                        "id": "T-001",
+                        "title": "t1",
+                        "type": "feature",
+                        "description": "d",
+                        "exit_criteria": ["ok"],
+                        "depends_on": [],
+                        "files_hint": ["a.py"],
+                        "plan_excerpt": "",
+                    }
+                ]
+            }
+            p = os.path.join(tmp, "doc.json")
+            with open(p, "w") as f:
+                json.dump(doc, f)
+            errs, ts = tickets.import_tickets(run, p)
+            self.assertEqual(errs, [])
+            saved = run.read_json("tickets.json")
+            for t in saved["tickets"]:
+                self.assertNotIn("files", t)
+            h1 = planreview.current_hash(run, "tickets")
+            errs2, ts2 = tickets.import_tickets(run, p)
+            self.assertEqual(errs2, [])
+            h2 = planreview.current_hash(run, "tickets")
+            self.assertEqual(h1, h2)
+
+    def test_warns_detailed_ticket_without_files(self):
+        for typ in ("feature", "bugfix", "refactor"):
+            with self.subTest(type=typ):
+                t_detailed = {
+                    "id": "T-001",
+                    "title": "t1",
+                    "type": typ,
+                    "description": "d",
+                    "exit_criteria": ["ok"],
+                    "depends_on": [],
+                    "files_hint": [],
+                    "plan_excerpt": "",
+                    "steps": ["step1"],
+                    "test_plan": ["test1"],
+                }
+                warns = tickets.warnings([t_detailed])
+                self.assertTrue(
+                    any(
+                        f"ticket T-001 ({typ}) has no files; its write boundary will not be checked" in w
+                        for w in warns
+                    )
+                )
+
+                t_empty_files = dict(t_detailed, files=[])
+                warns_empty = tickets.warnings([t_empty_files])
+                self.assertTrue(
+                    any(
+                        f"ticket T-001 ({typ}) has no files; its write boundary will not be checked" in w
+                        for w in warns_empty
+                    )
+                )
+
+                t_with_files = dict(t_detailed, files=[{"path": "a.py", "action": "modify"}])
+                warns_files = tickets.warnings([t_with_files])
+                self.assertFalse(any("has no files" in w for w in warns_files))
+
+        t_docs = {
+            "id": "T-002",
+            "title": "t2",
+            "type": "docs",
+            "description": "d",
+            "exit_criteria": ["ok"],
+            "depends_on": [],
+            "files_hint": [],
+            "plan_excerpt": "",
+        }
+        warns3 = tickets.warnings([t_docs])
+        self.assertFalse(any("has no files" in w for w in warns3))
 
 
 if __name__ == "__main__":
