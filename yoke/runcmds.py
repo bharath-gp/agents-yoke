@@ -102,9 +102,10 @@ def is_active(run):
     """True unless state == 'done' and final is approved at the current hash (same rule as next_step)."""
     if run.read_json("run.json", {}).get("state") != "done":
         return True
+    # bad data only: stale/missing approval or file, corrupt JSON, approvals.json not a dict, malformed final entry
     try:
         planreview.check_approval(run, "final")
-    except Exception:  # missing, stale or unreadable approval: not finalized
+    except (planreview.ApprovalError, ValueError, AttributeError, KeyError, TypeError):
         return True
     return False
 

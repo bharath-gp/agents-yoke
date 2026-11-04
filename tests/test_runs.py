@@ -96,10 +96,33 @@ class TestRuns(unittest.TestCase):
         self.assertTrue(runcmds.is_active(run))
         self.assertEqual(runcmds.next_step(run), "finish")
 
-        # unreadable approvals.json: active, no crash
-        with open(run.path("approvals.json"), "w") as f:
-            f.write("{not json")
+        # bad approval data: active, no crash
+        good = run.read_json("approvals.json")
+        run.write_json("tickets.json", {"tickets": [{"id": "T-001"}]})
+        for text in ("{not json", "[]", json.dumps(dict(good, final={"at": "x"})), json.dumps(dict(good, final="x"))):
+            with open(run.path("approvals.json"), "w") as f:
+                f.write(text)
+            self.assertTrue(runcmds.is_active(run), text)
+        os.remove(run.path("approvals.json"))
         self.assertTrue(runcmds.is_active(run))
+
+        # plan.md edited or missing after final approval, and corrupt tickets.json: active
+        run.write_json("approvals.json", good)
+        self.assertFalse(runcmds.is_active(run))
+        for mutate in (lambda: open(run.path("plan.md"), "w").write("edited"),
+                       lambda: os.remove(run.path("plan.md")),
+                       lambda: open(run.path("tickets.json"), "w").write("{bad"),
+                       lambda: os.remove(run.path("tickets.json"))):
+            with open(run.path("plan.md"), "w") as f:
+                f.write("Plan content")
+            run.write_json("tickets.json", {"tickets": [{"id": "T-001"}]})
+            mutate()
+            self.assertTrue(runcmds.is_active(run))
+
+        # unexpected errors propagate
+        with mock.patch("yoke.planreview.check_approval", side_effect=RuntimeError("boom")):
+            with self.assertRaises(RuntimeError):
+                runcmds.is_active(run)
 
     def test_goal_of(self):
         run = self._mkrun(self.repo)
