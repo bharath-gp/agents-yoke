@@ -1412,11 +1412,7 @@ def _gate(stages, results, rerun_rc):
 
 def open_gates(run, ticket):
     """Earlier milestone gates that are not yet passed or waived (merge must wait for them)."""
-    all_ms = milestones.milestones_of(run)
-    idx = {m["id"]: i for i, m in enumerate(all_ms)}
-    states = milestones.load_states(run)
-    return [m["id"] for m in all_ms[:idx.get(ticket.get("milestone", "MS-00"), 0)]
-            if states.get(m["id"], {}).get("status") not in ("passed", "waived")]
+    return milestones.open_gates_before(ticket, milestones.milestones_of(run), milestones.load_states(run))
 
 
 def _close(run, adapter_for, ticket, st, wt, stages, results, test_cmd, rerun_rc, merge_lock, env=None):

@@ -154,30 +154,56 @@ def save_states(run, states):
         run.write_json("milestones.json", states)
 
 
-def get_milestone_state(run, mid):
-    states = load_states(run)
-    return states.get(mid, {"id": mid, "status": "open", "fix_count": 0})
-
-
-def set_milestone_state(run, mid, **updates):
+def set_milestone_state(run, mid, drop=(), **updates):
+    """The one writer of a milestone's gate state: drops the keys in drop, applies updates, saves."""
     states = load_states(run)
     st = states.setdefault(mid, {"id": mid, "status": "open", "fix_count": 0})
+    for k in drop:
+        st.pop(k, None)
     st.update(updates)
     save_states(run, states)
     return st
+
+
+def gate_cleared(ms_states, mid):
+    """The gate rule: a milestone is out of the way once it is passed or waived."""
+    return ms_states.get(mid, {}).get("status") in ("passed", "waived")
+
+
+def open_gates_before(ticket, all_milestones, ms_states, ms_idx=None):
+    """Ids of the milestones before the ticket's own whose gates are not cleared."""
+    if ms_idx is None:
+        ms_idx = {m["id"]: i for i, m in enumerate(all_milestones)}
+    return [m["id"] for m in all_milestones[:ms_idx.get(ticket.get("milestone", "MS-00"), 0)]
+            if not gate_cleared(ms_states, m["id"])]
+
+
+def current_gate(all_milestones, ms_states):
+    """The first milestone whose gate is not cleared, or None."""
+    return next((m for m in all_milestones if not gate_cleared(ms_states, m["id"])), None)
+
+
+def evaluate_gate(milestone, ms_state, rc, tail, route, max_fixes):
+    """Decide a due gate from its exit-check result. rc is None when the milestone has no exit_check;
+    route is router.gate_failure_route's decision when rc != 0.
+    Returns ("passed", None), ("fix", None) or ("escalate", reason)."""
+    mid = milestone["id"]
+    if not milestone.get("exit_check") or rc == 0:
+        return "passed", None
+    if route and route.get("source") == "ollama" and route.get("result") == "escalate":
+        return "escalate", "milestone %s gate failed; decision model escalated: %s" % (mid, tail)
+    fix_count = ms_state.get("fix_count", 0)
+    if fix_count < max_fixes:
+        return "fix", None
+    return "escalate", ("milestone %s gate failed after %d fix tickets: %s" % (mid, fix_count, tail)).strip()
 
 
 def unblock_milestone(run, milestone, note=None, waive=None):
     """Reset fix_count to 0, clear escalations, and either record waiver or set status to open."""
     if not milestone:
         raise ValueError("milestone id is required")
-    states = load_states(run)
-    st = states.setdefault(milestone, {"id": milestone, "status": "open", "fix_count": 0})
-    st["fix_count"] = 0
     if waive:
-        st["status"] = "waived"
-        st["waive_reason"] = waive
-        save_states(run, states)
+        set_milestone_state(run, milestone, fix_count=0, status="waived", waive_reason=waive)
         run.event("milestone_waived", milestone=milestone, reason=waive)
         map_path = run.path("map.md")
         try:
@@ -186,10 +212,7 @@ def unblock_milestone(run, milestone, note=None, waive=None):
         except OSError:
             pass
     else:
-        st["status"] = "open"
-        if note:
-            st["note"] = note
-        save_states(run, states)
+        set_milestone_state(run, milestone, fix_count=0, status="open", **({"note": note} if note else {}))
 
     ticketstate.clear_escalations(run, milestone)
     run.event("unblock", milestone=milestone, note=note, waive=waive)
@@ -234,10 +257,7 @@ def ticket_waiting_for(ticket, all_milestones, ms_states, sts, ms_idx=None):
     st = sts.get(tid, "pending")
     reasons = []
     if st == "awaiting_gate":
-        blocked_gates = [
-            em["id"] for em in all_milestones[:ms_idx.get(ticket.get("milestone", "MS-00"), 0)]
-            if ms_states.get(em["id"], {}).get("status") not in ("passed", "waived")
-        ]
+        blocked_gates = open_gates_before(ticket, all_milestones, ms_states, ms_idx)
         if blocked_gates:
             reasons.append("awaiting gate %s" % ", ".join(blocked_gates))
     elif st == "pending":  # look-ahead: only unclosed deps hold a pending ticket back

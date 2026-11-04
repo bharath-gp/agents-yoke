@@ -216,12 +216,6 @@ def _loop(run_, adapter_for, env):
 
                 busy = set(running.values())
 
-                def gates_open(t):
-                    return any(
-                        ms_states.get(em["id"], {}).get("status") not in ("passed", "waived")
-                        for em in all_milestones[:ms_idx.get(t.get("milestone", "MS-00"), 0)]
-                    )
-
                 # Look-ahead (PLAN M36): a ticket may start once its deps are closed, whatever the
                 # gates say; only a parked ticket (awaiting_gate) needs the earlier gates passed to resume.
                 ready = [
@@ -230,7 +224,8 @@ def _loop(run_, adapter_for, env):
                     and (
                         (sts.get(t["id"]) in ("pending", "in_progress")
                          and all(sts.get(d) == "closed" for d in t.get("depends_on", [])))
-                        or (sts.get(t["id"]) == "awaiting_gate" and not gates_open(t))
+                        or (sts.get(t["id"]) == "awaiting_gate"
+                            and not milestones.open_gates_before(t, all_milestones, ms_states, ms_idx))
                     )
                 ]
                 # resumed work first, then earliest milestone so look-ahead never starves the current one
@@ -280,11 +275,7 @@ def _loop(run_, adapter_for, env):
                     running[pool.submit(pipeline.run_ticket, run_, t, adapter_for, env, merge_lock)] = t["id"]
                     running_tickets[t["id"]] = t
 
-                unfinished_ms = None
-                for m in all_milestones:
-                    if ms_states.get(m["id"], {}).get("status", "open") not in ("passed", "waived"):
-                        unfinished_ms = m
-                        break
+                unfinished_ms = milestones.current_gate(all_milestones, ms_states)
                 gate_due = unfinished_ms is not None and all(
                     sts.get(t["id"]) in ("closed", "skipped")
                     for t in tickets if t.get("milestone", "MS-00") == unfinished_ms["id"]
@@ -300,78 +291,12 @@ def _loop(run_, adapter_for, env):
                         return "needs_user"
 
                     if unfinished_ms:
-                        m_id = unfinished_ms["id"]
-                        curr_status = ms_states.get(m_id, {}).get("status", "open")
-                        if curr_status == "failed":
+                        if ms_states.get(unfinished_ms["id"], {}).get("status", "open") == "failed":
                             return "needs_user"
-
-                        m_tickets = [t for t in tickets if t.get("milestone", "MS-00") == m_id]
-                        m_done = all(sts.get(t["id"]) in ("closed", "skipped") for t in m_tickets)
-
-                        if m_done:
-                            exit_check = unfinished_ms.get("exit_check")
-                            if not exit_check:
-                                ms_states.setdefault(m_id, {"id": m_id, "fix_count": 0})["status"] = "passed"
-                                milestones.save_states(run_, ms_states)
-                                tracker.close_milestone(run_, m_id)
-                                continue
-
-                            ms_states.setdefault(m_id, {"id": m_id, "fix_count": 0})["status"] = "checking"
-                            milestones.save_states(run_, ms_states)
-
-                            int_wt = run_.path("worktrees/_integration")
-                            rc, tail = pipeline._rerun(run_, exit_check, int_wt)
-
-                            if rc == 0:
-                                ms_states[m_id]["status"] = "passed"
-                                milestones.save_states(run_, ms_states)
-                                run_.event("milestone_passed", milestone=m_id)
-                                tracker.close_milestone(run_, m_id)
-                                continue
-                            else:
-                                d = router.gate_failure_route(run_, m_id, exit_check, tail)
-                                if d["source"] == "ollama" and d["result"] == "escalate":
-                                    ms_states[m_id]["status"] = "failed"
-                                    milestones.save_states(run_, ms_states)
-                                    ticketstate.escalate(
-                                        run_,
-                                        m_id,
-                                        "milestone %s gate failed; decision model escalated: %s" % (m_id, tail),
-                                    )
-                                    return "needs_user"
-                                fix_count = ms_states[m_id].get("fix_count", 0)
-                                max_fixes = run_.cfg.get("max_fix_tickets_per_milestone", 2)
-                                if fix_count < max_fixes:
-                                    fixes = run_.read_json("fixes.json", [])
-                                    if not isinstance(fixes, list):
-                                        fixes = []
-                                    next_id = "F-%04d" % run_.alloc_number()
-                                    note = ms_states[m_id].pop("note", None)
-                                    desc = ("%s\n\n%s" % (note, tail)).strip() if note else tail
-                                    fix = milestones.make_fix_ticket(
-                                        id=next_id,
-                                        milestone=unfinished_ms,
-                                        failing_output=tail,
-                                        description=desc,
-                                        exit_check=exit_check,
-                                    )
-                                    fixes.append(fix)
-                                    run_.write_json("fixes.json", fixes)
-                                    ms_states[m_id]["fix_count"] = fix_count + 1
-                                    ms_states[m_id]["status"] = "open"
-                                    milestones.save_states(run_, ms_states)
-                                    tracker.create_fix_issue(run_, fix)
-                                    run_.event("fix_ticket_created", ticket=fix["id"], milestone=m_id)
-                                    continue
-                                else:
-                                    ms_states[m_id]["status"] = "failed"
-                                    milestones.save_states(run_, ms_states)
-                                    ticketstate.escalate(
-                                        run_,
-                                        m_id,
-                                        ("milestone %s gate failed after %d fix tickets: %s" % (m_id, fix_count, tail)).strip(),
-                                    )
-                                    return "needs_user"
+                        if gate_due:
+                            if _gate_step(run_, unfinished_ms) == "needs_user":
+                                return "needs_user"
+                            continue
 
                     if not running:
                         return "done" if all(s in ("closed", "skipped") for s in sts.values()) else "needs_user"
@@ -391,6 +316,46 @@ def _loop(run_, adapter_for, env):
     except BaseException:
         pipeline.get_pause_state(run_).request_stop()
         raise
+
+
+def _gate_step(run_, m):
+    """Run milestone m's due gate and apply milestones.evaluate_gate's verdict.
+    Returns "needs_user" on escalation, else None (the loop goes round again)."""
+    m_id, exit_check = m["id"], m.get("exit_check")
+    rc = tail = route = None
+    if exit_check:
+        milestones.set_milestone_state(run_, m_id, status="checking")
+        rc, tail = pipeline._rerun(run_, exit_check, run_.path("worktrees/_integration"))
+        if rc != 0:
+            route = router.gate_failure_route(run_, m_id, exit_check, tail)
+    ms_state = milestones.load_states(run_).get(m_id, {})
+    verdict, reason = milestones.evaluate_gate(m, ms_state, rc, tail, route,
+                                               run_.cfg.get("max_fix_tickets_per_milestone", 2))
+    if verdict == "passed":
+        milestones.set_milestone_state(run_, m_id, status="passed")
+        if exit_check:
+            run_.event("milestone_passed", milestone=m_id)
+        tracker.close_milestone(run_, m_id)
+        return None
+    if verdict == "escalate":
+        milestones.set_milestone_state(run_, m_id, status="failed")
+        ticketstate.escalate(run_, m_id, reason)
+        return "needs_user"
+    fixes = run_.read_json("fixes.json", [])
+    if not isinstance(fixes, list):
+        fixes = []
+    next_id = "F-%04d" % run_.alloc_number()
+    note = ms_state.get("note")
+    desc = ("%s\n\n%s" % (note, tail)).strip() if note else tail
+    fix = milestones.make_fix_ticket(id=next_id, milestone=m, failing_output=tail,
+                                     description=desc, exit_check=exit_check)
+    fixes.append(fix)
+    run_.write_json("fixes.json", fixes)
+    milestones.set_milestone_state(run_, m_id, drop=("note",), fix_count=ms_state.get("fix_count", 0) + 1,
+                                   status="open")
+    tracker.create_fix_issue(run_, fix)
+    run_.event("fix_ticket_created", ticket=fix["id"], milestone=m_id)
+    return None
 
 
 def unblock_milestone(run_, milestone, note=None, waive=None):
