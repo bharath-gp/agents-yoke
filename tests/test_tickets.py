@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import shutil
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -491,6 +492,127 @@ class TestFilesField(unittest.TestCase):
         }
         warns3 = tickets.warnings([t_docs])
         self.assertFalse(any("has no files" in w for w in warns3))
+
+
+class TestMissingRefs(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.repo = os.path.join(self.tmp, "repo")
+        os.makedirs(os.path.join(self.repo, "yoke"))
+        os.makedirs(os.path.join(self.repo, "tests"))
+        with open(os.path.join(self.repo, "yoke", "a.py"), "w") as f:
+            f.write("# a\n")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_reports_missing_repo_path(self):
+        self.assertEqual(
+            tickets.missing_refs(
+                ["see `yoke/a.py` and `yoke/b.py:fn` and `tests/test_x.py::T::t`"],
+                self.repo,
+            ),
+            ["tests/test_x.py", "yoke/b.py"],
+        )
+
+    def test_skips_non_paths(self):
+        inputs = [
+            "`plan.md`",
+            "`~/.yoke/x`",
+            "`$YOKE_HOME/x`",
+            "`yoke/*.py`",
+            "`yoke/schemas/{a,b}.json`",
+            "`https://x/y`",
+            "`plan-review/round-1/debate.json`",
+            "`./yoke/x.py`",
+            "`-x/y`",
+            "`yoke/a b.py`",
+            "`foo(yoke/x.py)`",
+            "`yoke/a.py#L10`",
+        ]
+        self.assertEqual(tickets.missing_refs(inputs, self.repo), [])
+        self.assertEqual(tickets.missing_refs(["see `yoke/b.py`"], None), [])
+        self.assertEqual(tickets.missing_refs([None, 5], self.repo), [])
+
+    def test_create_declared_not_reported(self):
+        self.assertEqual(
+            tickets.missing_refs(
+                ["`yoke/new.py`"],
+                self.repo,
+                created=["yoke/new.py"],
+            ),
+            [],
+        )
+
+    def test_warnings_with_repo_flags_missing_modify_file(self):
+        t_modify = {
+            "id": "T-001",
+            "title": "t1",
+            "type": "feature",
+            "description": "d",
+            "exit_criteria": ["ok"],
+            "depends_on": [],
+            "files_hint": [],
+            "plan_excerpt": "",
+            "steps": ["step1"],
+            "test_plan": ["test1"],
+            "files": [{"path": "a.py", "action": "modify"}],
+        }
+        t_create = {
+            "id": "T-002",
+            "title": "t2",
+            "type": "feature",
+            "description": "d",
+            "exit_criteria": ["ok"],
+            "depends_on": [],
+            "files_hint": [],
+            "plan_excerpt": "",
+            "steps": ["step1"],
+            "test_plan": ["test1"],
+            "files": [{"path": "b.py", "action": "create"}],
+        }
+        doc = {"tickets": [t_modify, t_create]}
+
+        warns = tickets.warnings(doc, repo=self.repo)
+        self.assertIn("ticket T-001 references missing path a.py", warns)
+        self.assertFalse(any("T-002 references missing path" in w for w in warns))
+
+        warns_no_repo = tickets.warnings(doc)
+        self.assertFalse(any("references missing path" in w for w in warns_no_repo))
+
+    def test_warnings_with_repo_scans_ticket_text_fields(self):
+        t1 = {
+            "id": "T-001",
+            "title": "t1",
+            "type": "feature",
+            "description": "references `yoke/missing1.py`",
+            "exit_criteria": ["`yoke/created_in_t2.py` exists"],
+            "depends_on": [],
+            "files_hint": [],
+            "plan_excerpt": "see `tests/test_missing.py`",
+            "steps": ["modify `yoke/missing2.py`"],
+            "test_plan": ["test1"],
+            "files": [],
+        }
+        t2 = {
+            "id": "T-002",
+            "title": "t2",
+            "type": "feature",
+            "description": "d",
+            "exit_criteria": ["ok"],
+            "depends_on": [],
+            "files_hint": [],
+            "plan_excerpt": "",
+            "steps": ["step1"],
+            "test_plan": ["test1"],
+            "files": [{"path": "yoke/created_in_t2.py", "action": "create"}],
+        }
+        doc = {"tickets": [t1, t2]}
+        warns = tickets.warnings(doc, repo=self.repo)
+        self.assertIn("ticket T-001 references missing path tests/test_missing.py", warns)
+        self.assertIn("ticket T-001 references missing path yoke/missing1.py", warns)
+        self.assertIn("ticket T-001 references missing path yoke/missing2.py", warns)
+        self.assertFalse(any("created_in_t2.py" in w for w in warns))
 
 
 if __name__ == "__main__":
