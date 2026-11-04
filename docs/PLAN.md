@@ -69,6 +69,10 @@ Status legend per milestone: `[ ]` todo, `[~]` in progress, `[x]` done. Update t
    | [M36](#m36) | Look-ahead start, merge after gate | [2.8](#s2-8), [2.9](#s2-9) |
    | [M37](#m37) | Research screening by decision model | [2.6](#s2-6), [2.8](#s2-8), [2.10](#s2-10) |
    | [M38](#m38) | Architecture refactor: ticket record, gate, call split | [2.2](#s2-2), [2.8](#s2-8), [2.12](#s2-12) |
+   | [M39](#m39) | Goldfish context diet and deterministic review guards | [2.7](#s2-7), [2.8](#s2-8) |
+   | [M40](#m40) | Goldfish reviewers for plan and tickets | [2.3](#s2-3), [2.5](#s2-5), [2.7](#s2-7) |
+   | [M41](#m41) | Review loop convergence, churn, and escalation | [2.8](#s2-8), [M30](#m30) |
+   | [M42](#m42) | Review sampling, plan drift, and requirements shootdown | [2.5](#s2-5), [2.14](#s2-14) |
 4. [Verification matrix](#s4)
 5. [Out of scope](#s5)
 - [Appendix A: Topic index](#appA)
@@ -840,6 +844,52 @@ Files: `yoke/planreview.py`, `yoke/dashboard.py`, `yoke/runcmds.py`, `yoke/ticke
 - Exit criteria: dashboard and `yoke status` agree on the stage after a post-approval edit; a single-writer test covers pause state; model-pick and skills tests no longer patch `calls.run_call`; all unit tests pass.
 - Notes: Deviations: (a) when `tickets.json` is corrupt the dashboard now shows `plan` where it showed `run`; (b) milestone state is re-read from disk on each write. Known follow-up: `runcmds.is_active` treats an `approvals.json` `"final"` key as done without checking its hash.
 
+<a id="m39"></a>
+### M39: Goldfish context diet and deterministic review guards (0.17.0) `[ ]`
+Files: `yoke/pipeline.py`, `yoke/config.py`, `yoke/defaults.json`, `yoke/tickets.py`, `yoke/planreview.py`, `yoke/schemas/{ticket,ticket-list,chart}.json`, `yoke/prompts/{chart,review,review_security,review_performance,review_tests,validate,judge}.md`, `skills/{plan,tickets}/SKILL.md`, `tests/test_{pipeline,review,tickets,planreview,prompts}.py`, `README.md`, `docs/PLAN.md`.
+- Why: first of four milestones (M39 to M42) that port ideas from [google/elephant-goldfish-model](https://github.com/google/elephant-goldfish-model) (EGM). In EGM a deep-context author (the elephant) drafts, and zero-context read-only reviewers (goldfish) check the result, so the author's unstated context cannot hide gaps. yoke's reviewers already run in fresh processes, but they are fed the author's own claims: review lenses get the coder's result (`lens_results`), and the validator gets `$prior_results`. This milestone holds the ideas that add no agent calls; all are on by default. Each of M39 to M42 is built by its own yoke run, finished and merged before the next run starts, so later runs use the earlier upgrades.
+- (G1) Context diet, config `goldfish_context` (default `true`). Source: EGM `agents/*.md` "Stateless Mindset" and the `GoldfishContext` reading list. `pipeline.build_spec` filters `$prior_results` for the read-only reviewer stages `review` (all lenses), `judge` and `validate`. It drops the `code` and `qa` stage results (the coder's and QA's self-reports) and keeps `qa.test_command`, the runner test evidence (`$test_evidence`), unresolved review findings (M11) and `$upstream`. `rebut` and `reply` keep full context, since they speak for the author. `false` restores today's prompts byte-for-byte.
+- (G6) Settled-findings ledger. Source: EGM `skills/egm-review-loop/SKILL.md` step 2.4. Overruled and withdrawn findings are added to `st['review']['settled']` and carried across review rounds and attempts of the ticket. A new finding matches a settled one when the lens and file are the same and the lines are within 3 of each other. A matching finding is dropped before debate and counted in a `review_settled` audit event. A finding that was upheld and fixed, then raised again at the same place, is re-opened and counted as `reopened` in that event. Lens prompts get `$settled`, the settled list, with an instruction not to re-raise it.
+- (G10) Write boundary, config `write_boundary` (default `true`). Source: EGM `implementation-readiness-standard.md` "Target Scope & File Boundary". Tickets gain an optional `files` field: a list of `{path, action}` with `action` one of `create`, `modify`, `delete`. The field goes in all three ticket schemas, so older `tickets.json` files still import. When a ticket has `files`, the close gate compares `git diff --name-status <base_sha>` in the ticket worktree, including untracked files, with `files` plus `write_boundary_extra` (default `["tests/**", "docs/**", "README.md"]`, because QA and docs write there). A path outside the boundary fails the gate, and its name goes into retry feedback. A ticket without `files` is not checked. `scheduler` overlap deferral (M19) uses `files` paths when `files_hint` is empty. The chart prompt and the plan skill fill `files` from the plan's work items, and `tickets.warnings` warns when a feature, bugfix or refactor ticket has no `files`.
+- (G11) Reference check, warn-only. Source: EGM `agents/codebase_details.md` "Non-Existent References". `tickets.warnings` and `yoke review-plan` list backticked repo-relative paths in `plan.md` and in ticket fields that do not exist in the target repo and are not declared `create` in some ticket's `files`.
+- Exit criteria: with `goldfish_context` on, review, judge and validate prompts contain no `code` or `qa` stage summary, and with it off they are byte-identical to 0.16.x; a re-raised overruled finding does not reach debate; a ticket whose diff writes outside its `files` fails the close gate with the path in feedback; a missing referenced path produces a warning; all unit tests pass.
+- Notes:
+
+<a id="m40"></a>
+### M40: Goldfish reviewers for plan and tickets (0.18.0) `[ ]`
+Files: `yoke/planreview.py`, `yoke/cli.py`, `yoke/config.py`, `yoke/defaults.json`, `yoke/standards/{zoom_out,comprehension,critic,readiness}.md` (new), `yoke/prompts/{plan_lens,readiness}.md` (new), `yoke/schemas/{plan-review,readiness}.json`, `skills/{plan,tickets}/SKILL.md`, `.yoke.json`, `tests/test_{planreview,cli,prompts}.py`, `README.md`, `docs/PLAN.md`.
+- Why: EGM's review strength is several narrow reviewers, each against its own rubric, before any code is written. yoke reviews `plan.md` with one prompt and does not review tickets at all, yet the coder (agy, no shell) cannot re-plan. M23 found that about two thirds of tickets needed a second or third coder attempt.
+- (G14) Rubric files. Source: EGM `resources/document_standards/`. Each `yoke/standards/<name>.md` holds one rubric. Lens prompts receive it as `$standard`, so the persona (prompt) and the rubric (standard) can change separately. The existing code-review lens prompts stay unchanged.
+- (G4) Plan review lenses, config `plan_review_lenses` (default `[]`, which keeps today's single `plan_review.md` call byte-for-byte). The allowed values are `zoom_out` (YAGNI, reuse), `comprehension` (naive reader), `critic` (failure modes, edge cases) and `readiness` (zero-decision rule, file boundary). Source: EGM `docs/designs/review.md` steps 5 to 9 and `agents/{zoom_out,comprehension,design_critic,implementation_readiness}.md`. Each lens is one read-only call per round, uses role `plan_review` and the shared `prompts/plan_lens.md` with `$standard`, and is audited under `plan-review/round-<n>/lens-<name>/`. Lenses run in parallel when `parallel > 1` and never see each other's output. Their findings are merged and deduplicated by `(section, issue)`, keeping the highest severity, and then enter the existing plan debate (M30). Only `critic` gets `requirements.md`; the other lenses get `plan.md` and read the repository, as a goldfish reads only the document and its referenced sources.
+- (G3) Paraphrase first. Source: EGM `agents/comprehension.md`. The `comprehension` lens returns `paraphrase: {proposes, existing_system}` (an optional field in `schemas/plan-review.json`) before its findings. `yoke review-plan` prints its path. The plan skill has the primary compare the paraphrase with its intent and treat a mismatch as a finding it must fix in `plan.md`.
+- (G2) Ticket readiness review, `yoke review-tickets`, config `ticket_review` (default `false`). Source: EGM `implementation-readiness-standard.md` (zero-decision rule) and `agents/codebase_details.md`. This adds new role `readiness` (default `secondary`, because agy is the one that will execute the tickets). The command makes one read-only call per ticket, up to `ticket_review_max` (default 30), and each call passes `check_budget`. Inputs are the ticket JSON, the `plan.md` sections named in its `plan_sections`, and the repository. It gets no requirements and no other tickets. Output (`schemas/readiness.json`): `verdict` (`ready` or `not_ready`), `paraphrase`, `questions[]` (decisions the coder would have to make) and `missing_refs[]`. Results go in `ticket-review/round-<n>/<tid>.json`, tagged with the tickets hash; rounds are capped at `max_ticket_review_rounds` (default 2). When `ticket_review` is `true`, `yoke approve tickets` refuses while the latest round at the current tickets hash has a `not_ready` ticket, unless `--accept-unready REASON` is given; the reason is appended to `plan-review/arbitration.md`. The tickets skill runs the review, fixes `tickets.json` and re-runs it.
+- Dogfood: this repo's `.yoke.json` sets `plan_review_lenses` to all four lenses and `ticket_review: true`.
+- Exit criteria: with default config, plan review output is byte-identical to 0.17.x; four lenses produce one merged, deduplicated finding list and one debate; the comprehension paraphrase is saved and printed; `approve tickets` refuses on a `not_ready` ticket at the current hash and accepts with `--accept-unready`; the readiness call count respects `max_agent_calls_total`; all unit tests pass.
+- Notes:
+
+<a id="m41"></a>
+### M41: Review loop convergence, churn, and escalation (0.19.0) `[ ]`
+Files: `yoke/pipeline.py`, `yoke/planreview.py`, `yoke/ticketstate.py`, `yoke/config.py`, `yoke/defaults.json`, `yoke/prompts/{rebut,plan_rebut,plan_lens,review_zoom_out}.md`, `yoke/schemas/rebut.json`, `skills/{plan,run,status}/SKILL.md`, `.yoke.json`, `tests/test_{pipeline,review,planreview}.py`, `README.md`, `docs/PLAN.md`.
+- Why: review loops can ping-pong between reviewer and coder, grow defensive code to satisfy reviewers, and let the author out-argue a reviewer on points only a human can settle. EGM's loop rules (`skills/egm-review-loop/SKILL.md` step 2.4) and resolution engine (`skills/egm-resolve/SKILL.md`) target each of these.
+- (G7) Churn stop, on by default (no agent calls). A blocking finding whose location falls inside a hunk changed by an earlier `code-r<n>` revision in the same attempt, at the location of a finding upheld in an earlier round, is churn. On churn the review loop stops revising, records the remaining blockers as unresolved (as at the revision cap, M11), and emits a `review_churn` audit event.
+- (G5) Post-fix zoom-out, config `zoom_out_after_fix` (default `false`). Source: EGM `docs/designs/review.md` step 8. When a ticket's review loop ends after at least one `code-r<n>` revision, one read-only call runs the new `prompts/review_zoom_out.md` (role `review`, label `review-zoom-out`) over `git diff <sha before the first revision>..HEAD`. It is told the upheld findings and must not re-flag them. Its blocker and major findings go through debate and drive at most one coder revision (`code-z1`). In plan review, from round 2 on, the `zoom_out` lens also gets a `difflib` unified diff of `plan.md` against the previous round's copy, which the round dir now saves.
+- (G8) Escalate as a resolution outcome, config `escalate_findings` (default `false`). Source: EGM `skills/egm-resolve/SKILL.md` (`ESCALATE`, and "a contest must cite evidence the reviewer could read"). The `rebut` schema gains a ruling `escalate` for a finding only outside knowledge can refute. An escalated ticket finding skips the judge; `ticketstate` blocks the ticket with an escalation of kind `review_escalate`, and `yoke unblock T-xxx --note TEXT` resumes it with the note as coder feedback. An escalated plan finding is listed by `yoke review-plan` for the primary to put to the user. The `rebut` and `plan_rebut` prompts require a rebuttal to cite code or plan text the reviewer could read, and findings from the `comprehension` lens cannot be rebutted.
+- Dogfood: this repo's `.yoke.json` sets `zoom_out_after_fix: true` and `escalate_findings: true`.
+- Exit criteria: a reviewer/coder ping-pong fixture stops at churn with a `review_churn` event; post-fix zoom-out runs once only after a revision and stays off by default; an `escalate` rebuttal blocks the ticket through `ticketstate` and `unblock --note` resumes it; a comprehension finding is never sent to rebut; all unit tests pass.
+- Notes:
+
+<a id="m42"></a>
+### M42: Review sampling, plan drift, and requirements shootdown (0.20.0) `[ ]`
+Files: `yoke/pipeline.py`, `yoke/planreview.py`, `yoke/cli.py`, `yoke/runcmds.py`, `yoke/tracker.py`, `yoke/config.py`, `yoke/defaults.json`, `yoke/prompts/{drift,shootdown}.md` (new), `yoke/schemas/{drift,shootdown}.json` (new), `skills/{grill,go,finish}/SKILL.md`, `.yoke.json`, `tests/test_{review,planreview,cli,tracker}.py`, `README.md`, `docs/PLAN.md`.
+- Why: the remaining EGM ideas trade extra calls for recall or catch gaps after the fact. All are off by default.
+- (G9) Review sampling, config `review_samples` (default `1`). Source: EGM `agents/synthesizer.md` (A/B reviewer instances). `2` runs every code-review lens and every plan lens twice, with the second instance labelled `-b` (for example `review-tests-b`). The existing dedupe merges both instances' findings. Every instance counts toward `max_agent_calls_total`.
+- (G12) Plan drift check, `yoke drift`, config `drift_check` (default `false`). Source: EGM `skills/egm-drift-report/SKILL.md`. This adds new role `drift` (default `secondary`). One read-only call gets the `plan.md` work items and `git diff <base_sha>..yoke/<run_id>`, and returns `drift[]` entries `{work_item, kind: missing|divergent|unplanned, detail}`. The result is saved to `drift.json` in the run dir, appended to `map.md`, and added to the `yoke pr` body under "Plan drift". The finish skill runs it before `approve final`. It is advisory and never blocks.
+- (G13) Requirements shootdown, `yoke shootdown`, config `shootdown_lenses` (default `[]`). Source: EGM `skills/egm-brainstorm/SKILL.md` and its six-lens swarm. This adds new role `shootdown` (default `secondary`). After `grill` (or `go`) writes `requirements.md`, the command makes one read-only call per lens (allowed values `zoom_out`, `feasibility`, `ergonomics`) over `requirements.md` and the repository, saved under `shootdown/round-1/`. The skill puts each blocker to the user one question at a time, then updates `requirements.md`.
+- Dogfood: this repo's `.yoke.json` sets `review_samples: 2`, `drift_check: true` and `shootdown_lenses` to all three lenses.
+- Exit criteria: `review_samples: 2` doubles lens calls and the findings stay deduplicated; `yoke drift` writes `drift.json`, the `map.md` section and the PR body section; `yoke shootdown` writes one result per lens; with default config, behaviour is byte-identical to 0.19.x; all unit tests pass.
+- Notes:
+
+
 ---
 
 <a id="s4"></a>
@@ -904,6 +954,13 @@ Files: `yoke/planreview.py`, `yoke/dashboard.py`, `yoke/runcmds.py`, `yoke/ticke
 | Run notifications (`notify_command`) | [2.6](#s2-6), [M35](#m35) |
 | Commit message generation mode (`router.commit_message`) | [2.10](#s2-10), [M35](#m35) |
 | Parallel test runner (`tests/run_parallel.py`) | [4](#s4), [M31](#m31) |
+| Goldfish context diet (`goldfish_context`) | [2.8](#s2-8), [M39](#m39) |
+| Settled findings, churn stop | [M39](#m39), [M41](#m41) |
+| Write boundary (ticket `files`, `write_boundary`) | [2.8](#s2-8), [M39](#m39) |
+| Plan review lenses, paraphrase, rubric files | [M40](#m40) |
+| Ticket readiness review (`yoke review-tickets`) | [2.3](#s2-3), [M40](#m40) |
+| Post-fix zoom-out, escalate rebuttal | [M41](#m41) |
+| Review sampling, plan drift, requirements shootdown | [M42](#m42) |
 
 <a id="appB"></a>
 ## Appendix B: File index
@@ -940,3 +997,7 @@ Files: `yoke/planreview.py`, `yoke/dashboard.py`, `yoke/runcmds.py`, `yoke/ticke
 | `yoke/e2e.py` | browser e2e stage (optional Playwright) | [2.8](#s2-8) | [M29](#m29) |
 | `tests/fake_cli.py`, `tests/test_*.py`, `tests/e2e.sh` | fake CLI, unit + e2e tests | [4](#s4) | [M1](#m1)–[M9](#m9) |
 | `tests/run_parallel.py` | parallel, quiet test runner | [4](#s4) | [M31](#m31) |
+| `yoke/standards/*.md` | review rubrics passed to lenses as `$standard` | [M40](#m40) | [M40](#m40) |
+| `prompts/{plan_lens,readiness}.md`, `schemas/readiness.json` | plan review lenses, ticket readiness review | [M40](#m40) | [M40](#m40) |
+| `prompts/review_zoom_out.md` | post-fix zoom-out lens | [M41](#m41) | [M41](#m41) |
+| `prompts/{drift,shootdown}.md`, `schemas/{drift,shootdown}.json` | plan drift check, requirements shootdown | [M42](#m42) | [M42](#m42) |
