@@ -6,7 +6,7 @@ import unittest
 
 from tests.test_core import FAKE_CLI, SCHEMA
 from tests.test_pipeline import PipeBase, ticket, resp, CODE, REV, val
-from yoke import adapters, calls, config, limits, pipeline, runcmds, scheduler, state
+from yoke import adapters, calls, config, limits, pause, pipeline, runcmds, scheduler, state
 
 os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
 
@@ -20,7 +20,7 @@ class LimitsTest(unittest.TestCase):
         os.makedirs(self.repo)
         self.cfg = config.load(home=self.tmp)
         self.run_ = state.Run.create(self.repo, self.cfg, home=self.tmp)
-        self.addCleanup(pipeline.clear_pause_state, self.run_)
+        self.addCleanup(pause.clear, self.run_)
         self.script = os.path.join(self.tmp, "script.json")
         self.schema_path = os.path.join(self.tmp, "schema.json")
         with open(self.schema_path, "w") as f:
@@ -476,15 +476,15 @@ class TestRunnerLimits(PipeBase):
 
     def test_recover_resumes_in_progress_wait_and_caps_max_wait(self):
         # Set waiting_limit far in future exceeding max_wait_s (default 7200s)
-        self.addCleanup(pipeline.clear_pause_state, self.run_)
+        self.addCleanup(pause.clear, self.run_)
         far_future = (datetime.datetime.now().astimezone() + datetime.timedelta(seconds=100000)).isoformat(timespec="seconds")
         self.run_.update(waiting_limit={"resume_at": far_future, "raw": "limit hit", "consecutive_waits": 1, "ticket": "T-001"})
         scheduler.recover(self.run_)
         wl = self.run_.read_json("run.json")["waiting_limit"]
         self.assertIsNotNone(wl)
-        pause = pipeline.get_pause_state(self.run_)
-        self.assertFalse(pause.unpaused.is_set())
-        self.assertEqual(pause.active_waiters, 1)
+        p = pause.get(self.run_)
+        self.assertFalse(p.unpaused.is_set())
+        self.assertEqual(p.active_waiters, 1)
 
         rec_dt = limits._parse_iso(wl["resume_at"])
         now_dt = datetime.datetime.now().astimezone()

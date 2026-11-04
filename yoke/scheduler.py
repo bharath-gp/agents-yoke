@@ -1,6 +1,5 @@
 """Sequential scheduler (PLAN 2.8, 2.11, 2.12): approvals, runner lock, next-ready pick, budgets,
 unblock, and the parallel ticket pool (`parallel` workers, one shared merge lock)."""
-import datetime
 import glob
 import json
 import os
@@ -8,7 +7,7 @@ import signal
 import threading
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
-from . import config, gitops, guard, hooks, milestones, pipeline, planreview, router, state, ticketstate, tracker, usage
+from . import config, gitops, guard, hooks, milestones, pause, pipeline, planreview, router, state, ticketstate, tracker, usage
 
 
 class LockError(Exception):
@@ -77,45 +76,15 @@ def recover(run):
         os.rename(src, dst)
         run.event("interrupted", dir=os.path.relpath(src, run.dir))
 
-    states = milestones.load_states(run)
-    changed = False
-    for mid, st in states.items():
+    for mid, st in milestones.load_states(run).items():
         if isinstance(st, dict) and st.get("status") == "checking":
-            st["status"] = "open"
-            changed = True
-    if changed:
-        milestones.save_states(run, states)
+            milestones.set_milestone_state(run, mid, status="open")
 
-    info = run.read_json("run.json", {})
-    wl = info.get("waiting_limit")
-    if wl and isinstance(wl, dict):
-        resume_at = wl.get("resume_at")
-        if resume_at:
-            from . import limits
-            target_dt = limits._parse_iso(resume_at)
-            now_dt = datetime.datetime.now().astimezone()
-            max_wait_s = float(run.cfg.get("limits", {}).get("max_wait_s", 7200))
-            if target_dt is not None:
-                if target_dt.tzinfo is not None and now_dt.tzinfo is None:
-                    now_dt = now_dt.replace(tzinfo=target_dt.tzinfo)
-                elif target_dt.tzinfo is None and now_dt.tzinfo is not None:
-                    target_dt = target_dt.replace(tzinfo=now_dt.tzinfo)
-                delta_s = (target_dt - now_dt).total_seconds()
-                if delta_s > max_wait_s:
-                    capped_dt = now_dt + datetime.timedelta(seconds=max_wait_s)
-                    wl["resume_at"] = capped_dt.isoformat(timespec="seconds")
-                    run.update(waiting_limit=wl)
-            pause = pipeline.get_pause_state(run)
-            with pause.lock:
-                pause.stop_requested = False
-                pause.stop_event.clear()
-                pause.resume_at = wl.get("resume_at")
-                pause.active_waiters = 1
-                pause.unpaused.clear()
+    pause.recover(run)
 
 
 def stop(run):
-    pipeline.get_pause_state(run).request_stop()
+    pause.get(run).request_stop()
     pid = read_lock(run)
     if pid and pid != os.getpid() and _alive(pid):
         try:
@@ -129,12 +98,12 @@ def run(run_, adapter_for=None, env=None):
     """Walk the tickets until done or nothing more can progress. Returns the final run state."""
     planreview.check_approval(run_, "tickets")  # includes plan
     acquire_lock(run_)
-    pause = pipeline.reset_pause_state(run_)
+    pause_ = pause.reset(run_)
     recover(run_)
     old_handler = None
     if threading.current_thread() is threading.main_thread():
         def _handle_term(*_):
-            pause.request_stop()
+            pause_.request_stop()
             (_ for _ in ()).throw(SystemExit(143))
         try:
             old_handler = signal.signal(signal.SIGTERM, _handle_term)
@@ -161,7 +130,7 @@ def run(run_, adapter_for=None, env=None):
                 signal.signal(signal.SIGTERM, old_handler)
             except (ValueError, OSError):
                 pass
-        pause.request_stop()
+        pause_.request_stop()
         run_.update(state=final, runner_pid=None)
         run_.event("run_" + final)
         try:
@@ -186,7 +155,7 @@ def run(run_, adapter_for=None, env=None):
         except Exception as e:
             run_.event("usage_error", error=str(e))
         release_lock(run_)
-        pipeline.clear_pause_state(run_)
+        pause.clear(run_)
 
 
 def _loop(run_, adapter_for, env):
@@ -236,23 +205,11 @@ def _loop(run_, adapter_for, env):
                     if exceeded:
                         out_of_budget = reason
 
-                pause = pipeline.get_pause_state(run_)
-                if not pause.unpaused.is_set():
-                    if not running:
-                        from . import limits
-                        normal_wake = limits.sleep_until(pause.resume_at, slice_s=0.2,
-                                                         stop_check=lambda: pipeline._is_stopped(run_))
-                        if normal_wake:
-                            with pause.lock:
-                                pause.active_waiters = 0
-                                pause.resume_at = None
-                                run_.update(waiting_limit=None)
-                                pause.unpaused.set()
-                        else:
-                            return "stopped"
+                if pause.is_paused(run_) and not running and not pause.idle_wait(run_):
+                    return "stopped"
 
                 deferred = []
-                while ready and len(running) < parallel and not out_of_budget and pause.unpaused.is_set():
+                while ready and len(running) < parallel and not out_of_budget and not pause.is_paused(run_):
                     t = ready.pop(0)
                     if parallel > 1 and running_tickets:
                         overlapping = [
@@ -314,7 +271,7 @@ def _loop(run_, adapter_for, env):
                     except (pipeline.WorkerStopped, SystemExit):
                         return "stopped"
     except BaseException:
-        pipeline.get_pause_state(run_).request_stop()
+        pause.get(run_).request_stop()
         raise
 
 
@@ -368,10 +325,5 @@ def unblock(run_, tid, note=None, skip=False, reset_attempts=False):
         attempt = 1 if reset_attempts else ticketstate.load(run_, tid)["attempt"]
         pipeline.write_feedback(run_, tid, attempt, "User note: " + note, append=True)
     ticketstate.unblock(run_, tid, skip=skip, reset_attempts=reset_attempts)
-    with state._LOCK:
-        info = run_.read_json("run.json", {})
-        lw = dict(info.get("limit_waits", {}))
-        new_lw = {k: v for k, v in lw.items() if not k.startswith(tid + ":")}
-        if len(new_lw) != len(lw):
-            run_.update(limit_waits=new_lw)
+    pause.forget_ticket(run_, tid)
     run_.event("unblock", ticket=tid, skip=skip, reset_attempts=reset_attempts)
