@@ -9,7 +9,7 @@ from unittest import mock
 
 from tests.test_core import FAKE_CLI
 from tests.test_gitops import GitBase, git
-from yoke import adapters, config, pause, pipeline, planreview, scheduler
+from yoke import adapters, config, gitops, pause, pipeline, planreview, scheduler
 
 os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
 
@@ -749,6 +749,169 @@ class TestGoldfish(PipeBase):
             rev_prompt = f.read()
         self.assertIn("CODER_SELF_REPORT", rev_prompt)
         self.assertIn('"files_changed"', rev_prompt)
+
+
+class TestWriteBoundary(PipeBase):
+    def test_outside_path_fails_gate_with_path_in_feedback(self):
+        t = ticket(1)
+        t["files"] = [{"path": "f1.txt", "action": "create"}]
+        self.setup_tickets(
+            [t],
+            {
+                "code": [
+                    resp(CODE, "c1", write={"f1.txt": "1", "rogue.txt": "x"}),
+                    resp(CODE, "c2", write={"f1.txt": "2", "rogue.txt": "x"}),
+                ],
+                "review": [resp(REV)] * 2,
+                "validate": [resp(val())] * 2,
+                "router": [{"exit": 1}] * 4,
+            },
+        )
+        self.assertEqual(self.go(), "needs_user")
+        self.assertEqual(self.tstate(1)["status"], "blocked")
+        with open(self.run_.path("events.jsonl")) as f:
+            events = [json.loads(line) for line in f]
+        fail_gates = [e for e in events if e.get("kind") == "close_gate" and not e.get("ok")]
+        self.assertTrue(fail_gates)
+        self.assertFalse(fail_gates[0]["gate"]["write_boundary"])
+        self.assertEqual(fail_gates[0].get("outside"), ["rogue.txt"])
+        fb = pipeline._read_feedback(self.run_, "T-001", 2)
+        expected_fb = (
+            "Write boundary: this ticket may only write its files (f1.txt) plus tests/**, docs/**, README.md. "
+            "These paths are outside it: rogue.txt. Undo those changes."
+        )
+        self.assertIn(expected_fb, fb)
+        self.assertIn("rogue.txt", fb)
+        self.assertIn("f1.txt", fb)
+        self.assertIn("tests/**", fb)
+        self.assertIn("Write boundary", fb)
+
+    def test_extra_globs_allowed(self):
+        t = ticket(1)
+        t["files"] = [{"path": "f1.txt", "action": "create"}]
+        self.setup_tickets(
+            [t],
+            {
+                "code": [resp(CODE, "c1", write={"f1.txt": "1", "tests/t.txt": "2", "docs/d.md": "3", "README.md": "4"})],
+                "review": [resp(REV)],
+                "validate": [resp(val())],
+                "router": [{"exit": 1}],
+            },
+        )
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+        with open(self.run_.path("events.jsonl")) as f:
+            events = [json.loads(line) for line in f]
+        close_events = [e for e in events if e.get("kind") == "close_gate"]
+        self.assertTrue(close_events[-1].get("ok"))
+        self.assertTrue(close_events[-1].get("gate", {}).get("write_boundary"))
+
+    def test_no_files_not_checked(self):
+        t = ticket(1)
+        self.setup_tickets(
+            [t],
+            {
+                "code": [resp(CODE, "c1", write={"rogue.txt": "x"})],
+                "review": [resp(REV)],
+                "validate": [resp(val())],
+                "router": [{"exit": 1}],
+            },
+        )
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+        with open(self.run_.path("events.jsonl")) as f:
+            events = [json.loads(line) for line in f]
+        close_events = [e for e in events if e.get("kind") == "close_gate"]
+        self.assertTrue(close_events[-1].get("ok"))
+        self.assertNotIn("write_boundary", close_events[-1].get("gate", {}))
+
+    def test_disabled_by_config(self):
+        self.run_.update(config=dict(self.run_.cfg, write_boundary=False))
+        t = ticket(1)
+        t["files"] = [{"path": "f1.txt", "action": "create"}]
+        self.setup_tickets(
+            [t],
+            {
+                "code": [resp(CODE, "c1", write={"f1.txt": "1", "rogue.txt": "x"})],
+                "review": [resp(REV)],
+                "validate": [resp(val())],
+                "router": [{"exit": 1}],
+            },
+        )
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+        with open(self.run_.path("events.jsonl")) as f:
+            events = [json.loads(line) for line in f]
+        close_events = [e for e in events if e.get("kind") == "close_gate"]
+        self.assertTrue(close_events[-1].get("ok"))
+        self.assertNotIn("write_boundary", close_events[-1].get("gate", {}))
+
+    def test_untracked_file_counted(self):
+        t = ticket(1)
+        t["files"] = [{"path": "f1.txt", "action": "create"}]
+        self.setup_tickets(
+            [t],
+            {
+                "code": [
+                    resp(CODE, "c1", write={"f1.txt": "1", "nested/rogue.txt": "2"}),
+                    resp(CODE, "c2", write={"f1.txt": "1", "nested/rogue.txt": "2"}),
+                ],
+                "review": [resp(REV)] * 2,
+                "validate": [resp(val())] * 2,
+                "router": [{"exit": 1}] * 4,
+            },
+        )
+        self.assertEqual(self.go(), "needs_user")
+        self.assertEqual(self.tstate(1)["status"], "blocked")
+        with open(self.run_.path("events.jsonl")) as f:
+            events = [json.loads(line) for line in f]
+        fail_gates = [e for e in events if e.get("kind") == "close_gate" and not e.get("ok")]
+        self.assertTrue(fail_gates)
+        self.assertFalse(fail_gates[0]["gate"]["write_boundary"])
+        self.assertEqual(fail_gates[0].get("outside"), ["nested/rogue.txt"])
+
+    def test_write_boundary_extra_config(self):
+        self.assertEqual(config.write_boundary_extra({"write_boundary_extra": "x"}), config.DEFAULT_WRITE_BOUNDARY_EXTRA)
+        self.assertEqual(config.write_boundary_extra({"write_boundary_extra": [1]}), config.DEFAULT_WRITE_BOUNDARY_EXTRA)
+        self.assertEqual(config.write_boundary_extra({"write_boundary_extra": ["src/**"]}), ["src/**"])
+
+    def test_write_boundary_violations_empty_and_missing_base(self):
+        t_empty = dict(ticket(1), files=[{"path": ""}])
+        self.assertEqual(pipeline.write_boundary_violations(self.run_.cfg, t_empty, self.repo, "HEAD"), [])
+        t = dict(ticket(1), files=[{"path": "f.txt"}])
+        with self.assertRaises(pipeline.Escalate):
+            pipeline.write_boundary_violations(self.run_.cfg, t, self.repo, None)
+
+    def test_write_boundary_violations_detects_renames_and_deletions(self):
+        with open(os.path.join(self.repo, "old.txt"), "w") as f:
+            f.write("old\n")
+        with open(os.path.join(self.repo, "keep.txt"), "w") as f:
+            f.write("keep\n")
+        git(self.repo, "add", "old.txt", "keep.txt")
+        git(self.repo, "commit", "-m", "base commit")
+        base = gitops.head_sha(self.repo)
+
+        os.rename(os.path.join(self.repo, "old.txt"), os.path.join(self.repo, "f1.txt"))
+        os.remove(os.path.join(self.repo, "keep.txt"))
+
+        t = dict(ticket(1), files=[{"path": "f1.txt", "action": "create"}])
+        outside = pipeline.write_boundary_violations(self.run_.cfg, t, self.repo, base)
+        self.assertEqual(outside, ["keep.txt", "old.txt"])
+
+    def test_write_boundary_extra_custom_config_respected(self):
+        cfg = dict(self.run_.cfg, write_boundary_extra=["src/**"])
+        t = dict(ticket(1), files=[{"path": "f1.txt", "action": "create"}])
+        os.makedirs(os.path.join(self.repo, "tests"), exist_ok=True)
+        os.makedirs(os.path.join(self.repo, "src"), exist_ok=True)
+        with open(os.path.join(self.repo, "f1.txt"), "w") as f:
+            f.write("f1\n")
+        with open(os.path.join(self.repo, "tests", "t.txt"), "w") as f:
+            f.write("test\n")
+        with open(os.path.join(self.repo, "src", "a.py"), "w") as f:
+            f.write("code\n")
+        outside = pipeline.write_boundary_violations(cfg, t, self.repo, "HEAD")
+        self.assertEqual(outside, ["tests/t.txt"])
+
 
 
 if __name__ == "__main__":

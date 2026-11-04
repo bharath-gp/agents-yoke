@@ -1,6 +1,7 @@
 """Per-ticket state machine (PLAN 2.8): stages by ticket type, runner test rerun, feedback files,
 close gate, commit and merge (2.9). Sequential unless the caller passes a shared merge_lock."""
 import contextlib
+import fnmatch
 import json
 import os
 import re
@@ -1261,6 +1262,38 @@ def _gate(stages, results, rerun_rc):
     return g
 
 
+def write_boundary_violations(cfg, ticket, wt, base):
+    """Return sorted list of repo-relative paths modified outside allowed files and extra globs.
+
+    Compares staged and untracked worktree changes against base using normalized paths
+    and fnmatch glob patterns from write_boundary_extra. Returns [] when write_boundary
+    is disabled or ticket has no non-empty files. Raises Escalate if base is empty.
+    """
+    if not (config.write_boundary(cfg) and ticket.get("files")):
+        return []
+    files = ticket.get("files") or []
+    allowed = {
+        milestones.normalize_hint(f.get("path") if isinstance(f, dict) else str(f))
+        for f in files
+        if (f.get("path") if isinstance(f, dict) else str(f))
+    }
+    allowed.discard("")
+    if not allowed:
+        return []
+    if not base:
+        raise Escalate("write_boundary: missing base_sha for ticket %s" % ticket.get("id"))
+    gitops.git(wt, "add", "-A")
+    out = gitops.git(wt, "diff", "--cached", "--name-only", "--no-renames", "-z", base).stdout
+    paths = [p for p in out.split("\0") if p]
+    extra = config.write_boundary_extra(cfg)
+    outside = []
+    for p in paths:
+        if p in allowed or any(fnmatch.fnmatch(p, g) for g in extra):
+            continue
+        outside.append(p)
+    return sorted(outside)
+
+
 def open_gates(run, ticket):
     """Earlier milestone gates that are not yet passed or waived (merge must wait for them)."""
     return milestones.open_gates_before(ticket, milestones.milestones_of(run), milestones.load_states(run))
@@ -1275,6 +1308,19 @@ def _close(run, adapter_for, ticket, st, wt, stages, results, test_cmd, rerun_rc
     if not all(gate.values()):
         run.event("close_gate", ticket=tid, attempt=st["attempt"], gate=gate, ok=False)
         return "Close gate failed: " + ", ".join(k for k, v in gate.items() if not v)
+
+    if config.write_boundary(cfg) and ticket.get("files"):
+        outside = write_boundary_violations(cfg, ticket, wt, st["base_sha"])
+        if outside:
+            run.event("close_gate", ticket=tid, attempt=st["attempt"], gate=dict(gate, write_boundary=False), ok=False, outside=outside)
+            declared = [(f.get("path") if isinstance(f, dict) else str(f)) or "" for f in ticket.get("files") or []]
+            extra = config.write_boundary_extra(cfg)
+            return (
+                "Write boundary: this ticket may only write its files (%s) plus %s. "
+                "These paths are outside it: %s. Undo those changes."
+                % (", ".join(declared), ", ".join(extra), ", ".join(outside))
+            )
+        gate["write_boundary"] = True
 
     pending_gates = open_gates(run, ticket)
     if pending_gates:

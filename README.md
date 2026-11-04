@@ -322,6 +322,28 @@ Yoke can run an external shell command whenever a run finishes successfully (`ru
   - `YOKE_MESSAGE`: Human-readable summary: `run <run_id> done` or `run <run_id> needs you: <reason>` (with escalation reason truncated to 200 characters, defaulting to `needs user` if absent).
 - **Execution and error handling**: Executed via `run_hook` with a 10-second timeout in the run directory. Existing `os.environ` is preserved so standard system utilities and `PATH` remain available. If the command exits non-zero, times out, or fails, a `notify_failed` event is logged to `events.jsonl` (with error output truncated to 500 characters). Notification failures never raise exceptions or disrupt the run.
 
+### Write boundary check (`write_boundary`)
+
+The runner enforces write boundaries at the close gate for tickets with declared files:
+
+```json
+{
+  "write_boundary": true,
+  "write_boundary_extra": [
+    "tests/**",
+    "docs/**",
+    "README.md"
+  ]
+}
+```
+
+- **Configuration keys**:
+  - `write_boundary`: Enables or disables worktree write boundary verification at ticket close (default: `true`).
+  - `write_boundary_extra`: List of glob patterns (`fnmatch`) permitted beyond ticket-declared files (default: `["tests/**", "docs/**", "README.md"]`).
+- **Close gate check**: When a ticket defines a non-empty `files` field, `pipeline._close` captures tracked and untracked worktree modifications against `base_sha` (`git add -A` followed by `git diff --cached --name-only --no-renames -z <base_sha>`).
+- **Retry feedback on violations**: Any path outside the ticket's normalized `files` and `write_boundary_extra` globs fails the close gate and emits a `close_gate` audit event (`gate.write_boundary = False`, `outside = [paths]`), returning retry feedback directing the coder to undo the extraneous changes.
+- **Unrestricted tickets**: Tickets without a `files` field bypass the write boundary check and record no `write_boundary` gate key.
+
 ## Decision models
 
 yoke routes small, high-frequency decisions to a local Ollama decision model (`tev1:4b`, using `POST /v1/systemone` single forward passes) with configured confidence thresholds and deterministic fallbacks.
@@ -429,7 +451,13 @@ Decision thresholds, safety guard, skill discovery, and browser e2e settings can
     "test": 600
   },
   "max_test_fix_rounds": 2,
-  "notify_command": null
+  "notify_command": null,
+  "write_boundary": true,
+  "write_boundary_extra": [
+    "tests/**",
+    "docs/**",
+    "README.md"
+  ]
 }
 ```
 
@@ -439,6 +467,7 @@ Decision thresholds, safety guard, skill discovery, and browser e2e settings can
 - **Test timeout (`timeouts_s.test`)**: Execution timeout in seconds for runner test command re-runs (default: `600`). If a test command hangs or exceeds this limit, its entire process group is terminated cleanly.
 - **Test-fix loop (`max_test_fix_rounds`)**: Maximum number of resume rounds for test fixes immediately after the `code` stage (default: `2`). Setting to `0` disables the test-fix loop.
 - **Run notifications (`notify_command`)**: External command executed upon run completion (`run_done`) or escalation (`run_needs_user`), default: `null`. Payload values are passed strictly through environment variables `YOKE_EVENT`, `YOKE_RUN`, and `YOKE_MESSAGE`. Example: `osascript -e "display notification \"$YOKE_MESSAGE\" with title \"yoke\""`.
+- **Write boundary (`write_boundary`, `write_boundary_extra`)**: Enforces file modification boundaries at ticket close for tickets defining `files`, allowing declared paths plus extra globs (default: `["tests/**", "docs/**", "README.md"]`). Violations fail the close gate with retry feedback.
 - **User config only**: For security reasons, `guard` and `router.thresholds.safety` are strictly enforced from user configuration (`~/.yoke/config.json`). Any definitions in repository configuration (`<repo>/.yoke.json`) are refused with a warning log to prevent untrusted repositories from tampering with safety policies.
 - **Environment override**: The `YOKE_OLLAMA_URL` environment variable overrides `router.ollama_url` across all runs, applied over user config and prior to repo config (used in tests to point to a dead port for offline verification).
 - **Dashboard decisions card**: The web dashboard aggregates decision points by source count (`ollama`, `none`, `default`, `fallback`) and tracks recent flagged guard events (`deny`, `ask`, `escalate`) with reasons and target paths in the Decision models card.

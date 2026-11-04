@@ -25,7 +25,7 @@ def _kill_group(proc: subprocess.Popen, grace: float = 1.0) -> None:
     pgid = proc.pid
     try:
         os.killpg(pgid, signal.SIGTERM)
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):
         pass
 
     if grace:
@@ -36,7 +36,7 @@ def _kill_group(proc: subprocess.Popen, grace: float = 1.0) -> None:
 
     try:
         os.killpg(pgid, signal.SIGKILL)
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):
         pass
 
     try:

@@ -491,6 +491,35 @@ class TestLookAhead(PipeBase):
         self.assertEqual(self.log(), ["T-002: ticket 2", "init"])
         self.assertFalse(os.path.exists(self.run_.path("worktrees/T-002")))
 
+    def test_deferred_close_with_files_records_write_boundary(self):
+        self.run_.update(config=dict(self.run_.cfg, parallel=2))
+        t2 = ms_ticket(2, milestone="MS-02")
+        t2["files"] = [{"path": "f2.txt", "action": "create"}]
+        doc = {"milestones": self.two_ms(),
+               "tickets": [ms_ticket(1, milestone="MS-01", type_="feature"), t2]}
+        script = {
+            "code": [resp(CODE, "c1", write={"f1.txt": "x\n"}),
+                     resp(CODE, "c2", write={"f2.txt": "x\n"}),
+                     resp(CODE, "c1_retry", write={"f1.txt": "x\n"})],
+            "review": [resp(REV)] * 3,
+            "qa": [resp(qa("true", status="fail", failures=["boom"]))],
+            "validate": [resp(val())],
+            "router": [{"exit": 1}],
+        }
+        self.setup_doc(doc, script)
+        self.assertEqual(self.go(), "needs_user")
+        self.assertEqual(self.tstate(1)["status"], "blocked")
+        self.assertEqual(self.tstate(2)["status"], "awaiting_gate")
+        scheduler.recover(self.run_)
+        scheduler.unblock(self.run_, "T-001", skip=True)
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(2)["status"], "closed")
+        with open(self.run_.path("events.jsonl")) as f:
+            events = [json.loads(line) for line in f]
+        t2_close = [e for e in events if e.get("kind") == "close_gate" and e.get("ticket") == "T-002" and e.get("ok")]
+        self.assertTrue(t2_close)
+        self.assertTrue(t2_close[-1].get("gate", {}).get("write_boundary"))
+
     def test_status_and_map_show_awaiting_gate(self):
         doc = {"milestones": self.two_ms(),
                "tickets": [ms_ticket(1, milestone="MS-01"), ms_ticket(2, milestone="MS-02")]}
