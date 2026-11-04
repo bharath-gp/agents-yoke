@@ -498,7 +498,7 @@ def _call(run, adapter_for, env, ticket, stage, attempt, wt, base, mode, results
     try:
         return pause.call_with_waits(run, invoke, spec, tid=tid, stage=stage, attempt=attempt, label=label)
     except pause.WaitsExhausted as e:
-        raise Escalate(str(e))
+        raise Escalate(str(e)) from None
 
 
 def _call_retry(run, adapter_for, env, ticket, stage, attempt, *args, **kw):

@@ -99,11 +99,14 @@ def clean(run):
 
 
 def is_active(run):
-    """True unless state == 'done' and approvals.json has a 'final' entry."""
-    info = run.read_json("run.json", {})
-    if info.get("state") == "done" and "final" in run.read_json("approvals.json", {}):
-        return False
-    return True
+    """True unless state == 'done' and final is approved at the current hash (same rule as next_step)."""
+    if run.read_json("run.json", {}).get("state") != "done":
+        return True
+    try:
+        planreview.check_approval(run, "final")
+    except Exception:  # missing, stale or unreadable approval: not finalized
+        return True
+    return False
 
 
 def goal_of(run):
