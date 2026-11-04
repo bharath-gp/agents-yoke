@@ -78,11 +78,27 @@ class TestRuns(unittest.TestCase):
         self.assertTrue(runcmds.is_active(run))
 
         # state == done and final approved
-        run.write_json("approvals.json", {"final": {"sha256": "abc", "at": "now"}})
+        with open(run.path("plan.md"), "w") as f:
+            f.write("Plan content")
+        run.write_json("tickets.json", {"tickets": [{"id": "T-001"}]})
+        for kind in ("plan", "tickets", "final"):
+            planreview.approve(run, kind)
         self.assertFalse(runcmds.is_active(run))
+        self.assertEqual(runcmds.next_step(run), "done")
 
         # state != done even with final in approvals.json
         run.update(state="running")
+        self.assertTrue(runcmds.is_active(run))
+
+        # tickets changed after final approval: active, and next_step agrees
+        run.update(state="done")
+        run.write_json("tickets.json", {"tickets": [{"id": "T-002"}]})
+        self.assertTrue(runcmds.is_active(run))
+        self.assertEqual(runcmds.next_step(run), "finish")
+
+        # unreadable approvals.json: active, no crash
+        with open(run.path("approvals.json"), "w") as f:
+            f.write("{not json")
         self.assertTrue(runcmds.is_active(run))
 
     def test_goal_of(self):
@@ -253,7 +269,11 @@ class TestRuns(unittest.TestCase):
 
             # Active filtering: mark r1 as done + final approved
             r1.update(state="done")
-            r1.write_json("approvals.json", {"final": {"sha256": "x", "at": "now"}})
+            with open(r1.path("plan.md"), "w") as f:
+                f.write("plan")
+            r1.write_json("tickets.json", {"tickets": []})
+            for kind in ("plan", "tickets", "final"):
+                planreview.approve(r1, kind)
 
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):

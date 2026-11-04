@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from yoke import cli, config, state
+from yoke import cli, config, planreview, state
 
 os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
 
@@ -26,10 +26,10 @@ class TestPackaging(unittest.TestCase):
     def test_manifests(self):
         p = load(".claude-plugin/plugin.json")
         self.assertEqual(p["name"], "yoke")
-        self.assertEqual(p["version"], "0.16.0")
+        self.assertEqual(p["version"], "0.16.1")
         with open(os.path.join(ROOT, "pyproject.toml")) as f:
             pyproject_ver = re.search(r'version\s*=\s*"([^"]+)"', f.read()).group(1)
-        self.assertEqual(pyproject_ver, "0.16.0")
+        self.assertEqual(pyproject_ver, "0.16.1")
         self.assertEqual(p["version"], pyproject_ver)
         m = load(".claude-plugin/marketplace.json")
         self.assertEqual(m["name"], "yoke")
@@ -223,7 +223,11 @@ class TestBriefStatus(unittest.TestCase):
     def test_silent_when_done_and_finalized(self):
         run = state.Run.create(self.repo, config.load(home=self.tmp), home=self.tmp)
         run.update(state="done")
-        run.write_json("approvals.json", {"final": {"sha256": "x", "at": "t"}})
+        with open(run.path("plan.md"), "w") as f:
+            f.write("plan")
+        run.write_json("tickets.json", {"tickets": []})
+        for kind in ("plan", "tickets", "final"):
+            planreview.approve(run, kind)
         self.assertEqual(self.status(), (0, ""))
 
     def test_active_run_summary(self):
