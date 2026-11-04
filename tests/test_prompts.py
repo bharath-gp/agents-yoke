@@ -101,6 +101,7 @@ class TestReviewPrompt(unittest.TestCase):
             "feedback": "(none)",
             "worktree": "/tmp/worktree",
             "upstream": "",
+            "settled": "",
         }
         try:
             rendered = template.substitute(substitutions)
@@ -124,6 +125,7 @@ class TestReviewPrompt(unittest.TestCase):
             "upstream": "",
             "skills": "(none)",
             "test_evidence": "none",
+            "settled": "",
         }
         for name in ("code", "review", "validate"):
             content = _read(name)
@@ -402,6 +404,7 @@ class TestReviewLensPrompts(unittest.TestCase):
             "feedback": "(none)",
             "worktree": "/tmp/worktree",
             "upstream": "",
+            "settled": "",
         }
         for lens in self.LENSES:
             content = _read(lens)
@@ -415,6 +418,27 @@ class TestReviewLensPrompts(unittest.TestCase):
             self.assertIn("unrelated features out of scope", rendered)
             leftover = re.findall(r"\$[a-zA-Z_][a-zA-Z0-9_]*", rendered)
             self.assertEqual(leftover, [], "Leftover variables in %s: %s" % (lens, leftover))
+
+    def test_empty_settled_is_byte_neutral(self):
+        vars_with_settled = {
+            "base_sha": "8ec46bde240ae91c626190371f5bf3c971955af6",
+            "ticket": '{"id": "T-0070"}',
+            "destination": "dest",
+            "out_of_scope": "oos",
+            "plan_excerpt": "excerpt",
+            "prior_results": "{}",
+            "feedback": "(none)",
+            "worktree": "/tmp/worktree",
+            "upstream": "",
+            "settled": "",
+        }
+        vars_without_settled = {k: v for k, v in vars_with_settled.items() if k != "settled"}
+        for prompt_name in ("review", "review_security", "review_performance", "review_tests"):
+            text = _read(prompt_name)
+            self.assertIn("$feedback\n\n${settled}What to check", text, "Prompt %s missing exact settled placeholder positioning" % prompt_name)
+            rendered_with = string.Template(text).safe_substitute(vars_with_settled)
+            rendered_without = string.Template(text.replace("${settled}", "")).safe_substitute(vars_without_settled)
+            self.assertEqual(rendered_with, rendered_without, "Mismatch in byte-neutral rendering for %s" % prompt_name)
 
     def test_review_lenses_defaults_json_raw(self):
         with open(config.DEFAULTS_PATH) as f:

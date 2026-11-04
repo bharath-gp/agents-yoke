@@ -20,7 +20,7 @@ $prior_results
 Feedback from the previous attempt (empty on the first attempt):
 $feedback
 
-What to check: correctness, edge cases, resume and crash safety, tests that match the exit criteria, docs that match the code, and the constraints in CLAUDE.md (Python 3.9, stdlib only, string.Template prompts, no agent shell). Read the code around the diff, not only the changed lines.
+${settled}What to check: correctness, edge cases, resume and crash safety, tests that match the exit criteria, docs that match the code, and the constraints in CLAUDE.md (Python 3.9, stdlib only, string.Template prompts, no agent shell). Read the code around the diff, not only the changed lines.
 Flag changes the ticket and plan do not ask for (unrelated edits, new behaviour, config or environment changes) as a finding. If the diff comes with commit history, flag duplicate or misleading commits.
 You do not replace the validator. Do not restate exit-criteria checks that tests already prove.
 

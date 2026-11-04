@@ -20,7 +20,7 @@ $prior_results
 Feedback from the previous attempt (empty on the first attempt):
 $feedback
 
-What to check (Performance lens):
+${settled}What to check (Performance lens):
 - Algorithmic efficiency: quadratic or exponential complexity (O(n^2), O(2^n)), nested loops over large datasets, or suboptimal data structures
 - I/O overhead: redundant file reads/writes, unbuffered I/O, missing batching, or excessive disk syncs (fsync)
 - Memory usage: memory leaks, holding large objects in memory, unnecessary deep copies, or unbounded caching

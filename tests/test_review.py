@@ -987,5 +987,390 @@ class TestAdversarialReview(PipeBase):
         self.assertIn(code_marker, rebut_prompt)
 
 
+class TestSettledLedger(PipeBase):
+    def test_overruled_finding_dropped_next_round(self):
+        self.run_.update(config=dict(self.run_.cfg, review_mode="adversarial", review_lenses=["security"]))
+        f_a = finding(severity="blocker", file="a.py", line=10, comment="issue A")
+        f_b = finding(severity="blocker", file="b.py", line=5, comment="issue B")
+        f_a_r1 = finding(severity="blocker", file="a.py", line=12, comment="issue A reraised")
+        script = {
+            "code": [resp(CODE, "c1", write={"f1.txt": "1"}), resp(CODE, "c1", write={"f1.txt": "2"})],
+            "review-security": [resp(rev_changes([f_a, f_b]))],
+            "review-security-r1": [resp(rev_changes([f_a_r1]))],
+            "rebut": [resp({"responses": [
+                {"id": "f1", "stance": "dispute", "argument": "arg", "evidence": "a.py:10"},
+                {"id": "f2", "stance": "concede", "argument": "arg", "evidence": "b.py:5"},
+            ], "summary": "disputing f1, conceding f2"})],
+            "judge": [resp({"rulings": [
+                {"id": "f1", "ruling": "overruled", "reason": "not a bug"},
+            ], "summary": "ruling"})],
+            "validate": [resp(val())],
+            "router": [{"exit": 1}],
+        }
+        self.setup_tickets([ticket(1)], script)
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+
+        self.assertTrue(os.path.isdir(self.run_.path("tickets/T-001/attempt-1/judge-r0")))
+        self.assertFalse(os.path.exists(self.run_.path("tickets/T-001/attempt-1/judge-r1")))
+
+        with open(self.run_.path("events.jsonl")) as f:
+            settled_events = [json.loads(l) for l in f if json.loads(l).get("kind") == "review_settled"]
+        self.assertEqual(len(settled_events), 1)
+        self.assertEqual(settled_events[0]["dropped"], 1)
+        self.assertEqual(settled_events[0]["reopened"], 0)
+
+        st = self.tstate(1)
+        self.assertEqual(len(st["review"]["settled"]), 1)
+        self.assertEqual(st["review"]["settled"][0]["lens"], "security")
+        self.assertEqual(st["review"]["settled"][0]["file"], "a.py")
+        self.assertEqual(st["review"]["settled"][0]["line"], 10)
+
+    def test_withdrawn_finding_settled(self):
+        self.run_.update(config=dict(self.run_.cfg, review_mode="adversarial", review_lenses=["security"], debate_rounds=2))
+        f = finding(severity="blocker", file="a.py", line=1, comment="blocker finding")
+        script = {
+            "code": [resp(CODE, "c1", write={"f1.txt": "1"})],
+            "review-security": [resp(rev_changes([f]))],
+            "rebut": [resp({"responses": [{"id": "f1", "stance": "dispute", "argument": "no bug", "evidence": "a.py:1"}], "summary": "dispute"})],
+            "reply": [resp({"replies": [{"id": "f1", "stance": "withdraw", "argument": "withdrawing"}], "summary": "withdraw"})],
+            "validate": [resp(val())],
+            "router": [{"exit": 1}],
+        }
+        self.setup_tickets([ticket(1)], script)
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+
+        st = self.tstate(1)
+        self.assertEqual(len(st["review"]["settled"]), 1)
+        self.assertEqual(st["review"]["settled"][0]["reason"], "withdrawn by reviewer")
+        self.assertEqual(st["review"]["settled"][0]["lens"], "security")
+        self.assertEqual(st["review"]["settled"][0]["file"], "a.py")
+        self.assertEqual(st["review"]["settled"][0]["line"], 1)
+
+    def test_settled_survives_next_attempt(self):
+        self.run_.update(config=dict(self.run_.cfg, review_mode="adversarial", review_lenses=["security"]))
+        f_a1 = finding(severity="blocker", file="a.py", line=10, comment="blocker A")
+        f_b1 = finding(severity="blocker", file="b.py", line=5, comment="blocker B")
+        f_a2 = finding(severity="blocker", file="a.py", line=9, comment="blocker A reraised")
+        script = {
+            "code": [
+                resp(CODE, "c1", write={"f1.txt": "1"}),
+                resp(CODE, "c1", write={"f1.txt": "1b"}),
+                resp(CODE, "c1", write={"f1.txt": "2"}),
+            ],
+            "review-security": [resp(rev_changes([f_a1, f_b1])), resp(rev_changes([f_a2]))],
+            "review-security-r1": [resp(REV_APPROVE)],
+            "rebut": [resp({"responses": [
+                {"id": "f1", "stance": "dispute", "argument": "arg", "evidence": "a.py:10"},
+                {"id": "f2", "stance": "concede", "argument": "arg", "evidence": "b.py:5"},
+            ], "summary": "dispute f1, concede f2"})],
+            "judge": [resp({"rulings": [{"id": "f1", "ruling": "overruled", "reason": "overruled"}], "summary": "overruled"})],
+            "validate": [
+                resp(val(ok=False, met=False)),
+                resp(val(ok=True, met=True)),
+            ],
+            "router": [{"exit": 1}],
+        }
+        self.setup_tickets([ticket(1)], script)
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+        self.assertEqual(self.tstate(1)["attempt"], 2)
+
+        self.assertFalse(os.path.exists(self.run_.path("tickets/T-001/attempt-2/judge-r0")))
+
+        with open(self.run_.path("events.jsonl")) as f:
+            settled_events = [json.loads(l) for l in f if json.loads(l).get("kind") == "review_settled"]
+        att2_events = [e for e in settled_events if e.get("attempt") == 2]
+        self.assertEqual(len(att2_events), 1)
+        self.assertEqual(att2_events[0]["dropped"], 1)
+
+        st = self.tstate(1)
+        self.assertEqual(len(st["review"]["settled"]), 1)
+        self.assertEqual(st["review"]["settled"][0]["file"], "a.py")
+        self.assertEqual(st["review"]["settled"][0]["line"], 10)
+        self.assertEqual(st["review"]["settled"][0]["lens"], "security")
+        self.assertEqual(st["review"]["settled"][0]["comment"], "blocker A")
+        self.assertEqual(st["review"]["settled"][0]["reason"], "overruled")
+        self.assertEqual(st["review"]["settled"][0]["attempt"], 1)
+        self.assertEqual(st["review"]["settled"][0]["round"], 0)
+
+        self.assertEqual(len(st["review"]["fixed"]), 1)
+        self.assertEqual(st["review"]["fixed"][0]["file"], "b.py")
+        self.assertEqual(st["review"]["fixed"][0]["line"], 5)
+        self.assertEqual(st["review"]["fixed"][0]["lens"], "security")
+        self.assertEqual(st["review"]["fixed"][0]["comment"], "blocker B")
+        self.assertEqual(st["review"]["fixed"][0]["attempt"], 1)
+        self.assertEqual(st["review"]["fixed"][0]["round"], 1)
+
+    def test_fixed_then_raised_again_counts_reopened(self):
+        self.run_.update(config=dict(self.run_.cfg, review_mode="adversarial", review_lenses=["security"]))
+        f_r0 = finding(severity="blocker", file="c.py", line=20, comment="blocker C")
+        f_r1 = finding(severity="blocker", file="c.py", line=21, comment="blocker C raised again")
+        script = {
+            "code": [resp(CODE, "c1", write={"f1.txt": "1"}), resp(CODE, "c1", write={"f1.txt": "2"})],
+            "review-security": [resp(rev_changes([f_r0]))],
+            "review-security-r1": [resp(rev_changes([f_r1]))],
+            "rebut": [
+                resp({"responses": [{"id": "f1", "stance": "concede", "argument": "ok", "evidence": "c.py:20"}], "summary": "conceding"}),
+                resp({"responses": [{"id": "f1", "stance": "dispute", "argument": "dispute r1", "evidence": "c.py:21"}], "summary": "disputing"}),
+            ],
+            "judge": [
+                resp({"rulings": [{"id": "f1", "ruling": "overruled", "reason": "overruled in r1"}], "summary": "overruled"}),
+            ],
+            "validate": [resp(val())],
+            "router": [{"exit": 1}],
+        }
+        self.setup_tickets([ticket(1)], script)
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+
+        with open(self.run_.path("events.jsonl")) as f:
+            settled_events = [json.loads(l) for l in f if json.loads(l).get("kind") == "review_settled"]
+        r1_events = [e for e in settled_events if e.get("round") == 1]
+        self.assertEqual(len(r1_events), 1)
+        self.assertEqual(r1_events[0]["reopened"], 1)
+
+        self.assertTrue(os.path.isdir(self.run_.path("tickets/T-001/attempt-1/rebut-r1-1")))
+        self.assertTrue(os.path.isdir(self.run_.path("tickets/T-001/attempt-1/judge-r1")))
+
+    def test_different_lens_or_far_line_not_dropped(self):
+        st = {
+            "review": {
+                "settled": [{
+                    "lens": "security",
+                    "file": "a.py",
+                    "line": 10,
+                    "comment": "sec issue",
+                    "reason": "overruled",
+                    "attempt": 1,
+                    "round": 0,
+                }],
+                "fixed": [],
+            }
+        }
+        f_tests = finding(severity="blocker", file="a.py", line=10, comment="tests issue")
+        f_sec_far = finding(severity="blocker", file="a.py", line=20, comment="far sec issue")
+        findings = [f_tests, f_sec_far]
+        lens_of = {id(f_tests): "tests", id(f_sec_far): "security"}
+        kept, dropped, reopened = pipeline._apply_settled(st, findings, lens_of)
+        self.assertEqual(dropped, 0)
+        self.assertEqual(reopened, 0)
+        self.assertEqual(len(kept), 2)
+        self.assertIn(f_tests, kept)
+        self.assertIn(f_sec_far, kept)
+
+    def test_other_lens_same_place_survives_settled_reraise(self):
+        self.run_.update(config=dict(self.run_.cfg, review_mode="adversarial", review_lenses=["security", "tests"]))
+        f_sec_r0 = finding(severity="blocker", file="a.py", line=10, comment="sec finding r0")
+        f_test_r0 = finding(severity="blocker", file="b.py", line=5, comment="test finding r0")
+        f_sec_r1 = finding(severity="blocker", file="a.py", line=10, comment="sec reraised")
+        f_test_r1 = finding(severity="blocker", file="a.py", line=10, comment="tests at same place")
+        script = {
+            "code": [resp(CODE, "c1", write={"f1.txt": "1"}), resp(CODE, "c1", write={"f1.txt": "2"})],
+            "review-security": [resp(rev_changes([f_sec_r0]))],
+            "review-tests": [resp(rev_changes([f_test_r0]))],
+            "review-security-r1": [resp(rev_changes([f_sec_r1]))],
+            "review-tests-r1": [resp(rev_changes([f_test_r1]))],
+            "rebut": [
+                resp({"responses": [
+                    {"id": "f1", "stance": "dispute", "argument": "arg", "evidence": "a.py:10"},
+                    {"id": "f2", "stance": "concede", "argument": "ok", "evidence": "b.py:5"},
+                ], "summary": "r0 rebut"}),
+                resp({"responses": [
+                    {"id": "f1", "stance": "dispute", "argument": "arg", "evidence": "a.py:10"},
+                ], "summary": "r1 rebut"}),
+            ],
+            "judge": [
+                resp({"rulings": [{"id": "f1", "ruling": "overruled", "reason": "not a bug"}], "summary": "r0 judge"}),
+                resp({"rulings": [{"id": "f1", "ruling": "overruled", "reason": "overruled"}], "summary": "r1 judge"}),
+            ],
+            "validate": [resp(val())],
+            "router": [{"exit": 1}],
+        }
+        self.setup_tickets([ticket(1)], script)
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+
+        with open(self.run_.path("events.jsonl")) as f:
+            settled_events = [json.loads(l) for l in f if json.loads(l).get("kind") == "review_settled"]
+        r1_events = [e for e in settled_events if e.get("round") == 1]
+        self.assertEqual(len(r1_events), 1)
+        self.assertEqual(r1_events[0]["dropped"], 1)
+
+        with open(self.run_.path("tickets/T-001/attempt-1/rebut-r1-1/prompt.md")) as f:
+            prompt_text = f.read()
+        self.assertIn("tests at same place", prompt_text)
+
+    def test_settled_listed_in_lens_prompt(self):
+        self.run_.update(config=dict(self.run_.cfg, review_mode="adversarial", review_lenses=["security"]))
+        f_a = finding(severity="blocker", file="a.py", line=10, comment="suspicious buffer overflow")
+        f_b = finding(severity="blocker", file="b.py", line=5, comment="fixable issue")
+        script = {
+            "code": [resp(CODE, "c1", write={"f1.txt": "1"}), resp(CODE, "c1", write={"f1.txt": "2"})],
+            "review-security": [resp(rev_changes([f_a, f_b]))],
+            "review-security-r1": [resp(REV_APPROVE)],
+            "rebut": [resp({"responses": [
+                {"id": "f1", "stance": "dispute", "argument": "arg", "evidence": "a.py:10"},
+                {"id": "f2", "stance": "concede", "argument": "ok", "evidence": "b.py:5"},
+            ], "summary": "rebut"})],
+            "judge": [resp({"rulings": [
+                {"id": "f1", "ruling": "overruled", "reason": "false positive"},
+            ], "summary": "judge"})],
+            "validate": [resp(val())],
+            "router": [{"exit": 1}],
+        }
+        self.setup_tickets([ticket(1)], script)
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+
+        with open(self.run_.path("tickets/T-001/attempt-1/review-security/prompt.md")) as f:
+            p_r0 = f.read()
+        with open(self.run_.path("tickets/T-001/attempt-1/review-security-r1/prompt.md")) as f:
+            p_r1 = f.read()
+
+        self.assertNotIn("Settled findings", p_r0)
+        self.assertIn("Settled findings", p_r1)
+        self.assertIn("suspicious buffer overflow", p_r1)
+
+    def test_ledger_match_and_apply_settled_boundaries_and_guards(self):
+        entry = {"lens": "security", "file": "a.py", "line": 10, "comment": "issue", "reason": "overruled"}
+        # Line diff <= 3 matches
+        self.assertIsNotNone(pipeline._ledger_match({"file": "a.py", "line": 10}, "security", [entry]))
+        self.assertIsNotNone(pipeline._ledger_match({"file": "a.py", "line": 13}, "security", [entry]))
+        self.assertIsNotNone(pipeline._ledger_match({"file": "a.py", "line": 7}, "security", [entry]))
+        # Line diff >= 4 does not match
+        self.assertIsNone(pipeline._ledger_match({"file": "a.py", "line": 14}, "security", [entry]))
+        self.assertIsNone(pipeline._ledger_match({"file": "a.py", "line": 6}, "security", [entry]))
+        # Guards: empty or missing file
+        self.assertIsNone(pipeline._ledger_match({"file": "", "line": 10}, "security", [entry]))
+        self.assertIsNone(pipeline._ledger_match({"line": 10}, "security", [entry]))
+        # Guards: invalid or non-int line in finding
+        self.assertIsNone(pipeline._ledger_match({"file": "a.py"}, "security", [entry]))
+        self.assertIsNone(pipeline._ledger_match({"file": "a.py", "line": "not_an_int"}, "security", [entry]))
+        self.assertIsNone(pipeline._ledger_match({"file": "a.py", "line": float("inf")}, "security", [entry]))
+        # Guards: invalid or non-int line in entry
+        self.assertIsNone(pipeline._ledger_match({"file": "a.py", "line": 10}, "security", [{"lens": "security", "file": "a.py", "line": None}]))
+        self.assertIsNone(pipeline._ledger_match({"file": "a.py", "line": 10}, "security", [{"lens": "security", "file": "a.py", "line": "bad"}]))
+        self.assertIsNone(pipeline._ledger_match({"file": "a.py", "line": 10}, "security", [{"lens": "security", "file": "a.py", "line": float("inf")}]))
+        # Lens mismatch
+        self.assertIsNone(pipeline._ledger_match({"file": "a.py", "line": 10}, "performance", [entry]))
+
+        # _apply_settled priority: settled match drops finding before fixed match is checked
+        st = {
+            "review": {
+                "settled": [entry],
+                "fixed": [{"lens": "security", "file": "a.py", "line": 10, "comment": "fixed"}],
+            }
+        }
+        f = {"file": "a.py", "line": 10, "severity": "blocker"}
+        lens_of = {id(f): "security"}
+        kept, dropped, reopened = pipeline._apply_settled(st, [f], lens_of)
+        self.assertEqual(dropped, 1)
+        self.assertEqual(reopened, 0)
+        self.assertEqual(len(kept), 0)
+
+    def test_single_review_mode_settled_drop(self):
+        self.run_.update(config=dict(self.run_.cfg, review_mode="adversarial", review_lenses=[]))
+        f_a = finding(severity="blocker", file="a.py", line=10, comment="issue A")
+        f_b = finding(severity="blocker", file="b.py", line=5, comment="issue B")
+        f_a_r1 = finding(severity="blocker", file="a.py", line=12, comment="issue A reraised")
+        script = {
+            "code": [resp(CODE, "c1", write={"f1.txt": "1"}), resp(CODE, "c1", write={"f1.txt": "2"})],
+            "review": [resp(rev_changes([f_a, f_b]))],
+            "review-r1": [resp(rev_changes([f_a_r1]))],
+            "rebut": [resp({"responses": [
+                {"id": "f1", "stance": "dispute", "argument": "arg", "evidence": "a.py:10"},
+                {"id": "f2", "stance": "concede", "argument": "arg", "evidence": "b.py:5"},
+            ], "summary": "disputing f1, conceding f2"})],
+            "judge": [resp({"rulings": [
+                {"id": "f1", "ruling": "overruled", "reason": "not a bug"},
+            ], "summary": "ruling"})],
+            "validate": [resp(val())],
+            "router": [{"exit": 1}],
+        }
+        self.setup_tickets([ticket(1)], script)
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+
+        self.assertFalse(os.path.exists(self.run_.path("tickets/T-001/attempt-1/judge-r1")))
+
+        with open(self.run_.path("tickets/T-001/attempt-1/review-r1/prompt.md")) as f:
+            prompt_r1 = f.read()
+        self.assertIn("Settled findings", prompt_r1)
+        self.assertIn("issue A", prompt_r1)
+
+        with open(self.run_.path("events.jsonl")) as f:
+            settled_events = [json.loads(l) for l in f if json.loads(l).get("kind") == "review_settled"]
+        self.assertEqual(len(settled_events), 1)
+        self.assertEqual(settled_events[0]["dropped"], 1)
+
+        st = self.tstate(1)
+        self.assertEqual(len(st["review"]["settled"]), 1)
+        self.assertEqual(st["review"]["settled"][0]["lens"], "review")
+        self.assertEqual(st["review"]["settled"][0]["file"], "a.py")
+        self.assertEqual(st["review"]["settled"][0]["line"], 10)
+
+    def test_settled_text_exact_format_and_lens_isolation(self):
+        self.assertEqual(pipeline._settled_text(None, "security"), "")
+        self.assertEqual(pipeline._settled_text({}, "security"), "")
+        self.assertEqual(pipeline._settled_text({"review": {}}, "security"), "")
+        self.assertEqual(pipeline._settled_text({"review": {"settled": []}}, "security"), "")
+
+        st = {
+            "review": {
+                "settled": [
+                    {"lens": "security", "file": "a.py", "line": 10, "comment": "sec issue", "reason": "not a bug"},
+                    {"lens": "security", "file": "b.py", "line": 20, "comment": "sec issue 2", "reason": "duplicate"},
+                    {"lens": "tests", "file": "c.py", "line": 30, "comment": "tests issue", "reason": "by design"},
+                ]
+            }
+        }
+        sec_text = pipeline._settled_text(st, "security")
+        expected_sec = (
+            "Settled findings (already ruled on; do not raise them again):\n"
+            "- a.py:10: sec issue (settled: not a bug)\n"
+            "- b.py:20: sec issue 2 (settled: duplicate)\n\n"
+        )
+        self.assertEqual(sec_text, expected_sec)
+
+        tests_text = pipeline._settled_text(st, "tests")
+        expected_tests = (
+            "Settled findings (already ruled on; do not raise them again):\n"
+            "- c.py:30: tests issue (settled: by design)\n\n"
+        )
+        self.assertEqual(tests_text, expected_tests)
+        self.assertEqual(pipeline._settled_text(st, "performance"), "")
+
+    def test_single_review_verdict_rebuilt_with_remaining_blocker(self):
+        st = {
+            "review": {
+                "settled": [{"lens": "review", "file": "a.py", "line": 10, "comment": "issue A", "reason": "overruled"}],
+                "fixed": [],
+            }
+        }
+        f_settled = finding(severity="blocker", file="a.py", line=11, comment="issue A reraised")
+        f_remaining = finding(severity="blocker", file="b.py", line=5, comment="issue B new")
+        f_minor = finding(severity="minor", file="c.py", line=20, comment="minor issue")
+
+        raw_findings = [f_settled, f_remaining, f_minor]
+        lens_of = {id(f): "review" for f in raw_findings}
+        kept, dropped, reopened = pipeline._apply_settled(st, raw_findings, lens_of)
+        self.assertEqual(dropped, 1)
+        self.assertEqual(len(kept), 2)
+
+        # When blocker remains, verdict is changes_requested
+        blocking_check = [f for f in kept if f.get("severity") in ("blocker", "major")]
+        verdict = "changes_requested" if blocking_check else "approve"
+        self.assertEqual(verdict, "changes_requested")
+
+        # When only minor remains, verdict is approve
+        kept_minor_only, dropped_2, _ = pipeline._apply_settled(st, [f_settled, f_minor], {id(f_settled): "review", id(f_minor): "review"})
+        self.assertEqual(dropped_2, 1)
+        blocking_check_2 = [f for f in kept_minor_only if f.get("severity") in ("blocker", "major")]
+        verdict_2 = "changes_requested" if blocking_check_2 else "approve"
+        self.assertEqual(verdict_2, "approve")
+
+
 if __name__ == "__main__":
     unittest.main()
