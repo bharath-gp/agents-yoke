@@ -55,10 +55,15 @@ class TestResume(PipeBase):
         self.assertEqual(self.tstate(1)["status"], "closed")
 
     def test_recover_checking_treated_as_open(self):
-        self.run_.write_json("milestones.json", {"MS-01": {"id": "MS-01", "status": "checking", "fix_count": 0}})
+        self.run_.write_json("milestones.json", {
+            "MS-01": {"id": "MS-01", "status": "checking", "fix_count": 0},
+            "MS-02": {"id": "MS-02", "status": "passed", "fix_count": 1},
+            "MS-03": {"id": "MS-03", "status": "checking", "fix_count": 2},
+        })
         scheduler.recover(self.run_)
         st = self.run_.read_json("milestones.json")
-        self.assertEqual(st["MS-01"]["status"], "open")
+        self.assertEqual([st[m]["status"] for m in ("MS-01", "MS-02", "MS-03")], ["open", "passed", "open"])
+        self.assertEqual(st["MS-03"]["fix_count"], 2)
 
 
 class TestWait(PipeBase):

@@ -76,14 +76,9 @@ def recover(run):
         os.rename(src, dst)
         run.event("interrupted", dir=os.path.relpath(src, run.dir))
 
-    states = milestones.load_states(run)
-    changed = False
-    for mid, st in states.items():
+    for mid, st in milestones.load_states(run).items():
         if isinstance(st, dict) and st.get("status") == "checking":
-            st["status"] = "open"
-            changed = True
-    if changed:
-        milestones.save_states(run, states)
+            milestones.set_milestone_state(run, mid, status="open")
 
     pause.recover(run)
 
