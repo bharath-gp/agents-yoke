@@ -1,0 +1,26 @@
+{
+  "type": "object",
+  "required": ["verdict", "paraphrase", "questions", "missing_refs"],
+  "additionalProperties": false,
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": ["ready", "not_ready"]
+    },
+    "paraphrase": {
+      "type": "string"
+    },
+    "questions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "missing_refs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

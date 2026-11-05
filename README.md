@@ -55,7 +55,7 @@ Development: `uv tool install --editable .`, then `claude plugin marketplace add
 
 ### Role mapping and review
 
-Agent roles are configured via `yoke setup --primary <agent> --secondary <agent> --map <role>=<who>`. Supported roles include `requirements`, `planner`, `wayfinder`, `orchestrator`, `plan_review`, `code`, `review`, `qa`, `validate`, `docs`, `search`, `research`, `factcheck`, `pr_body`, `hypotheses`, and `hypotheses_rank`.
+Agent roles are configured via `yoke setup --primary <agent> --secondary <agent> --map <role>=<who>`. Supported roles include `requirements`, `planner`, `wayfinder`, `orchestrator`, `plan_review`, `readiness`, `code`, `review`, `qa`, `validate`, `docs`, `search`, `research`, `factcheck`, `pr_body`, `hypotheses`, and `hypotheses_rank`.
 
 The `review` role defaults to `auto`, resolving dynamically to the opposite of the `code` agent (`claude` <-> `agy`), ensuring code review is performed by a different agent than the implementer. For custom code agent names outside `AGENTS`, it falls back to `primary` (or `secondary` if `primary` matches `code`). `yoke setup` warns if an explicit override assigns the same agent to both code and review. Use `--map review=auto` to restore automatic resolution.
 
@@ -106,6 +106,28 @@ Plan review (`yoke review-plan` / `planreview.review_round`) supports multi-lens
 - **Deduplication and merging**: Findings across lenses are merged and deduplicated by `(section, issue)` (normalized case and whitespace), retaining the first-seen finding dict while raising its severity to the highest seen (`blocker` > `major` > `minor`).
 - **Paraphrase output**: When `comprehension` is included, its extracted understanding (`{proposes, existing_system}`) is saved to `plan-review/round-<n>/paraphrase.json` and printed by `yoke review-plan` (`paraphrase: <path>`).
 - **Tolerant execution and debate**: Individual lens failures are tolerated and recorded in `lenses` metadata. If all lenses fail, review fails without writing `result.json`. Otherwise, merged findings are written to `plan-review/round-<n>/result.json` and passed as a synthetic `CallResult` to `debate_round`.
+
+#### Ticket readiness review (`yoke review-tickets`)
+
+Ticket readiness review (`yoke review-tickets` / `readiness.review_tickets`) performs isolated, read-only evaluation of individual tickets against the readiness rubric before execution:
+
+```json
+{
+  "ticket_review": false,
+  "ticket_review_max": 30,
+  "max_ticket_review_rounds": 2,
+  "timeouts_s": {
+    "readiness": 900
+  }
+}
+```
+
+- **Per-ticket isolation**: Executes one read-only agent call per ticket (role `readiness`, defaulting to `secondary`) up to `ticket_review_max` (default: 30). Each call receives only the ticket JSON, repository context, and plan sections cited in the ticket's `plan_sections` field (extracted via `readiness.plan_section`).
+- **Zero-decision rubric**: Reviewers evaluate whether the ticket is unambiguous for a coder with no shell access. The reviewer returns a structured verdict (`ready` or `not_ready`), paraphrase, remaining decisions as `questions`, and missing repository references as `missing_refs`. A ticket is `ready` only when both questions and missing references are empty.
+- **Tagged records and round summary**: Per-ticket evaluations are saved to `ticket-review/round-<n>/<tid>.json` tagged with `tickets_sha256` (matching the current tickets hash). A round summary is saved to `ticket-review/round-<n>/summary.json` listing `ready`, `not_ready`, and `skipped` ticket IDs, and a `ticket_review` event is emitted.
+- **Budget and failure handling**: Calls are budget-checked against `max_agent_calls_total`. If budget is exhausted, remaining tickets in the review range are marked `not_ready` with error `budget exhausted`. Any failed or schema-invalid call is marked `not_ready` with an error message.
+- **Round cap**: Rounds are capped by `max_ticket_review_rounds` (default: 2), raising a `RuntimeError` when exceeded.
+- **CLI behavior**: When `ticket_review` is disabled in configuration, `yoke review-tickets` prints `ticket_review is off; skipped` and exits 0. When enabled, it prints the round directory, readiness counts, and first questions or errors for not_ready tickets, warning on stderr if tickets exceeded `ticket_review_max`.
 
 #### Adversarial debate
 
@@ -616,6 +638,7 @@ The skills run these for you; the raw commands below are for scripting and debug
 ```bash
 yoke init --requirements req.md   # prints run_id; write plan.md into ~/.yoke/runs/<run_id>/
 yoke review-plan                  # one read-only secondary review round (warns on missing paths / TOC; prints debate summary)
+yoke review-tickets               # one read-only readiness review call per ticket (up to ticket_review_max)
 yoke approve plan                 # also: tickets (creates GitHub milestones/issues if tracker=github), final
 yoke tickets chart [--feedback "note"] # map approved plan to milestones/tickets via wayfinder
                                   # ticket ids continue after the highest GitHub issue/PR number (T-0057 after #56)
