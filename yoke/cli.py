@@ -204,13 +204,16 @@ def _front_half(args):
             print("warning: %s" % w, file=sys.stderr)
         try:
             n, res = planreview.review_round(run)
-        except (RuntimeError, planreview.ApprovalError) as e:
+        except (RuntimeError, planreview.ApprovalError, ValueError) as e:
             print("yoke: %s" % e, file=sys.stderr)
             return 1
         print("round %d: %s" % (n, run.path("plan-review/round-%d" % n)))
         if res.ok and res.schema_valid:
             out = res.structured_output
             print("verdict %s, %d findings: %s" % (out["verdict"], len(out["findings"]), out["summary"]))
+            para_path = run.path("plan-review/round-%d/paraphrase.json" % n)
+            if os.path.exists(para_path):
+                print("paraphrase: %s" % para_path)
             rel = "plan-review/round-%d/debate.json" % n
             try:
                 debate = run.read_json(rel, None)

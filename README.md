@@ -86,6 +86,27 @@ During ticket execution, the `review` stage runs an iterative review loop (up to
 
 Each lens call counts against `max_agent_calls_total`. Blocker and major findings trigger coder revisions using the resumed session. If findings remain unresolved when reaching the revision cap, the ticket proceeds without failing: unresolved findings are recorded in ticket state, posted as issue comments, and surfaced in the `yoke pr` description under "Unresolved review findings".
 
+#### Plan review lenses
+
+Plan review (`yoke review-plan` / `planreview.review_round`) supports multi-lens evaluation via `plan_review_lenses` (defaults to `[]`, preserving single-call review on `plan.md`):
+
+```json
+{
+  "plan_review_lenses": [
+    "zoom_out",
+    "comprehension",
+    "critic",
+    "readiness"
+  ]
+}
+```
+
+- **Dedicated lens rubrics**: When non-empty, review executes one read-only call per configured lens using `plan_lens.md` and rubric standards (`standards/<name>.md`). Supported lenses are `zoom_out` (YAGNI, simplification, reuse), `comprehension` (naive reader, paraphrase), `critic` (failure modes, edge cases, requirements compliance), and `readiness` (zero-decision rule, file boundaries). Only `critic` receives `requirements.md`; other lenses evaluate `plan.md` against repository context alone.
+- **Concurrent evaluation**: When `parallel > 1`, lenses execute concurrently up to `min(len(lenses), parallel)` worker threads. Results are collected in lens order.
+- **Deduplication and merging**: Findings across lenses are merged and deduplicated by `(section, issue)` (normalized case and whitespace), retaining the first-seen finding dict while raising its severity to the highest seen (`blocker` > `major` > `minor`).
+- **Paraphrase output**: When `comprehension` is included, its extracted understanding (`{proposes, existing_system}`) is saved to `plan-review/round-<n>/paraphrase.json` and printed by `yoke review-plan` (`paraphrase: <path>`).
+- **Tolerant execution and debate**: Individual lens failures are tolerated and recorded in `lenses` metadata. If all lenses fail, review fails without writing `result.json`. Otherwise, merged findings are written to `plan-review/round-<n>/result.json` and passed as a synthetic `CallResult` to `debate_round`.
+
 #### Adversarial debate
 
 Yoke supports adversarial review debates during ticket review and plan review:
