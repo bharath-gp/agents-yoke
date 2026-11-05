@@ -6,7 +6,7 @@ from unittest import mock
 from tests.test_gitops import git
 from tests.test_pipeline import CODE, DOCS, PipeBase, qa, resp, ticket, val
 from tests.test_planreview import Base
-from yoke import config, gitops, pipeline, prbody, schema, ticketstate, tracker
+from yoke import config, gitops, pipeline, prbody, scheduler, schema, ticketstate, tracker
 
 os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
 
@@ -2164,6 +2164,188 @@ class TestEscalate(PipeBase):
         self.assertEqual(upheld, [])
         debate_json = self.run_.read_json("tickets/T-001/attempt-1/debate-test.json")
         self.assertNotIn("escalated", debate_json)
+
+    def test_unblock_note_resumes_same_round(self):
+        self.run_.update(config=dict(
+            self.run_.cfg,
+            review_mode="adversarial",
+            escalate_findings=True,
+            review_lenses=["security"],
+        ))
+        f = finding(severity="blocker", file="a.py", line=1, comment="blocker 1")
+        script = {
+            "code": [resp(CODE, "c1", write={"a.py": "v1"})],
+            "code-r1": [resp(CODE, "c1", write={"a.py": "v2"})],
+            "review-security": [resp(rev_changes([f]))],
+            "review-security-r1": [resp(REV_APPROVE)],
+            "rebut-r0-1": [resp({
+                "responses": [{"id": "f1", "stance": "escalate", "argument": "need user decision", "evidence": ""}],
+                "summary": "escalating",
+            })],
+            "validate": [resp(val())],
+            "router": [{"exit": 1}],
+        }
+        self.setup_tickets([ticket(1)], script)
+        self.assertEqual(self.go(), "needs_user")
+        st = self.tstate(1)
+        self.assertEqual(st["status"], "blocked")
+
+        scheduler.unblock(self.run_, "T-001", note="keep it")
+        self.assertEqual(self.go(), "done")
+
+        st = self.tstate(1)
+        self.assertEqual(st["attempt"], 1)
+        self.assertEqual(st["status"], "closed")
+
+        prompt_file = self.run_.path("tickets/T-001/attempt-1/code-r1/prompt.md")
+        self.assertTrue(os.path.exists(prompt_file))
+        with open(prompt_file) as pf:
+            self.assertIn("keep it", pf.read())
+
+        with open(self.run_.path("events.jsonl")) as ef:
+            rev_sec_events = [
+                json.loads(l) for l in ef
+                if json.loads(l).get("kind") == "call_start" and json.loads(l).get("dir", "").endswith("review-security")
+            ]
+        self.assertEqual(len(rev_sec_events), 1)
+
+        settled = st["review"]["settled"]
+        self.assertTrue(any(s.get("reason") == "user: keep it" for s in settled))
+
+    def test_unblock_reset_drops_resume(self):
+        self.run_.update(config=dict(
+            self.run_.cfg,
+            review_mode="adversarial",
+            escalate_findings=True,
+            review_lenses=["security"],
+        ))
+        f = finding(severity="blocker", file="a.py", line=1, comment="blocker 1")
+        script = {
+            "code": [resp(CODE, "c1", write={"a.py": "v1"})],
+            "review-security": [resp(rev_changes([f]))],
+            "rebut-r0-1": [resp({
+                "responses": [{"id": "f1", "stance": "escalate", "argument": "need user decision", "evidence": ""}],
+                "summary": "escalating",
+            })],
+            "validate": [resp(val())],
+            "router": [{"exit": 1}],
+        }
+        self.setup_tickets([ticket(1)], script)
+        self.assertEqual(self.go(), "needs_user")
+        st = self.tstate(1)
+        self.assertEqual(st["status"], "blocked")
+
+        scheduler.unblock(self.run_, "T-001", reset_attempts=True)
+        st = self.tstate(1)
+        self.assertNotIn("review_resume", st)
+        self.assertNotIn("start_stage", st)
+
+    def test_resume_at_cap_runs_one_revision(self):
+        self.run_.update(config=dict(
+            self.run_.cfg,
+            review_mode="adversarial",
+            escalate_findings=True,
+            review_lenses=["security"],
+            max_review_rounds=1,
+        ))
+        f0 = finding(severity="blocker", file="a.py", line=1, comment="blocker 0")
+        f1 = finding(severity="blocker", file="a.py", line=2, comment="blocker 1")
+        f2 = finding(severity="blocker", file="b.py", line=10, comment="blocker 2")
+        script = {
+            "code": [resp(CODE, "c1", write={"a.py": "v1"})],
+            "code-r1": [resp(CODE, "c1", write={"a.py": "v2"})],
+            "code-r2": [resp(CODE, "c1", write={"a.py": "v3"})],
+            "review-security": [resp(rev_changes([f0]))],
+            "review-security-r1": [resp(rev_changes([f1]))],
+            "review-security-r2": [resp(rev_changes([f2]))],
+            "rebut-r0-1": [resp({
+                "responses": [{"id": "f1", "stance": "concede", "argument": "agree", "evidence": "a.py:1"}],
+                "summary": "conceding",
+            })],
+            "rebut-r1-1": [resp({
+                "responses": [{"id": "f1", "stance": "escalate", "argument": "need user decision", "evidence": "a.py:2"}],
+                "summary": "escalating",
+            })],
+            "rebut-r2-1": [resp({
+                "responses": [{"id": "f1", "stance": "concede", "argument": "agree", "evidence": "b.py:10"}],
+                "summary": "conceding",
+            })],
+            "validate": [resp(val())],
+            "router": [{"exit": 1}],
+        }
+        self.setup_tickets([ticket(1)], script)
+        self.assertEqual(self.go(), "needs_user")
+        st = self.tstate(1)
+        self.assertEqual(st["status"], "blocked")
+
+        scheduler.unblock(self.run_, "T-001", note="fix f1 this way")
+        self.assertEqual(self.go(), "done")
+
+        st = self.tstate(1)
+        self.assertEqual(st["status"], "closed")
+        self.assertEqual(st["review"]["rounds"], 2)
+        self.assertEqual(len(st["review"]["unresolved"]), 1)
+        self.assertEqual(st["review"]["unresolved"][0]["comment"], "blocker 2")
+
+        with open(self.run_.path("events.jsonl")) as f:
+            unres_evs = [json.loads(l) for l in f if json.loads(l).get("kind") == "review_unresolved"]
+        self.assertEqual(len(unres_evs), 1)
+        self.assertEqual(unres_evs[0]["rounds"], 2)
+
+        self.assertTrue(os.path.isdir(self.run_.path("tickets/T-001/attempt-1/code-r2")))
+        self.assertTrue(os.path.isdir(self.run_.path("tickets/T-001/attempt-1/review-security-r2")))
+        self.assertFalse(os.path.exists(self.run_.path("tickets/T-001/attempt-1/code-r3")))
+
+    def test_crash_during_resumed_revision(self):
+        self.run_.update(config=dict(
+            self.run_.cfg,
+            max_attempts_per_ticket=1,
+            review_mode="adversarial",
+            escalate_findings=True,
+            review_lenses=["security"],
+        ))
+        f = finding(severity="blocker", file="a.py", line=1, comment="blocker 1")
+        script = {
+            "code": [resp(CODE, "c1", write={"a.py": "v1"})],
+            "review-security": [resp(rev_changes([f]))],
+            "rebut-r0-1": [resp({
+                "responses": [{"id": "f1", "stance": "escalate", "argument": "need user decision", "evidence": ""}],
+                "summary": "escalating",
+            })],
+            "validate": [resp(val())],
+            "router": [{"exit": 1}],
+        }
+        self.setup_tickets([ticket(1)], script)
+        self.assertEqual(self.go(), "needs_user")
+        st = self.tstate(1)
+        self.assertEqual(st["status"], "blocked")
+
+        scheduler.unblock(self.run_, "T-001", note="keep it")
+
+        with open(self.script, "w") as sf:
+            json.dump({
+                "code-r1": [{"exit": 1}],
+                "router": [{"exit": 1}],
+            }, sf)
+
+        self.assertEqual(self.go(), "needs_user")
+
+        st = self.tstate(1)
+        self.assertIn("review_resume", st)
+        self.assertEqual(st["review_resume"]["note"], "keep it")
+        self.assertEqual(st["start_stage"], "review")
+
+        scheduler.unblock(self.run_, "T-001")
+        self.run_.update(config=dict(self.run_.cfg, max_attempts_per_ticket=2))
+        with open(self.script, "w") as sf:
+            json.dump({
+                "code-r1": [resp(CODE, "c1", write={"a.py": "v2"})],
+                "review-security-r1": [resp(REV_APPROVE)],
+                "validate": [resp(val())],
+                "router": [{"exit": 1}],
+            }, sf)
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["status"], "closed")
 
 
 if __name__ == "__main__":

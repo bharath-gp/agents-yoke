@@ -102,6 +102,8 @@ The runner escalates when a ticket fails `max_attempts_per_ticket` times (defaul
 
 `yoke escalations` lists open escalations, displaying ticket, kind tag (when present), and reason.
 
+When answering a `review_escalate` escalation, `yoke unblock T-001 --note "RULING"` settles the escalated finding(s) under your ruling, keeps the attempt count without appending to `feedback.md`, and resumes the review loop directly at a revision step (`code-r<n+1>`). Using `--skip` or `--reset-attempts` discards the saved review resume point.
+
 ## Resume a run
 
 Everything is on disk, so any session can pick up a run. In a new session, the plugin shows a short status note for active runs. Then run:

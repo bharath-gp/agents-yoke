@@ -122,6 +122,8 @@ When `zoom_out_after_fix` is enabled and at least one revision was made, yoke ru
 
 When `escalate_findings` is enabled, the coder in an adversarial debate can respond to a finding with stance `escalate` when the finding requires user clarification or outside knowledge (such as a product decision or external system behavior). Escalated findings skip the reviewer reply and judge, save a review resume point (`review_resume`), and raise an escalation with kind `review_escalate`, blocking the ticket. When `escalate_findings` is off, an `escalate` stance falls through as a dispute and proceeds to the judge.
 
+Answering a `review_escalate` escalation via `yoke unblock T-001 --note "RULING"` settles the escalated finding(s) with reason `user: <ruling>` and sets `start_stage='review'`. On re-entry, the runner preserves the attempt count and review state, and jumps directly to revision `code-r<n+1>` carrying the ruling alongside any upheld blockers and suggestions. Once the revision succeeds, the resume point is cleared and normal review rounds continue. Passing `--skip` or `--reset-attempts` discards the saved resume point.
+
 ## Plan and ticket review
 
 | Key | Default | Effect |

@@ -56,6 +56,33 @@ def write_feedback(run, tid, attempt, text, append=False):
         f.write(text.rstrip() + "\n\n")
 
 
+def resume_review_escalation(run, tid, note):
+    """Settle escalated findings with the user's ruling note and prepare review resume.
+
+    Appends settled ledger entries for each escalated finding with reason 'user: <note>',
+    sets start_stage='review', and records the note in review_resume so the review loop
+    resumes with one revision without consuming a ticket attempt.
+    """
+    st = ticketstate.load(run, tid)
+    rr = st.get("review_resume") or {}
+    st.setdefault("review", {})
+    settled = st["review"].setdefault("settled", [])
+    for f in rr.get("escalated", []):
+        settled.append({
+            "lens": f.get("lens", "review"),
+            "file": f.get("file", ""),
+            "line": f.get("line", 0),
+            "comment": f.get("comment", ""),
+            "reason": "user: " + note,
+            "attempt": st.get("attempt", 1),
+            "round": rr.get("round", 0),
+        })
+    rr["note"] = note
+    st["review_resume"] = rr
+    st["start_stage"] = "review"
+    ticketstate.save(run, tid, st)
+
+
 def _read_feedback(run, tid, attempt):
     try:
         with open(_feedback_path(run, tid, attempt)) as f:
@@ -1329,6 +1356,51 @@ def _review_loop(run, adapter_for, env, ticket, st, wt, base, results, feedback)
     cfg = run.cfg
     max_rounds = cfg.get("max_review_rounds", 2)
     n = 0
+
+    resume = st.get("review_resume")
+    if resume and resume.get("note"):
+        st["start_stage"] = "review"
+        ticketstate.save(run, tid, st)
+        n = resume.get("round", 0)
+        note = resume["note"]
+        feedback = resume.get("feedback") or feedback
+        upheld = resume.get("upheld") or []
+        escalated = resume.get("escalated") or []
+        suggestions = resume.get("suggestions") or []
+
+        lens_of = {}
+        rev_upheld = []
+        for f in upheld:
+            fc = dict(f)
+            lens_of[id(fc)] = fc.pop("lens", "review")
+            rev_upheld.append(fc)
+        rev_escalated = []
+        for f in escalated:
+            fc = dict(f)
+            lens_of[id(fc)] = fc.pop("lens", "review")
+            rev_escalated.append(fc)
+
+        non_note_parts = []
+        if rev_upheld:
+            non_note_parts.append(_format_findings(rev_upheld, "Required review fixes:"))
+        if suggestions:
+            non_note_parts.append(_format_findings(suggestions, "Optional suggestions:"))
+        if rev_escalated:
+            non_note_parts.append(_format_findings(rev_escalated, "Escalated finding(s):"))
+        ruling_part = "User ruling on escalated finding(s): " + note
+        coder_fb = "\n\n".join(p for p in [feedback] + non_note_parts + [ruling_part] if p)
+
+        n += 1
+        st["review"]["rounds"] = n
+        ticketstate.save(run, tid, st)
+        err = _revise(run, adapter_for, env, ticket, st, wt, base, results, coder_fb, "code-r%d" % n, n, rev_upheld, lens_of)
+        if err:
+            return err
+        st.pop("review_resume", None)
+        st.pop("start_stage", None)
+        ticketstate.save(run, tid, st)
+        feedback = "\n\n".join(p for p in [feedback] + non_note_parts if p)
+
     while True:
         findings, lens_of, err = _run_review_round(
             run, adapter_for, env, ticket, st, wt, base, results, feedback, n
@@ -1524,16 +1596,17 @@ def _attempt_body(run, adapter_for, env, ticket, st, wt, stages, start_idx, resu
     tid, attempt, base = ticket["id"], st["attempt"], st["base_sha"]
     st["gate_hooks"] = {}
     if "review" in stages[start_idx:]:
-        prev = st.get("review") or {}
-        st["review"] = {
-            "rounds": 0,
-            "unresolved": [],
-            "overruled": [],
-            "settled": list(prev.get("settled", [])),
-            "fixed": list(prev.get("fixed", [])),
-            "revisions": [],
-        }
-        ticketstate.save(run, tid, st)
+        if not (st.get("review_resume") or {}).get("note"):
+            prev = st.get("review") or {}
+            st["review"] = {
+                "rounds": 0,
+                "unresolved": [],
+                "overruled": [],
+                "settled": list(prev.get("settled", [])),
+                "fixed": list(prev.get("fixed", [])),
+                "revisions": [],
+            }
+            ticketstate.save(run, tid, st)
     feedback = _read_feedback(run, tid, attempt)
     nudges = consume_nudges(run, tid)
     if nudges:
