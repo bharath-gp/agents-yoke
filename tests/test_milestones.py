@@ -322,7 +322,7 @@ class TestMilestones(unittest.TestCase):
         self.assertTrue(any("exceeds 12" in w or "more than 12" in w for w in warns_many))
 
     def test_warnings_detail_fields(self):
-        base = {"id": "T-001", "milestone": "MS-01", "type": "feature"}
+        base = {"id": "T-001", "milestone": "MS-01", "type": "feature", "files": [{"path": "a.py", "action": "modify"}]}
         warns = tickets.warnings({"tickets": [dict(base, steps=["edit a.py:f"])]})
         self.assertEqual(warns, ["ticket T-001 (feature) has no test_plan; the coder will have to plan it"])
         full = dict(base, steps=["edit a.py:f"], test_plan=["tests/test_a.py::test_f"])

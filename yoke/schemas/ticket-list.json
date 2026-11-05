@@ -100,6 +100,31 @@
               "type": "string"
             }
           },
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "path",
+                "action"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "action": {
+                  "type": "string",
+                  "enum": [
+                    "create",
+                    "modify",
+                    "delete"
+                  ]
+                }
+              }
+            }
+          },
           "plan_excerpt": {
             "type": "string"
           },

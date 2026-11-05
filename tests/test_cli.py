@@ -164,5 +164,48 @@ class TestUnblockCLI(unittest.TestCase):
                 self.assertIn("require ticket", err.getvalue())
 
 
+class TestTicketsImportWarning(unittest.TestCase):
+    def test_tickets_import_prints_missing_reference_warnings(self):
+        import contextlib
+        import io
+        from unittest import mock
+        from yoke import state
+        with tempfile.TemporaryDirectory() as d:
+            repo = os.path.join(d, "repo")
+            os.makedirs(repo)
+            cfg = config.load(repo=repo, home=d)
+            run = state.Run.create(repo, cfg, home=d)
+            ticket_doc = {
+                "tickets": [
+                    {
+                        "id": "T-001",
+                        "title": "t1",
+                        "type": "feature",
+                        "description": "d",
+                        "exit_criteria": ["ok"],
+                        "depends_on": [],
+                        "files_hint": [],
+                        "plan_excerpt": "",
+                        "steps": ["step1"],
+                        "test_plan": ["test1"],
+                        "files": [{"path": "missing_file.py", "action": "modify"}],
+                    }
+                ]
+            }
+            tickets_file = os.path.join(d, "tickets.json")
+            with open(tickets_file, "w") as f:
+                json.dump(ticket_doc, f)
+
+            out = io.StringIO()
+            with mock.patch.dict(os.environ, {"YOKE_HOME": d}), \
+                 contextlib.redirect_stdout(out):
+                rc = cli.main(["tickets", "import", tickets_file, "--run", run.run_id])
+
+            self.assertEqual(rc, 0)
+            stdout = out.getvalue()
+            self.assertIn("warning: ticket T-001 references missing path missing_file.py", stdout)
+            self.assertIn("imported 1 tickets", stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

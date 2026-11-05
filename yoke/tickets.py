@@ -1,9 +1,44 @@
 """tickets import/show: validate a ticket list, classify untyped tickets, write tickets.json (PLAN 2.7, M3)."""
 import json
+import os
+import re
 
 from . import router, schema
 
 DETAILED_TYPES = ("feature", "bugfix", "refactor")  # types expected to carry steps and test_plan
+_BACKTICK_RE = re.compile(r"`([^`\n]+)`")
+
+
+def missing_refs(texts, repo, created=()):
+    """Sorted unique missing paths from an iterable of strings."""
+    # shortcut: heuristic token filter; misses bare names and new top-level dirs
+    if not repo:
+        return []
+    created_set = set(created) if created else set()
+    missing = set()
+    for text in texts:
+        if not isinstance(text, str):
+            continue
+        for match in _BACKTICK_RE.finditer(text):
+            token = match.group(1)
+            if "/" not in token:
+                continue
+            if token.startswith(("/", "~", "$", "-", ".")):
+                continue
+            if any(bad in token for bad in ("://", "*", "{", "<", "(", " ")):
+                continue
+            token = token.split("#")[0].split(":")[0]
+            if "/" not in token:
+                continue
+            first_seg = token.split("/")[0]
+            if not os.path.exists(os.path.join(repo, first_seg)):
+                continue
+            if os.path.exists(os.path.join(repo, token)):
+                continue
+            if token in created_set:
+                continue
+            missing.add(token)
+    return sorted(missing)
 
 
 def find_cycle(tickets):
@@ -145,17 +180,26 @@ def _longest_chain(group):
     return longest
 
 
-def warnings(tickets, milestones=None):
+def warnings(tickets, milestones=None, repo=None):
     """Runner-level warnings (non-fatal); returns warning strings.
 
     Flags tickets with >6 files_hint or >6 exit_criteria, feature/bugfix/refactor tickets
-    without steps or test_plan, milestones with >12 tickets, and milestones with
-    dependency chains of 4 or more tickets or full chains of 3 or more tickets.
+    without steps or test_plan, feature/bugfix/refactor tickets without files, milestones
+    with >12 tickets, milestones with dependency chains of 4 or more tickets or full
+    chains of 3 or more tickets, and missing referenced paths when repo is given.
     """
     if isinstance(tickets, dict):
         doc = tickets
         milestones = milestones if milestones is not None else doc.get("milestones")
         tickets = doc.get("tickets", [])
+
+    created = set()
+    if repo is not None:
+        for t in tickets:
+            if isinstance(t, dict):
+                for f in t.get("files") or []:
+                    if isinstance(f, dict) and f.get("action") == "create" and f.get("path"):
+                        created.add(f["path"])
 
     warns = []
     for t in tickets:
@@ -172,6 +216,28 @@ def warnings(tickets, milestones=None):
             if missing:
                 warns.append("ticket %s (%s) has no %s; the coder will have to plan it" %
                              (t.get("id"), t["type"], " or ".join(missing)))
+            if not t.get("files"):
+                warns.append("ticket %s (%s) has no files; its write boundary will not be checked" %
+                             (t.get("id"), t.get("type")))
+        if repo is not None:
+            ticket_texts = []
+            for field in ("description", "plan_excerpt", "design", "interfaces", "steps",
+                          "test_plan", "impacted_tests", "risks", "exit_criteria"):
+                val = t.get(field)
+                if isinstance(val, str):
+                    ticket_texts.append(val)
+                elif isinstance(val, (list, tuple)):
+                    for item in val:
+                        if isinstance(item, str):
+                            ticket_texts.append(item)
+            refs = set(missing_refs(ticket_texts, repo, created=created))
+            for f in t.get("files") or []:
+                if isinstance(f, dict) and f.get("action") in ("modify", "delete"):
+                    p = f.get("path")
+                    if isinstance(p, str) and p and not os.path.exists(os.path.join(repo, p)) and p not in created:
+                        refs.add(p)
+            for p in sorted(refs):
+                warns.append("ticket %s references missing path %s" % (t.get("id"), p))
 
     if milestones:
         counts = {}

@@ -20,7 +20,7 @@ $prior_results
 Feedback from the previous attempt (empty on the first attempt):
 $feedback
 
-What to check (Tests lens):
+${settled}What to check (Tests lens):
 - Test coverage: all ticket requirements and exit criteria are directly verified by tests
 - Assertion quality: assertions verify exact expected values and behaviors rather than tautologies or trivial checks
 - Edge cases and error paths: boundary conditions, invalid inputs, error handling, and exception branches are tested

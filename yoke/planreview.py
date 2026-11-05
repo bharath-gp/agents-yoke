@@ -140,6 +140,38 @@ def toc_errors(text):
     return errs
 
 
+def reference_warnings(run):
+    """Warnings for backticked paths in plan.md that do not exist in repo."""
+    try:
+        with open(run.path("plan.md"), encoding="utf-8") as f:
+            plan_text = f.read()
+    except (FileNotFoundError, OSError):
+        return []
+
+    try:
+        repo = run.read_json("run.json")["repo"]
+    except (FileNotFoundError, OSError, KeyError, TypeError):
+        return []
+    if not repo:
+        return []
+
+    try:
+        t_doc = run.read_json("tickets.json", {})
+    except (FileNotFoundError, OSError, ValueError):
+        t_doc = {}
+    created = set()
+    if isinstance(t_doc, dict):
+        for t in t_doc.get("tickets") or []:
+            if isinstance(t, dict):
+                for f in t.get("files") or []:
+                    if isinstance(f, dict) and f.get("action") == "create" and f.get("path"):
+                        created.add(f["path"])
+
+    from yoke import tickets as tickets_mod
+    missing = tickets_mod.missing_refs([plan_text], repo, created=created)
+    return ["plan.md references missing path %s" % p for p in missing]
+
+
 def next_round(run):
     d = run.path("plan-review")
     done = [n for n in os.listdir(d) if n.startswith("round-")] if os.path.isdir(d) else []

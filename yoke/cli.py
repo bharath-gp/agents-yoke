@@ -200,6 +200,8 @@ def _front_half(args):
     if args.cmd == "review-plan":
         for e in _plan_toc_errors(run):
             print("warning: plan.md %s (yoke approve plan will refuse)" % e, file=sys.stderr)
+        for w in planreview.reference_warnings(run):
+            print("warning: %s" % w, file=sys.stderr)
         try:
             n, res = planreview.review_round(run)
         except (RuntimeError, planreview.ApprovalError) as e:
@@ -284,7 +286,7 @@ def chart_cmd(run, args, adapter=None):
             print("error: %s" % err, file=sys.stderr)
         return 1
     doc = run.read_json("tickets.json", {})
-    for w in tickets_mod.warnings(doc):
+    for w in tickets_mod.warnings(doc, repo=run.read_json("run.json")["repo"]):
         print("warning: " + w)
     _print_tickets_table(doc)
     return 0
@@ -300,7 +302,7 @@ def tickets_cmd(args, adapter=None):
             print("error: " + e, file=sys.stderr)
         if not errs:
             doc = run.read_json("tickets.json", {})
-            for w in tickets_mod.warnings(doc):
+            for w in tickets_mod.warnings(doc, repo=run.read_json("run.json")["repo"]):
                 print("warning: " + w)
             print("imported %d tickets" % len(ts))
         return 1 if errs else 0

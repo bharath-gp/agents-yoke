@@ -214,7 +214,7 @@ def _loop(run_, adapter_for, env):
                     if parallel > 1 and running_tickets:
                         overlapping = [
                             rt for rt in running_tickets.values()
-                            if milestones.hints_overlap(t.get("files_hint"), rt.get("files_hint"))
+                            if milestones.hints_overlap(milestones.overlap_paths(t), milestones.overlap_paths(rt))
                         ]
                         if overlapping:
                             pair = (t["id"], overlapping[0]["id"])

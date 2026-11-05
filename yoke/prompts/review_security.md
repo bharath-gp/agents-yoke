@@ -20,7 +20,7 @@ $prior_results
 Feedback from the previous attempt (empty on the first attempt):
 $feedback
 
-What to check (Security lens):
+${settled}What to check (Security lens):
 - Command injection, unsafe shell calls, unsanitized subprocess arguments, or unescaped user inputs
 - Path traversal, directory traversal, arbitrary file read/write, symlink attacks, and unsafe temporary file usage
 - Privilege escalation, unauthorized access, secrets or credentials committed to source code or git history

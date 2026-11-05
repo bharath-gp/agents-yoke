@@ -21,7 +21,7 @@ Multi-agent loop for large work items. Claude (primary) gathers requirements, pl
 ## How it works
 
 1. Interactive: requirements, `plan.md`, one read-only secondary plan review, ticket split. You approve the plan and tickets (hash-bound).
-2. Unattended: a detached runner takes each ticket through code, review, QA, validate, docs. Following the `code` stage, a test-fix loop can re-run the test command and resume the coder to fix failures before advancing to review and QA. The validator runs no tests and evaluates diffs alongside verified test evidence from the runner. Failures retry with feedback up to a limit, then escalate to you. Independent tickets run in parallel, one git worktree each (`--parallel N`). When `parallel > 1`, ready tickets whose `files_hint` overlaps (exact file path or directory prefix) any currently running ticket are deferred until that ticket finishes, emitting a `ticket_deferred` audit event (tickets with empty hints never block). Upstream handoff notes (interface changes, new files, gotchas) from closed ancestor tickets are automatically stored at `tickets/<T>/handoff.json` and inlined into dependent `code`, `QA`, and `validate` prompts (`$upstream`). Pending or in-progress tickets can be steered with `yoke nudge T-xxx --note TEXT`, which appends user guidance to the next attempt or review round feedback without touching `tickets.json` or interrupting in-flight calls.
+2. Unattended: a detached runner takes each ticket through code, review, QA, validate, docs. Following the `code` stage, a test-fix loop can re-run the test command and resume the coder to fix failures before advancing to review and QA. The validator runs no tests and evaluates diffs alongside verified test evidence from the runner. Failures retry with feedback up to a limit, then escalate to you. Independent tickets run in parallel, one git worktree each (`--parallel N`). When `parallel > 1`, ready tickets whose file paths (`files_hint`, or `files` paths when `files_hint` is empty) overlap (exact file path or directory prefix) any currently running ticket are deferred until that ticket finishes, emitting a `ticket_deferred` audit event (tickets with empty hints and no files never block). Upstream handoff notes (interface changes, new files, gotchas) from closed ancestor tickets are automatically stored at `tickets/<T>/handoff.json` and inlined into dependent `code`, `QA`, and `validate` prompts (`$upstream`). Pending or in-progress tickets can be steered with `yoke nudge T-xxx --note TEXT`, which appends user guidance to the next attempt or review round feedback without touching `tickets.json` or interrupting in-flight calls.
 3. A ticket is committed to feature branch `yoke/<run_id>` only when QA passes and the validator approves. The runner never pushes; `yoke pr` does, after `approve final`.
 4. State and audit trail (prompts, commands, outputs) live in `~/.yoke/runs/<run_id>/` (`$YOKE_HOME` overrides), outside the target repo. Any session can resume from disk. An atomic usage ledger (`usage.json`) tracks token usage and costs by stage, ticket, agent and model at each ticket close and at run end; status, wait summaries, and the dashboard surface usage totals and top spenders.
 
@@ -94,6 +94,7 @@ Yoke supports adversarial review debates during ticket review and plan review:
 {
   "review_mode": "adversarial",
   "debate_rounds": 1,
+  "goldfish_context": true,
   "timeouts_s": {
     "rebut": 900,
     "reply": 900,
@@ -106,6 +107,7 @@ Yoke supports adversarial review debates during ticket review and plan review:
 
 - **Review mode**: Configured via `review_mode` (`"adversarial"` by default). Set to `"independent"` to run reviews without adversarial debate rounds. Any unknown or missing value defaults to `"adversarial"`.
 - **Debate rounds**: Configured via `debate_rounds` (default: `1`). Controls the number of debate exchanges, clamped to at least `1`.
+- **Goldfish context diet**: Configured via `goldfish_context` (default: `true`). When enabled, `build_spec` filters `$prior_results` for the `review`, `judge`, and `validate` stages by dropping `code` and `qa` stage results while preserving `qa.test_command`. The `rebut` and `reply` stages retain full results. Setting `goldfish_context: false` restores full prior results for byte-identical 0.16.x prompts.
 - **Debate timeouts**: Timeout limits in seconds under `timeouts_s`: `rebut` (900s), `reply` (900s), `judge` (900s), `plan_rebut` (900s), and `plan_judge` (900s).
 - **Debate schemas**: Governed by strict JSON schemas (`yoke/schemas/rebut.json`, `yoke/schemas/reply.json`, `yoke/schemas/judge.json`) validating structured responses (`concede` or `dispute`), replies (`maintain` or `withdraw`), and judge rulings (`upheld` or `overruled`).
 - **Ticket code review debate lifecycle**: When `review_mode` is `"adversarial"`, merged and deduplicated blocking findings (`blocker` and `major`) undergo an adversarial debate flow: lenses attack, the coder rebuts on its resumed session, an optional reviewer reply occurs when `debate_rounds > 1`, and a plan-tier judge rules on disputes:
@@ -113,11 +115,37 @@ Yoke supports adversarial review debates during ticket review and plan review:
   - **Reply (`reply`)**: When `debate_rounds > 1` and disputes remain, the reviewer agent evaluates the debate transcript in read mode (`maintain` or `withdraw`). Withdrawn findings exit as overruled (`"withdrawn by reviewer"`). Missing IDs default to `maintain`.
   - **Judge (`judge`)**: Any disputed findings still open after exchange rounds proceed to a plan-tier judge call in read mode (`judge-r<n>`) to rule on disputes. The judge issues rulings (`upheld` or `overruled` with reason). Missing rulings default to `upheld`. If all findings are conceded or withdrawn earlier, the judge call is skipped.
   - **Rulings and fix rounds**: Only conceded or judge-upheld blocker/major findings remain blocking and drive coder revision rounds (`code-r<n>`). Overruled findings are excluded from coder feedback and appended to `st['review']['overruled']` (`finding` and `reason`).
+  - **Settled-findings ledger**: Overruled and withdrawn findings are persisted across review rounds and attempts in `st['review']['settled']`, and upheld-and-fixed findings in `st['review']['fixed']`. Before deduplication and debate, findings matching a settled entry of the same lens within a +/-3 line window are dropped (avoiding redundant judge calls), while matches against the fixed ledger count as reopened. When dropped or reopened findings occur, a `review_settled` audit event is emitted (`ticket`, `attempt`, `round`, `dropped`, `reopened`), and each lens prompt receives its settled entries via `$settled`.
   - **Artifacts and audit**: For review pass `n`, the debate record is saved to `tickets/<tid>/attempt-<n>/debate-r<n>.json` (`{round, findings, transcript, rulings, upheld, overruled}`), and a `review_debate` audit event is emitted (`ticket`, `attempt`, `round`, `upheld`, `overruled`).
 - **Plan review debate lifecycle**: When `review_mode` is `"adversarial"`, blocking findings (`blocker` and `major`) identified during a plan review round (`review_round` / `yoke review-plan`) trigger an automated planner rebuttal and plan-tier judge pass:
   - **Plan Rebut (`plan_rebut`)**: The planner agent evaluates blocking findings (numbered `p1..pn`) in read mode using the `rebut` schema and `plan_rebut.md` prompt. If the rebuttal call fails or schema validation fails, all blocking findings are treated as upheld (fail safe). Missing IDs default to disputed. Conceded findings exit as upheld.
   - **Plan Judge (`plan_judge`)**: Disputed IDs proceed to the plan review agent acting as judge in read mode using the `judge` schema and `plan_judge.md` prompt. The judge issues rulings (`upheld` or `overruled` with reason). A missing ruling or failed judge call defaults to upheld. If all findings are conceded during rebut, the judge call is skipped.
   - **Artifacts and audit**: For plan review round `n`, debate details are saved to `plan-review/round-<n>/debate.json` (`{upheld, overruled, rebuttals, rulings}`), audit calls are logged to `plan-review/round-<n>/rebut` and `plan-review/round-<n>/judge`, and a `plan_debate` audit event is emitted (`round`, `upheld`, `overruled`). When `debate.json` exists, `yoke review-plan` prints `debate: U upheld, O overruled (see <path>)` after the verdict line. Nested directories preserve the round count in `next_round`.
+
+### Goldfish context and write boundary
+
+Yoke enforces clean review context and target scope boundaries across review and close gates:
+
+```json
+{
+  "goldfish_context": true,
+  "write_boundary": true,
+  "write_boundary_extra": [
+    "tests/**",
+    "docs/**",
+    "README.md"
+  ]
+}
+```
+
+- **Goldfish context diet (`goldfish_context`)**: Enabled by default (`true`). When active, `pipeline.build_spec` filters `$prior_results` for read-only reviewer stages (`review` lenses, `judge`, and `validate`) by dropping the coder and QA self-reports (`code` and `qa` stage results) while preserving `qa.test_command`, runner test evidence (`$test_evidence`), unresolved review findings, and `$upstream`. The author-side stages (`rebut` and `reply`) retain full context. Setting `goldfish_context: false` restores full prior results for byte-identical 0.16.x prompts.
+- **Settled findings ledger and `review_settled` event**: A per-ticket ledger tracks overruled, withdrawn, and fixed findings across review rounds and attempts. When a review lens flags an issue matching a previously settled finding (same lens, same file, and line number within a fixed 3-line window), the duplicate finding is dropped before debate and counted in a `review_settled` audit event (`dropped`). If a previously upheld and fixed finding reappears at the same location, it is reopened and counted under `reopened` in the `review_settled` event. Lens prompts receive `$settled` instructing reviewers not to re-raise settled items.
+- **Write boundary enforcement (`write_boundary`)**: Enabled by default (`true`). When enabled, the close gate verifies that all modified and untracked files in the ticket worktree stay within allowed boundaries.
+- **Ticket `files` field**: Tickets may optionally declare explicit file boundaries via `files: [{"path": "...", "action": "create"|"modify"|"delete"}]`. The field is supported across all ticket schemas (`ticket`, `ticket-list`, `chart`).
+- **Extra write boundaries (`write_boundary_extra`)**: Configurable list of glob patterns permitted across tickets (default: `["tests/**", "docs/**", "README.md"]`), accommodating QA tests and documentation updates.
+- **Close-gate failure feedback**: If a ticket's worktree diff touches files outside its declared `files` and `write_boundary_extra`, the close gate fails and feeds the offending paths back to the coder in retry feedback. Tickets without a `files` field are not restricted by write boundary checks.
+- **Overlap deferral with `files`**: When `parallel > 1`, ready tickets whose `files` paths overlap any currently running ticket are deferred if `files_hint` is empty.
+- **Reference warnings**: `yoke tickets import`, `yoke tickets chart`, and `yoke review-plan` scan backticked repo-relative paths in `plan.md` and ticket fields, issuing reference warnings for any paths that neither exist in the target repository nor are declared with action `create` in a ticket's `files` list. `tickets.warnings` also warns when a feature, bugfix, or refactor ticket lacks a `files` definition.
 
 ### Model selection and tiers
 
@@ -320,6 +348,29 @@ Yoke can run an external shell command whenever a run finishes successfully (`ru
   - `YOKE_MESSAGE`: Human-readable summary: `run <run_id> done` or `run <run_id> needs you: <reason>` (with escalation reason truncated to 200 characters, defaulting to `needs user` if absent).
 - **Execution and error handling**: Executed via `run_hook` with a 10-second timeout in the run directory. Existing `os.environ` is preserved so standard system utilities and `PATH` remain available. If the command exits non-zero, times out, or fails, a `notify_failed` event is logged to `events.jsonl` (with error output truncated to 500 characters). Notification failures never raise exceptions or disrupt the run.
 
+### Write boundary check (`write_boundary`)
+
+The runner enforces write boundaries at the close gate for tickets with declared files:
+
+```json
+{
+  "write_boundary": true,
+  "write_boundary_extra": [
+    "tests/**",
+    "docs/**",
+    "README.md"
+  ]
+}
+```
+
+- **Configuration keys**:
+  - `write_boundary`: Enables or disables worktree write boundary verification at ticket close (default: `true`).
+  - `write_boundary_extra`: List of glob patterns (`fnmatch`) permitted beyond ticket-declared files (default: `["tests/**", "docs/**", "README.md"]`).
+- **Close gate check**: When a ticket defines a non-empty `files` field, `pipeline._close` captures tracked and untracked worktree modifications against `base_sha` (`git add -A` followed by `git diff --cached --name-only --no-renames -z <base_sha>`).
+- **Retry feedback on violations**: Any path outside the ticket's normalized `files` and `write_boundary_extra` globs fails the close gate and emits a `close_gate` audit event (`gate.write_boundary = False`, `outside = [paths]`), returning retry feedback directing the coder to undo the extraneous changes.
+- **Unrestricted tickets**: Tickets without a `files` field bypass the write boundary check and record no `write_boundary` gate key.
+- **Ignored files**: Because `git add -A` honours `.gitignore`, modifications to gitignored paths are not staged and are excluded from write boundary enforcement.
+
 ## Decision models
 
 yoke routes small, high-frequency decisions to a local Ollama decision model (`tev1:4b`, using `POST /v1/systemone` single forward passes) with configured confidence thresholds and deterministic fallbacks.
@@ -427,7 +478,13 @@ Decision thresholds, safety guard, skill discovery, and browser e2e settings can
     "test": 600
   },
   "max_test_fix_rounds": 2,
-  "notify_command": null
+  "notify_command": null,
+  "write_boundary": true,
+  "write_boundary_extra": [
+    "tests/**",
+    "docs/**",
+    "README.md"
+  ]
 }
 ```
 
@@ -437,6 +494,7 @@ Decision thresholds, safety guard, skill discovery, and browser e2e settings can
 - **Test timeout (`timeouts_s.test`)**: Execution timeout in seconds for runner test command re-runs (default: `600`). If a test command hangs or exceeds this limit, its entire process group is terminated cleanly.
 - **Test-fix loop (`max_test_fix_rounds`)**: Maximum number of resume rounds for test fixes immediately after the `code` stage (default: `2`). Setting to `0` disables the test-fix loop.
 - **Run notifications (`notify_command`)**: External command executed upon run completion (`run_done`) or escalation (`run_needs_user`), default: `null`. Payload values are passed strictly through environment variables `YOKE_EVENT`, `YOKE_RUN`, and `YOKE_MESSAGE`. Example: `osascript -e "display notification \"$YOKE_MESSAGE\" with title \"yoke\""`.
+- **Write boundary (`write_boundary`, `write_boundary_extra`)**: Enforces file modification boundaries at ticket close for tickets defining `files`, allowing declared paths plus extra globs (default: `["tests/**", "docs/**", "README.md"]`). Violations fail the close gate with retry feedback.
 - **User config only**: For security reasons, `guard` and `router.thresholds.safety` are strictly enforced from user configuration (`~/.yoke/config.json`). Any definitions in repository configuration (`<repo>/.yoke.json`) are refused with a warning log to prevent untrusted repositories from tampering with safety policies.
 - **Environment override**: The `YOKE_OLLAMA_URL` environment variable overrides `router.ollama_url` across all runs, applied over user config and prior to repo config (used in tests to point to a dead port for offline verification).
 - **Dashboard decisions card**: The web dashboard aggregates decision points by source count (`ollama`, `none`, `default`, `fallback`) and tracks recent flagged guard events (`deny`, `ask`, `escalate`) with reasons and target paths in the Decision models card.
@@ -536,7 +594,7 @@ The skills run these for you; the raw commands below are for scripting and debug
 
 ```bash
 yoke init --requirements req.md   # prints run_id; write plan.md into ~/.yoke/runs/<run_id>/
-yoke review-plan                  # one read-only secondary review round (prints debate summary when debate ran)
+yoke review-plan                  # one read-only secondary review round (warns on missing paths / TOC; prints debate summary)
 yoke approve plan                 # also: tickets (creates GitHub milestones/issues if tracker=github), final
 yoke tickets chart [--feedback "note"] # map approved plan to milestones/tickets via wayfinder
                                   # ticket ids continue after the highest GitHub issue/PR number (T-0057 after #56)
@@ -560,8 +618,8 @@ Subcommands take `--run <id>`; default is the latest run for the current repo. `
 ## Implementation map & milestone gates
 
 - **Wayfinder charting (`yoke tickets chart`)**: Maps the approved `plan.md` into destination, out-of-scope boundaries, milestones with optional integration `exit_check` commands, and tickets. Pass `--feedback "<notes>"` to refine the breakdown.
-- **Design-carrying tickets**: the `plan` skill writes a sectioned plan (context, architecture, decisions, interfaces, per-ticket work items with steps, named tests and impacted existing tests). Wayfinder copies that into optional ticket fields `design`, `interfaces`, `steps`, `test_plan`, `impacted_tests`, `risks`, which coder, QA and validator see in the ticket JSON. Import warns when a feature, bugfix or refactor ticket has no `steps` or `test_plan`, or when an in-milestone `depends_on` chain has 4 or more tickets (or fully chains a milestone of 3 or more tickets).
-- **Contents index**: `plan.md` must start with a `## Contents` list of `[title](#anchor)` links to every `##` section, so agents read the index and jump to the sections they need. `yoke approve plan` refuses a plan whose index is missing, has a dead link, or leaves out a section; `yoke review-plan` warns. Tickets name the sections they rely on in `plan_sections`. Docs and research agents write the same index into long Markdown they produce.
+- **Design-carrying tickets**: the `plan` skill writes a sectioned plan (context, architecture, decisions, interfaces, per-ticket work items with steps, named tests and impacted existing tests). Wayfinder copies that into optional ticket fields `design`, `interfaces`, `steps`, `test_plan`, `impacted_tests`, `risks`, and `files` (`[{path, action}]`), which coder, QA and validator see in the ticket JSON. Import and chart warn when a feature, bugfix or refactor ticket has no `steps` or `test_plan`, or has no `files` (warning that its write boundary will not be checked), when an in-milestone `depends_on` chain has 4 or more tickets (or fully chains a milestone of 3 or more tickets), when ticket text fields reference repo-relative paths absent from the repository (unless declared with action `create`), or when `files` entries specify `modify` or `delete` on nonexistent paths.
+- **Contents index & reference warnings**: `plan.md` must start with a `## Contents` list of `[title](#anchor)` links to every `##` section, so agents read the index and jump to the sections they need. `yoke approve plan` refuses a plan whose index is missing, has a dead link, or leaves out a section; `yoke review-plan` warns about index issues and prints non-fatal warnings for backticked repo-relative paths missing from the target repository (unless declared with action `create` in `tickets.json`). Tickets name the sections they rely on in `plan_sections`. Docs and research agents write the same index into long Markdown they produce.
 - **Implementation map (`yoke map`)**: Renders destination, out-of-scope items, per-milestone gate status, tickets with waiting/blocking reasons, execution frontier, and decisions log (`map.md`).
 - **Start early, merge after gate**: A ticket of a later milestone starts as soon as its dependencies are closed and a parallel slot is free (the earliest milestone gets slots first). It cannot commit or merge until all preceding milestones pass or are waived; until then it waits as `awaiting_gate` with its worktree kept, then rebases onto the post-gate tip and merges.
 - **Exit checks & fix tickets**: When all tickets in a milestone complete, the runner runs its `exit_check` in the integration worktree. If the check fails, Ollama evaluates the failure under decision point `gate_failure`. A confident `escalate` decision marks the milestone as failed and escalates immediately to the user; otherwise (`fix_ticket` or fallback), the runner auto-generates fix tickets (`F-001`, `F-002` up to `max_fix_tickets_per_milestone`, default 2). If fixes are exhausted, the gate escalates.

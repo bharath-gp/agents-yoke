@@ -718,5 +718,63 @@ class TestPlanDebate(Base):
         self.assertNotIn("debate:", out)
 
 
+class TestReferenceCheck(Base):
+    def test_review_plan_prints_missing_path_warning(self):
+        os.makedirs(os.path.join(self.repo, "yoke"), exist_ok=True)
+        self.plan("plan citing `yoke/nope.py`")
+        script = {
+            "plan_review": [
+                {"structured_output": APPROVE, "session_id": "s1"},
+            ],
+        }
+        with open(self.script, "w") as f:
+            json.dump(script, f)
+
+        buf_out = io.StringIO()
+        buf_err = io.StringIO()
+        with mock.patch.dict(os.environ, {"YOKE_HOME": self.tmp, "FAKE_SCRIPT": self.script}), \
+             mock.patch("yoke.planreview.adapters.get", return_value=adapters.FakeAdapter(FAKE_CLI)), \
+             contextlib.redirect_stdout(buf_out), \
+             contextlib.redirect_stderr(buf_err):
+            rc = cli.main(["review-plan", "--run", self.run_.run_id])
+
+        self.assertEqual(rc, 0)
+        self.assertIn("warning: plan.md references missing path yoke/nope.py", buf_err.getvalue())
+
+    def test_review_plan_exit_code_unchanged_without_reference(self):
+        os.makedirs(os.path.join(self.repo, "yoke"), exist_ok=True)
+        self.plan("plain text plan without references")
+        script = {
+            "plan_review": [
+                {"structured_output": APPROVE, "session_id": "s1"},
+            ],
+        }
+        with open(self.script, "w") as f:
+            json.dump(script, f)
+
+        buf_out = io.StringIO()
+        buf_err = io.StringIO()
+        with mock.patch.dict(os.environ, {"YOKE_HOME": self.tmp, "FAKE_SCRIPT": self.script}), \
+             mock.patch("yoke.planreview.adapters.get", return_value=adapters.FakeAdapter(FAKE_CLI)), \
+             contextlib.redirect_stdout(buf_out), \
+             contextlib.redirect_stderr(buf_err):
+            rc = cli.main(["review-plan", "--run", self.run_.run_id])
+
+        self.assertEqual(rc, 0)
+        self.assertNotIn("warning: plan.md references missing path", buf_err.getvalue())
+
+    def test_reference_warnings_suppressed_when_create_declared(self):
+        os.makedirs(os.path.join(self.repo, "yoke"), exist_ok=True)
+        self.plan("plan citing `yoke/nope.py`")
+        self.tickets([{"id": "T-001", "files": [{"path": "yoke/nope.py", "action": "create"}]}])
+        self.assertEqual(planreview.reference_warnings(self.run_), [])
+
+    def test_reference_warnings_empty_when_plan_missing(self):
+        os.makedirs(os.path.join(self.repo, "yoke"), exist_ok=True)
+        if os.path.exists(self.run_.path("plan.md")):
+            os.remove(self.run_.path("plan.md"))
+        self.assertEqual(planreview.reference_warnings(self.run_), [])
+
+
 if __name__ == "__main__":
     unittest.main()

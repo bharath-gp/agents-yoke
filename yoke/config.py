@@ -103,6 +103,7 @@ def load(repo=None, home=None, overrides=None):
 
 AGENTS = ("claude", "agy")
 DEFAULT_REVIEW_LENSES = ["security", "performance", "tests"]
+DEFAULT_WRITE_BOUNDARY_EXTRA = ["tests/**", "docs/**", "README.md"]
 
 
 def review_lenses(cfg=None):
@@ -120,6 +121,30 @@ def review_mode(cfg=None):
     if cfg is None:
         cfg = load()
     return "independent" if cfg.get("review_mode") == "independent" else "adversarial"
+
+
+def goldfish_context(cfg=None):
+    """Return configured goldfish_context, defaulting to True."""
+    if cfg is None:
+        cfg = load()
+    return cfg.get("goldfish_context", True) is not False
+
+
+def write_boundary(cfg=None):
+    """Return whether the write boundary check is enabled, defaulting to True."""
+    if cfg is None:
+        cfg = load()
+    return cfg.get("write_boundary", True) is not False
+
+
+def write_boundary_extra(cfg=None):
+    """Return configured write_boundary_extra list of allowed globs, defaulting to ['tests/**', 'docs/**', 'README.md']."""
+    if cfg is None:
+        cfg = load()
+    val = cfg.get("write_boundary_extra")
+    if isinstance(val, list) and all(isinstance(x, str) for x in val):
+        return list(val)
+    return list(DEFAULT_WRITE_BOUNDARY_EXTRA)
 
 
 def debate_rounds(cfg=None):

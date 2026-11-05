@@ -26,10 +26,10 @@ class TestPackaging(unittest.TestCase):
     def test_manifests(self):
         p = load(".claude-plugin/plugin.json")
         self.assertEqual(p["name"], "yoke")
-        self.assertEqual(p["version"], "0.16.2")
+        self.assertEqual(p["version"], "0.17.0")
         with open(os.path.join(ROOT, "pyproject.toml")) as f:
             pyproject_ver = re.search(r'version\s*=\s*"([^"]+)"', f.read()).group(1)
-        self.assertEqual(pyproject_ver, "0.16.2")
+        self.assertEqual(pyproject_ver, "0.17.0")
         self.assertEqual(p["version"], pyproject_ver)
         m = load(".claude-plugin/marketplace.json")
         self.assertEqual(m["name"], "yoke")
@@ -103,6 +103,21 @@ class TestPackaging(unittest.TestCase):
         for name in ("plan", "tickets", "run", "finish", "status"):
             with open(os.path.join(ROOT, "skills", name, "SKILL.md")) as f:
                 self.assertIn("--run", f.read(), name)
+
+    def test_plan_and_tickets_mention_files_write_boundary(self):
+        with open(os.path.join(ROOT, "skills", "plan", "SKILL.md")) as f:
+            plan_text = f.read()
+        self.assertIn(
+            "files to change, each marked create, modify or delete (tickets copy these into `files`, the write boundary)",
+            plan_text,
+        )
+
+        with open(os.path.join(ROOT, "skills", "tickets", "SKILL.md")) as f:
+            tickets_text = f.read()
+        self.assertIn(
+            "`files` (`[{path, action}]`, the write boundary; required in practice for feature, bugfix and refactor tickets)",
+            tickets_text,
+        )
 
     def test_dashboard_skill(self):
         path = os.path.join(ROOT, "skills", "dashboard", "SKILL.md")
