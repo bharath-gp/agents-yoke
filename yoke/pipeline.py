@@ -811,17 +811,18 @@ def _apply_settled(st, findings, lens_of):
     return kept, dropped, reopened
 
 
-def _debate(run, adapter_for, env, ticket, st, wt, base, results, feedback, blocking, n):
+def _debate(run, adapter_for, env, ticket, st, wt, base, results, feedback, blocking, n, tag=None, allow_escalate=True):
     """Run attack/rebut/(reply)/judge debate on blocking findings.
 
     Returns (upheld, error). Only conceded or judge-upheld findings are returned in upheld.
-    Overruled findings are appended to st['review']['overruled'], debate-r<n>.json is written,
+    Overruled findings are appended to st['review']['overruled'], debate-<tag>.json is written,
     and a review_debate event is emitted.
     """
     tid = ticket["id"] if isinstance(ticket, dict) else ticket
     attempt = st["attempt"]
     cfg = run.cfg
     R = config.debate_rounds(cfg)
+    tag = tag or ("r%d" % n)
 
     items = [dict(f, id="f%d" % (i + 1)) for i, f in enumerate(blocking)]
     findings_json = json.dumps(
@@ -845,14 +846,14 @@ def _debate(run, adapter_for, env, ticket, st, wt, base, results, feedback, bloc
         }
         res = _call(
             run, adapter_for, env, ticket, "rebut", attempt, wt, base, "read",
-            results, feedback, resume=resume, label="rebut-r%d-%d" % (n, k),
+            results, feedback, resume=resume, label="rebut-%s-%d" % (tag, k),
             adapter=adapter_for("code"), extra_vars=rebut_vars,
         )
         if not res.ok:
             if resume:
                 res = _call(
                     run, adapter_for, env, ticket, "rebut", attempt, wt, base, "read",
-                    results, feedback, resume=None, label="rebut-r%d-%d-fresh" % (n, k),
+                    results, feedback, resume=None, label="rebut-%s-%d-fresh" % (tag, k),
                     adapter=adapter_for("code"), extra_vars=rebut_vars,
                 )
             if not res.ok:
@@ -879,7 +880,7 @@ def _debate(run, adapter_for, env, ticket, st, wt, base, results, feedback, bloc
             }
             reply_res = _call(
                 run, adapter_for, env, ticket, "reply", attempt, wt, base, "read",
-                results, feedback, label="reply-r%d-%d" % (n, k),
+                results, feedback, label="reply-%s-%d" % (tag, k),
                 adapter=adapter_for("review"), extra_vars=reply_vars,
             )
             if not reply_res.ok:
@@ -913,7 +914,7 @@ def _debate(run, adapter_for, env, ticket, st, wt, base, results, feedback, bloc
         }
         judge_res = _call(
             run, adapter_for, env, ticket, "judge", attempt, wt, base, "read",
-            results, feedback, label="judge-r%d" % n,
+            results, feedback, label="judge-%s" % tag,
             adapter=adapter_for("review"), extra_vars=judge_vars,
         )
         if not judge_res.ok:
@@ -958,14 +959,14 @@ def _debate(run, adapter_for, env, ticket, st, wt, base, results, feedback, bloc
         "upheld": upheld,
         "overruled": overruled,
     }
-    run.write_json("tickets/%s/attempt-%d/debate-r%d.json" % (tid, attempt, n), debate_data)
+    run.write_json("tickets/%s/attempt-%d/debate-%s.json" % (tid, attempt, tag), debate_data)
 
     st.setdefault("review", {"rounds": 0, "unresolved": [], "overruled": []})
     st["review"].setdefault("overruled", [])
     st["review"]["overruled"].extend(overruled)
     ticketstate.save(run, tid, st)
 
-    run.event("review_debate", ticket=tid, attempt=attempt, round=n, upheld=len(upheld), overruled=len(overruled))
+    run.event("review_debate", ticket=tid, attempt=attempt, round=n, tag=tag, upheld=len(upheld), overruled=len(overruled))
 
     return upheld, None
 
@@ -1011,6 +1012,282 @@ def _revise(run, adapter_for, env, ticket, st, wt, base, results, coder_fb, labe
     return None
 
 
+def _run_review_round(run, adapter_for, env, ticket, st, wt, base, results, feedback, n, suffix=None, base_override=None):
+    """Run one review round across configured lenses (or single review when empty).
+
+    Returns (findings, lens_of, error).
+    Filters findings against settled and fixed ledgers via _apply_settled, deduplicates
+    across lenses, records results['review'], and emits review_settled when findings are settled.
+    """
+    tid = ticket["id"] if isinstance(ticket, dict) else ticket
+    attempt = st["attempt"]
+    cfg = run.cfg
+    lenses = config.review_lenses(cfg)
+    parallel_n = int(cfg.get("parallel", 1))
+
+    if not lenses:
+        label = ("review-%s" % suffix) if suffix else ("review" if n == 0 else ("review-r%d" % n))
+        extra_vars = {"settled": _settled_text(st, "review")}
+        if base_override is not None:
+            extra_vars["base_sha"] = base_override
+        rev_res = _call_retry(run, adapter_for, env, ticket, "review", attempt, wt, base, "read",
+                              results, feedback, label=label, extra_vars=extra_vars)
+        if not rev_res.ok:
+            return [], {}, "review call failed: %s" % rev_res.error
+        out = results["review"] = rev_res.structured_output
+        raw_findings = out.get("findings", []) if isinstance(out, dict) else []
+        lens_of = {id(f): "review" for f in raw_findings}
+        findings, dropped, reopened = _apply_settled(st, raw_findings, lens_of)
+        if dropped:
+            blocking_check = [f for f in findings if f.get("severity") in ("blocker", "major")]
+            results["review"] = dict(results["review"], findings=findings, verdict="changes_requested" if blocking_check else "approve")
+        else:
+            results["review"] = dict(results["review"], findings=findings)
+    else:
+        # Lenses never see each other's output
+        lens_results = {k: v for k, v in results.items() if k != "review" and not k.startswith("review-")}
+
+        def _run_lens(lens):
+            label = ("review-%s-%s" % (lens, suffix)) if suffix else (("review-%s" % lens) if n == 0 else ("review-%s-r%d" % (lens, n)))
+            pname = "review_%s" % lens
+            prompt_name = pname if os.path.isfile(os.path.join(PKG, "prompts", pname + ".md")) else "review"
+            extra_vars = {"settled": _settled_text(st, lens)}
+            if base_override is not None:
+                extra_vars["base_sha"] = base_override
+            res = _call_retry(run, adapter_for, env, ticket, "review", attempt, wt, base, "read",
+                              lens_results, feedback, label=label, prompt_name=prompt_name, extra_vars=extra_vars)
+            return lens, res
+
+        lens_outputs = {}
+        if parallel_n > 1 and len(lenses) > 1:
+            with ThreadPoolExecutor(max_workers=min(len(lenses), parallel_n)) as pool:
+                futs = [pool.submit(_run_lens, lens) for lens in lenses]
+                for fut in futs:
+                    lens, res = fut.result()
+                    lens_outputs[lens] = res
+        else:
+            for lens in lenses:
+                lens, res = _run_lens(lens)
+                lens_outputs[lens] = res
+
+        for lens in lenses:
+            res = lens_outputs[lens]
+            if not res.ok:
+                return [], {}, "review call failed: %s" % res.error
+
+        all_findings = []
+        all_summaries = []
+        lens_of = {}
+        for lens in lenses:
+            out = lens_outputs[lens].structured_output
+            if isinstance(out, dict):
+                raw = out.get("findings", [])
+                if isinstance(raw, list):
+                    for f in raw:
+                        lens_of[id(f)] = lens
+                        all_findings.append(f)
+                s = out.get("summary")
+                if s:
+                    all_summaries.append("%s: %s" % (lens, s))
+
+        kept_findings, dropped, reopened = _apply_settled(st, all_findings, lens_of)
+        findings = _dedupe_findings(kept_findings)
+        blocking_check = [f for f in findings if f.get("severity") in ("blocker", "major")]
+        out = results["review"] = {
+            "verdict": "changes_requested" if blocking_check else "approve",
+            "findings": findings,
+            "summary": "; ".join(all_summaries) if all_summaries else "review complete",
+        }
+
+    if dropped + reopened > 0:
+        run.event("review_settled", ticket=tid, attempt=attempt, round=n, dropped=dropped, reopened=reopened)
+
+    return findings, lens_of, None
+
+
+def _zoom_out(run, adapter_for, env, ticket, st, wt, base, results, feedback, lens_of):
+    """Run post-fix zoom-out review when zoom_out_after_fix is enabled.
+
+    Returns error string if code-z1 fails, else None.
+    Read-only calls inside zoom-out are advisory and emit review_zoom_out with ok=False.
+    """
+    cfg = run.cfg
+    revisions = st.get("review", {}).get("revisions", [])
+    if not config.zoom_out_after_fix(cfg) or not revisions or st.get("review", {}).get("zoom_out_done"):
+        return None
+
+    tid = ticket["id"] if isinstance(ticket, dict) else ticket
+    attempt = st["attempt"]
+    st.setdefault("review", {})
+    st["review"]["zoom_out_done"] = True
+    ticketstate.save(run, tid, st)
+
+    n = st["review"].get("rounds", 0)
+    all_fixed = [entry for rev in revisions for entry in rev.get("fixed", [])]
+    extra_vars = {
+        "zoom_base": revisions[0]["tree_before"],
+        "upheld": json.dumps(all_fixed),
+        "settled": _settled_text(st, "zoom_out"),
+    }
+
+    rev_res = _call_retry(
+        run, adapter_for, env, ticket, "review", attempt, wt, base, "read",
+        results, feedback, label="review-zoom-out", prompt_name="review_zoom_out", extra_vars=extra_vars,
+    )
+    if not rev_res.ok:
+        run.event(
+            "review_zoom_out",
+            ticket=tid,
+            attempt=attempt,
+            ok=False,
+            findings=0,
+            upheld=0,
+            revised=False,
+            unresolved=len(st.get("review", {}).get("unresolved", [])),
+        )
+        return None
+
+    out = rev_res.structured_output if isinstance(rev_res.structured_output, dict) else {}
+    raw_findings = out.get("findings", []) if isinstance(out, dict) else []
+    if not isinstance(raw_findings, list):
+        raw_findings = []
+    zo_lens_of = {id(f): "zoom_out" for f in raw_findings}
+    kept_findings, dropped, reopened = _apply_settled(st, raw_findings, zo_lens_of)
+    blocking = [f for f in kept_findings if f.get("severity") in ("blocker", "major")]
+
+    if blocking and config.review_mode(cfg) == "adversarial":
+        before = len(st["review"].get("overruled", []))
+        upheld, deb_err = _debate(
+            run, adapter_for, env, ticket, st, wt, base, results, feedback, blocking, n, tag="z0", allow_escalate=False
+        )
+        if deb_err:
+            run.event(
+                "review_zoom_out",
+                ticket=tid,
+                attempt=attempt,
+                ok=False,
+                findings=len(raw_findings),
+                upheld=0,
+                revised=False,
+                unresolved=len(st.get("review", {}).get("unresolved", [])),
+            )
+            return None
+        for e in st["review"].get("overruled", [])[before:]:
+            f = e.get("finding") or {}
+            st["review"].setdefault("settled", []).append({
+                "lens": "zoom_out",
+                "file": f.get("file", ""),
+                "line": f.get("line", 0),
+                "comment": f.get("comment", ""),
+                "reason": e.get("reason", ""),
+                "attempt": attempt,
+                "round": n,
+            })
+        ticketstate.save(run, tid, st)
+    else:
+        upheld = blocking
+
+    if not upheld:
+        run.event(
+            "review_zoom_out",
+            ticket=tid,
+            attempt=attempt,
+            ok=True,
+            findings=len(raw_findings),
+            upheld=0,
+            revised=False,
+            unresolved=len(st.get("review", {}).get("unresolved", [])),
+        )
+        return None
+
+    coder_fb = "\n\n".join(p for p in [feedback, _format_findings(upheld, "Required review fixes:")] if p)
+    rev_err = _revise(run, adapter_for, env, ticket, st, wt, base, results, coder_fb, "code-z1", n, upheld, zo_lens_of)
+    if rev_err:
+        run.event(
+            "review_zoom_out",
+            ticket=tid,
+            attempt=attempt,
+            ok=False,
+            findings=len(raw_findings),
+            upheld=len(upheld),
+            revised=False,
+            unresolved=len(st.get("review", {}).get("unresolved", [])),
+        )
+        return rev_err
+
+    z1_tree = st["review"]["revisions"][-1]["tree_before"]
+    z1_findings, z1_lens_of, r_err = _run_review_round(
+        run, adapter_for, env, ticket, st, wt, base, results, feedback, n, suffix="z1", base_override=z1_tree
+    )
+    if r_err:
+        run.event(
+            "review_zoom_out",
+            ticket=tid,
+            attempt=attempt,
+            ok=False,
+            findings=len(raw_findings),
+            upheld=len(upheld),
+            revised=True,
+            unresolved=len(st.get("review", {}).get("unresolved", [])),
+        )
+        return None
+
+    z1_blocking = [f for f in z1_findings if f.get("severity") in ("blocker", "major")]
+    churn = _churn(st, z1_blocking, z1_lens_of)
+    if churn:
+        run.event("review_churn", ticket=tid, attempt=attempt, round=n, churn=churn, unresolved=len(z1_blocking))
+
+    if z1_blocking and config.review_mode(cfg) == "adversarial":
+        before = len(st["review"].get("overruled", []))
+        z1_upheld, deb_err = _debate(
+            run, adapter_for, env, ticket, st, wt, base, results, feedback, z1_blocking, n, tag="z1", allow_escalate=False
+        )
+        if deb_err:
+            run.event(
+                "review_zoom_out",
+                ticket=tid,
+                attempt=attempt,
+                ok=False,
+                findings=len(raw_findings),
+                upheld=len(upheld),
+                revised=True,
+                unresolved=len(st.get("review", {}).get("unresolved", [])),
+            )
+            return None
+        for e in st["review"].get("overruled", [])[before:]:
+            f = e.get("finding") or {}
+            st["review"].setdefault("settled", []).append({
+                "lens": z1_lens_of.get(id(f), "review"),
+                "file": f.get("file", ""),
+                "line": f.get("line", 0),
+                "comment": f.get("comment", ""),
+                "reason": e.get("reason", ""),
+                "attempt": attempt,
+                "round": n,
+            })
+        ticketstate.save(run, tid, st)
+    else:
+        z1_upheld = z1_blocking
+
+    if z1_upheld:
+        st["review"].setdefault("unresolved", []).extend(z1_upheld)
+        ticketstate.save(run, tid, st)
+        run.event("review_unresolved", ticket=tid, attempt=attempt, findings=z1_upheld, rounds=n)
+        tracker.comment(run, tid, "Unresolved review findings:\n" + _format_findings(z1_upheld))
+
+    run.event(
+        "review_zoom_out",
+        ticket=tid,
+        attempt=attempt,
+        ok=True,
+        findings=len(raw_findings),
+        upheld=len(upheld),
+        revised=True,
+        unresolved=len(st.get("review", {}).get("unresolved", [])),
+    )
+    return None
+
+
 def _review_loop(run, adapter_for, env, ticket, st, wt, base, results, feedback):
     """Run iterative review loop with resumed coder revisions up to max_review_rounds.
 
@@ -1033,83 +1310,14 @@ def _review_loop(run, adapter_for, env, ticket, st, wt, base, results, feedback)
     st["review"].setdefault("fixed", [])
     st["review"].setdefault("revisions", [])
     cfg = run.cfg
-    lenses = config.review_lenses(cfg)
     max_rounds = cfg.get("max_review_rounds", 2)
-    parallel_n = int(cfg.get("parallel", 1))
     n = 0
     while True:
-        if not lenses:
-            label = "review" if n == 0 else ("review-r%d" % n)
-            extra_vars = {"settled": _settled_text(st, "review")}
-            rev_res = _call_retry(run, adapter_for, env, ticket, "review", attempt, wt, base, "read",
-                                  results, feedback, label=label, extra_vars=extra_vars)
-            if not rev_res.ok:
-                return "review call failed: %s" % rev_res.error
-            out = results["review"] = rev_res.structured_output
-            raw_findings = out.get("findings", []) if isinstance(out, dict) else []
-            lens_of = {id(f): "review" for f in raw_findings}
-            findings, dropped, reopened = _apply_settled(st, raw_findings, lens_of)
-            if dropped:
-                blocking_check = [f for f in findings if f.get("severity") in ("blocker", "major")]
-                results["review"] = dict(results["review"], findings=findings, verdict="changes_requested" if blocking_check else "approve")
-            else:
-                results["review"] = dict(results["review"], findings=findings)
-        else:
-            # Lenses never see each other's output
-            lens_results = {k: v for k, v in results.items() if k != "review" and not k.startswith("review-")}
-
-            def _run_lens(lens):
-                label = ("review-%s" % lens) if n == 0 else ("review-%s-r%d" % (lens, n))
-                pname = "review_%s" % lens
-                prompt_name = pname if os.path.isfile(os.path.join(PKG, "prompts", pname + ".md")) else "review"
-                extra_vars = {"settled": _settled_text(st, lens)}
-                res = _call_retry(run, adapter_for, env, ticket, "review", attempt, wt, base, "read",
-                                  lens_results, feedback, label=label, prompt_name=prompt_name, extra_vars=extra_vars)
-                return lens, res
-
-            lens_outputs = {}
-            if parallel_n > 1 and len(lenses) > 1:
-                with ThreadPoolExecutor(max_workers=min(len(lenses), parallel_n)) as pool:
-                    futs = [pool.submit(_run_lens, lens) for lens in lenses]
-                    for fut in futs:
-                        lens, res = fut.result()
-                        lens_outputs[lens] = res
-            else:
-                for lens in lenses:
-                    lens, res = _run_lens(lens)
-                    lens_outputs[lens] = res
-
-            for lens in lenses:
-                res = lens_outputs[lens]
-                if not res.ok:
-                    return "review call failed: %s" % res.error
-
-            all_findings = []
-            all_summaries = []
-            lens_of = {}
-            for lens in lenses:
-                out = lens_outputs[lens].structured_output
-                if isinstance(out, dict):
-                    raw = out.get("findings", [])
-                    if isinstance(raw, list):
-                        for f in raw:
-                            lens_of[id(f)] = lens
-                            all_findings.append(f)
-                    s = out.get("summary")
-                    if s:
-                        all_summaries.append("%s: %s" % (lens, s))
-
-            kept_findings, dropped, reopened = _apply_settled(st, all_findings, lens_of)
-            findings = _dedupe_findings(kept_findings)
-            blocking_check = [f for f in findings if f.get("severity") in ("blocker", "major")]
-            out = results["review"] = {
-                "verdict": "changes_requested" if blocking_check else "approve",
-                "findings": findings,
-                "summary": "; ".join(all_summaries) if all_summaries else "review complete",
-            }
-
-        if dropped + reopened > 0:
-            run.event("review_settled", ticket=tid, attempt=attempt, round=n, dropped=dropped, reopened=reopened)
+        findings, lens_of, err = _run_review_round(
+            run, adapter_for, env, ticket, st, wt, base, results, feedback, n
+        )
+        if err:
+            return err
 
         blocking = [f for f in findings if f.get("severity") in ("blocker", "major")]
         churn = _churn(st, blocking, lens_of)
@@ -1119,7 +1327,7 @@ def _review_loop(run, adapter_for, env, ticket, st, wt, base, results, feedback)
             ticketstate.save(run, tid, st)
             run.event("review_churn", ticket=tid, attempt=attempt, round=n, churn=churn, unresolved=len(blocking))
             tracker.comment(run, tid, "Review churn, stopped revising:\n" + _format_findings(blocking))
-            return None
+            return _zoom_out(run, adapter_for, env, ticket, st, wt, base, results, feedback, lens_of)
         if blocking and config.review_mode(cfg) == "adversarial":
             before = len(st["review"]["overruled"])
             upheld, err = _debate(run, adapter_for, env, ticket, st, wt, base, results, feedback, blocking, n)
@@ -1145,14 +1353,14 @@ def _review_loop(run, adapter_for, env, ticket, st, wt, base, results, feedback)
             st["review"]["rounds"] = n
             st["review"]["unresolved"] = []
             ticketstate.save(run, tid, st)
-            return None
+            return _zoom_out(run, adapter_for, env, ticket, st, wt, base, results, feedback, lens_of)
         if n >= max_rounds:
             st["review"]["rounds"] = n
             st["review"]["unresolved"] = blocking
             ticketstate.save(run, tid, st)
             run.event("review_unresolved", ticket=tid, attempt=attempt, findings=blocking, rounds=n)
             tracker.comment(run, tid, "Unresolved review findings:\n" + _format_findings(blocking))
-            return None
+            return _zoom_out(run, adapter_for, env, ticket, st, wt, base, results, feedback, lens_of)
         n += 1
         st["review"]["rounds"] = n
         ticketstate.save(run, tid, st)

@@ -1746,5 +1746,289 @@ class TestChurnStop(PipeBase):
         self.assertEqual(pipeline._churn(st, [match_f], {}), [match_f])
 
 
+class TestZoomOut(PipeBase):
+    def test_off_by_default(self):
+        f = finding(severity="blocker", file="a.py", line=1, comment="blocker 1")
+        self.run_.update(config=dict(self.run_.cfg, review_lenses=["security"]))
+        script = {
+            "code": [resp(CODE, "c1", write={"a.py": "v1"})],
+            "code-r1": [resp(CODE, "c1", write={"a.py": "v2"})],
+            "review-security": [resp(rev_changes([f]))],
+            "review-security-r1": [resp(REV_APPROVE)],
+            "validate": [resp(val())],
+            "router": [{"exit": 1}],
+        }
+        self.setup_tickets([ticket(1)], script)
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+        attempt_dir = self.run_.path("tickets/T-001/attempt-1")
+        self.assertTrue(os.path.isdir(os.path.join(attempt_dir, "code-r1")))
+        self.assertFalse(os.path.exists(os.path.join(attempt_dir, "review-zoom-out")))
+
+    def test_runs_once_after_revision(self):
+        f = finding(severity="blocker", file="a.py", line=1, comment="blocker 1")
+        f_zo = finding(severity="blocker", file="a.py", line=2, comment="zoom-out blocker")
+        self.run_.update(config=dict(self.run_.cfg, zoom_out_after_fix=True, review_lenses=["security"]))
+        script = {
+            "code": [resp(CODE, "c1", write={"a.py": "v1"})],
+            "code-r1": [resp(CODE, "c1", write={"a.py": "v2"})],
+            "code-z1": [resp(CODE, "c1", write={"a.py": "v3"})],
+            "review-security": [resp(rev_changes([f]))],
+            "review-security-r1": [resp(REV_APPROVE)],
+            "review-zoom-out": [resp(rev_changes([f_zo]))],
+            "review-security-z1": [resp(REV_APPROVE)],
+            "validate": [resp(val())],
+            "router": [{"exit": 1}],
+        }
+        self.setup_tickets([ticket(1)], script)
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+        attempt_dir = self.run_.path("tickets/T-001/attempt-1")
+        self.assertTrue(os.path.isdir(os.path.join(attempt_dir, "review-zoom-out")))
+        self.assertTrue(os.path.isdir(os.path.join(attempt_dir, "code-z1")))
+        self.assertTrue(os.path.isdir(os.path.join(attempt_dir, "review-security-z1")))
+        st = self.tstate(1)
+        revs = st["review"]["revisions"]
+        with open(os.path.join(attempt_dir, "review-zoom-out", "prompt.md")) as pf:
+            p_zo = pf.read()
+        self.assertIn(revs[0]["tree_before"], p_zo)
+        self.assertIn("blocker 1", p_zo)
+        with open(os.path.join(attempt_dir, "review-security-z1", "prompt.md")) as pf:
+            p_z1 = pf.read()
+        self.assertIn(revs[1]["tree_before"], p_z1)
+        with open(self.run_.path("events.jsonl")) as ef:
+            zo_events = [json.loads(l) for l in ef if json.loads(l).get("kind") == "review_zoom_out"]
+        self.assertEqual(len(zo_events), 1)
+        self.assertTrue(zo_events[0]["ok"])
+        self.assertTrue(zo_events[0]["revised"])
+        self.assertEqual(zo_events[0]["ticket"], "T-001")
+
+    def test_not_run_without_revision(self):
+        self.run_.update(config=dict(self.run_.cfg, zoom_out_after_fix=True, review_lenses=["security"]))
+        script = {
+            "code": [resp(CODE, "c1", write={"a.py": "v1"})],
+            "review-security": [resp(REV_APPROVE)],
+            "validate": [resp(val())],
+            "router": [{"exit": 1}],
+        }
+        self.setup_tickets([ticket(1)], script)
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+        attempt_dir = self.run_.path("tickets/T-001/attempt-1")
+        self.assertFalse(os.path.exists(os.path.join(attempt_dir, "review-zoom-out")))
+        with open(self.run_.path("events.jsonl")) as ef:
+            zo_events = [json.loads(l) for l in ef if json.loads(l).get("kind") == "review_zoom_out"]
+        self.assertEqual(len(zo_events), 0)
+
+    def test_rereview_blocker_becomes_unresolved(self):
+        f = finding(severity="blocker", file="a.py", line=1, comment="blocker 1")
+        f_zo = finding(severity="blocker", file="a.py", line=2, comment="zoom-out blocker")
+        f_z1 = finding(severity="blocker", file="a.py", line=3, comment="z1 blocker")
+        self.run_.update(config=dict(self.run_.cfg, zoom_out_after_fix=True, review_lenses=["security"]))
+        script = {
+            "code": [resp(CODE, "c1", write={"a.py": "v1"})],
+            "code-r1": [resp(CODE, "c1", write={"a.py": "v2"})],
+            "code-z1": [resp(CODE, "c1", write={"a.py": "v3"})],
+            "review-security": [resp(rev_changes([f]))],
+            "review-security-r1": [resp(REV_APPROVE)],
+            "review-zoom-out": [resp(rev_changes([f_zo]))],
+            "review-security-z1": [resp(rev_changes([f_z1]))],
+            "validate": [resp(val())],
+            "router": [{"exit": 1}],
+        }
+        self.setup_tickets([ticket(1)], script)
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+        attempt_dir = self.run_.path("tickets/T-001/attempt-1")
+        self.assertFalse(os.path.exists(os.path.join(attempt_dir, "code-z2")))
+        st = self.tstate(1)
+        self.assertEqual(len(st["review"]["unresolved"]), 1)
+        self.assertEqual(st["review"]["unresolved"][0]["comment"], "z1 blocker")
+        with open(self.run_.path("events.jsonl")) as ef:
+            zo_events = [json.loads(l) for l in ef if json.loads(l).get("kind") == "review_zoom_out"]
+        self.assertEqual(len(zo_events), 1)
+        self.assertTrue(zo_events[0]["ok"])
+        self.assertTrue(zo_events[0]["revised"])
+        self.assertEqual(zo_events[0]["unresolved"], 1)
+
+    def test_zoom_out_debate_tags(self):
+        f1 = finding(severity="blocker", file="a.py", line=1, comment="round 0 blocker")
+        f_zo = finding(severity="blocker", file="a.py", line=2, comment="zoom-out blocker")
+        self.run_.update(config=dict(self.run_.cfg, zoom_out_after_fix=True, review_mode="adversarial", review_lenses=["security"]))
+        script = {
+            "code": [resp(CODE, "c1", write={"a.py": "v1"})],
+            "code-r1": [resp(CODE, "c1", write={"a.py": "v2"})],
+            "code-z1": [resp(CODE, "c1", write={"a.py": "v3"})],
+            "review-security": [resp(rev_changes([f1]))],
+            "rebut-r0-1": [resp({"responses": [{"id": "f1", "stance": "dispute", "argument": "no", "evidence": "a.py:1"}], "summary": "d"})],
+            "judge-r0": [resp({"rulings": [{"id": "f1", "ruling": "upheld", "reason": "upheld r0"}], "summary": "j0"})],
+            "review-security-r1": [resp(REV_APPROVE)],
+            "review-zoom-out": [resp(rev_changes([f_zo]))],
+            "rebut-z0-1": [resp({"responses": [{"id": "f1", "stance": "dispute", "argument": "no zo", "evidence": "a.py:2"}], "summary": "d_zo"})],
+            "judge-z0": [resp({"rulings": [{"id": "f1", "ruling": "upheld", "reason": "upheld z0"}], "summary": "jz0"})],
+            "review-security-z1": [resp(REV_APPROVE)],
+            "validate": [resp(val())],
+            "router": [{"exit": 1}],
+        }
+        self.setup_tickets([ticket(1)], script)
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+
+        attempt_dir = self.run_.path("tickets/T-001/attempt-1")
+        self.assertTrue(os.path.isfile(os.path.join(attempt_dir, "debate-r0.json")))
+        self.assertTrue(os.path.isfile(os.path.join(attempt_dir, "debate-z0.json")))
+        self.assertTrue(os.path.isdir(os.path.join(attempt_dir, "judge-z0")))
+
+        deb_r0 = self.run_.read_json("tickets/T-001/attempt-1/debate-r0.json")
+        self.assertEqual(deb_r0["round"], 0)
+        self.assertEqual(deb_r0["rulings"][0]["reason"], "upheld r0")
+
+        deb_z0 = self.run_.read_json("tickets/T-001/attempt-1/debate-z0.json")
+        self.assertEqual(deb_z0["round"], 1)
+        self.assertEqual(deb_z0["rulings"][0]["reason"], "upheld z0")
+
+    def test_code_z1_failure_fails_attempt(self):
+        f = finding(severity="blocker", file="a.py", line=1, comment="blocker 1")
+        f_zo = finding(severity="blocker", file="a.py", line=2, comment="zoom-out blocker")
+        self.run_.update(config=dict(self.run_.cfg, zoom_out_after_fix=True, review_lenses=["security"]))
+        script = {
+            "code": [resp(CODE, "c1", write={"a.py": "v1"}), resp(CODE, "c1", write={"a.py": "v1"})],
+            "code-r1": [resp(CODE, "c1", write={"a.py": "v2"})],
+            "code-z1": [{"exit": 1}],
+            "review-security": [resp(rev_changes([f])), resp(REV_APPROVE)],
+            "review-security-r1": [resp(REV_APPROVE)],
+            "review-zoom-out": [resp(rev_changes([f_zo]))],
+            "validate": [resp(val())],
+            "router": [{"exit": 1}],
+        }
+        self.setup_tickets([ticket(1)], script)
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["attempt"], 2)
+        with open(self.run_.path("tickets/T-001/attempt-2/feedback.md")) as f:
+            fb = f.read()
+        self.assertIn("code call failed", fb)
+
+    def test_zoom_out_read_failure_advisory(self):
+        f = finding(severity="blocker", file="a.py", line=1, comment="blocker 1")
+        self.run_.update(config=dict(self.run_.cfg, zoom_out_after_fix=True, review_lenses=["security"]))
+        script = {
+            "code": [resp(CODE, "c1", write={"a.py": "v1"})],
+            "code-r1": [resp(CODE, "c1", write={"a.py": "v2"})],
+            "review-security": [resp(rev_changes([f]))],
+            "review-security-r1": [resp(REV_APPROVE)],
+            "review-zoom-out": [{"exit": 1}],
+            "review-zoom-out-retry": [{"exit": 1}],
+            "validate": [resp(val())],
+            "router": [{"exit": 1}],
+        }
+        self.setup_tickets([ticket(1)], script)
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+        with open(self.run_.path("events.jsonl")) as ef:
+            zo_events = [json.loads(l) for l in ef if json.loads(l).get("kind") == "review_zoom_out"]
+        self.assertEqual(len(zo_events), 1)
+        self.assertFalse(zo_events[0]["ok"])
+        self.assertFalse(zo_events[0]["revised"])
+        self.assertEqual(zo_events[0]["ticket"], "T-001")
+
+    def test_zoom_out_judge_overrules_z0_settled(self):
+        f1 = finding(severity="blocker", file="a.py", line=1, comment="round 0 blocker")
+        f_zo = finding(severity="blocker", file="a.py", line=2, comment="zoom-out blocker")
+        self.run_.update(config=dict(self.run_.cfg, zoom_out_after_fix=True, review_mode="adversarial", review_lenses=["security"]))
+        script = {
+            "code": [resp(CODE, "c1", write={"a.py": "v1"})],
+            "code-r1": [resp(CODE, "c1", write={"a.py": "v2"})],
+            "review-security": [resp(rev_changes([f1]))],
+            "rebut-r0-1": [resp({"responses": [{"id": "f1", "stance": "concede", "argument": "yes", "evidence": "a.py:1"}], "summary": "d"})],
+            "review-security-r1": [resp(REV_APPROVE)],
+            "review-zoom-out": [resp(rev_changes([f_zo]))],
+            "rebut-z0-1": [resp({"responses": [{"id": "f1", "stance": "dispute", "argument": "not a bug", "evidence": "a.py:2"}], "summary": "d_zo"})],
+            "judge-z0": [resp({"rulings": [{"id": "f1", "ruling": "overruled", "reason": "overruled z0"}], "summary": "jz0"})],
+            "validate": [resp(val())],
+            "router": [{"exit": 1}],
+        }
+        self.setup_tickets([ticket(1)], script)
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+
+        attempt_dir = self.run_.path("tickets/T-001/attempt-1")
+        self.assertFalse(os.path.exists(os.path.join(attempt_dir, "code-z1")))
+        st = self.tstate(1)
+        settled = st["review"].get("settled", [])
+        zo_settled = [s for s in settled if s.get("lens") == "zoom_out"]
+        self.assertEqual(len(zo_settled), 1)
+        self.assertEqual(zo_settled[0]["comment"], "zoom-out blocker")
+        self.assertEqual(zo_settled[0]["reason"], "overruled z0")
+
+        with open(self.run_.path("events.jsonl")) as ef:
+            zo_events = [json.loads(l) for l in ef if json.loads(l).get("kind") == "review_zoom_out"]
+        self.assertEqual(len(zo_events), 1)
+        self.assertTrue(zo_events[0]["ok"])
+        self.assertFalse(zo_events[0]["revised"])
+        self.assertEqual(zo_events[0]["upheld"], 0)
+
+    def test_zoom_out_z1_debate_adversarial(self):
+        f1 = finding(severity="blocker", file="a.py", line=1, comment="round 0 blocker")
+        f_zo = finding(severity="blocker", file="a.py", line=2, comment="zoom-out blocker")
+        f_z1 = finding(severity="blocker", file="a.py", line=3, comment="z1 blocker")
+        self.run_.update(config=dict(self.run_.cfg, zoom_out_after_fix=True, review_mode="adversarial", review_lenses=["security"]))
+        script = {
+            "code": [resp(CODE, "c1", write={"a.py": "v1"})],
+            "code-r1": [resp(CODE, "c1", write={"a.py": "v2"})],
+            "code-z1": [resp(CODE, "c1", write={"a.py": "v3"})],
+            "review-security": [resp(rev_changes([f1]))],
+            "rebut-r0-1": [resp({"responses": [{"id": "f1", "stance": "concede", "argument": "yes", "evidence": "a.py:1"}], "summary": "c0"})],
+            "review-security-r1": [resp(REV_APPROVE)],
+            "review-zoom-out": [resp(rev_changes([f_zo]))],
+            "rebut-z0-1": [resp({"responses": [{"id": "f1", "stance": "concede", "argument": "yes zo", "evidence": "a.py:2"}], "summary": "c_zo"})],
+            "review-security-z1": [resp(rev_changes([f_z1]))],
+            "rebut-z1-1": [resp({"responses": [{"id": "f1", "stance": "dispute", "argument": "no z1", "evidence": "a.py:3"}], "summary": "d_z1"})],
+            "judge-z1": [resp({"rulings": [{"id": "f1", "ruling": "upheld", "reason": "upheld z1"}], "summary": "jz1"})],
+            "validate": [resp(val())],
+            "router": [{"exit": 1}],
+        }
+        self.setup_tickets([ticket(1)], script)
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+
+        attempt_dir = self.run_.path("tickets/T-001/attempt-1")
+        self.assertTrue(os.path.isfile(os.path.join(attempt_dir, "debate-z1.json")))
+        self.assertTrue(os.path.isdir(os.path.join(attempt_dir, "judge-z1")))
+
+        deb_z1 = self.run_.read_json("tickets/T-001/attempt-1/debate-z1.json")
+        self.assertEqual(deb_z1["rulings"][0]["reason"], "upheld z1")
+
+        st = self.tstate(1)
+        self.assertEqual(len(st["review"]["unresolved"]), 1)
+        self.assertEqual(st["review"]["unresolved"][0]["comment"], "z1 blocker")
+
+    def test_zoom_out_runs_after_cap_exit(self):
+        f = finding(severity="blocker", file="a.py", line=1, comment="blocker 1")
+        f_zo = finding(severity="blocker", file="a.py", line=2, comment="zoom-out blocker")
+        self.run_.update(config=dict(self.run_.cfg, zoom_out_after_fix=True, review_lenses=["security"], max_review_rounds=1))
+        script = {
+            "code": [resp(CODE, "c1", write={"a.py": "v1"})],
+            "code-r1": [resp(CODE, "c1", write={"a.py": "v2"})],
+            "code-z1": [resp(CODE, "c1", write={"a.py": "v3"})],
+            "review-security": [resp(rev_changes([f]))],
+            "review-security-r1": [resp(rev_changes([f]))],
+            "review-zoom-out": [resp(rev_changes([f_zo]))],
+            "review-security-z1": [resp(REV_APPROVE)],
+            "validate": [resp(val())],
+            "router": [{"exit": 1}],
+        }
+        self.setup_tickets([ticket(1)], script)
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+        attempt_dir = self.run_.path("tickets/T-001/attempt-1")
+        self.assertTrue(os.path.isdir(os.path.join(attempt_dir, "review-zoom-out")))
+        self.assertTrue(os.path.isdir(os.path.join(attempt_dir, "code-z1")))
+        with open(self.run_.path("events.jsonl")) as ef:
+            zo_events = [json.loads(l) for l in ef if json.loads(l).get("kind") == "review_zoom_out"]
+        self.assertEqual(len(zo_events), 1)
+        self.assertTrue(zo_events[0]["ok"])
+        self.assertTrue(zo_events[0]["revised"])
+
+
 if __name__ == "__main__":
     unittest.main()

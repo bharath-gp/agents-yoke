@@ -111,6 +111,32 @@ class TestReviewPrompt(unittest.TestCase):
         for var in substitutions:
             self.assertNotIn("$" + var, rendered)
 
+    def test_review_zoom_out_prompt_renders_with_string_template(self):
+        content = _read("review_zoom_out")
+        self.assertIn("$zoom_base", content)
+        self.assertIn("$upheld", content)
+        for expected in ("no edits", "no running tests", "no commits", "no push", "return only JSON", "concrete", "judge", "rebut", "minor at most"):
+            self.assertIn(expected, content)
+        template = string.Template(content)
+        substitutions = {
+            "ticket": '{"id": "T-0160", "title": "Zoom out test"}',
+            "plan_excerpt": "Relevant plan excerpt text",
+            "base_sha": "8ec46bde240ae91c626190371f5bf3c971955af6",
+            "zoom_base": "1234567890abcdef1234567890abcdef12345678",
+            "upheld": "[]",
+            "settled": "",
+            "worktree": "/tmp/worktree",
+        }
+        try:
+            rendered = template.substitute(substitutions)
+        except (KeyError, ValueError) as exc:
+            self.fail("Template substitution raised %s: %s" % (type(exc).__name__, exc))
+        self.assertIsInstance(rendered, str)
+        for var in substitutions:
+            self.assertNotIn("$" + var, rendered)
+        leftover = re.findall(r"\$[a-zA-Z_][a-zA-Z0-9_]*", rendered)
+        self.assertEqual(leftover, [], "Leftover variables in review_zoom_out: %s" % leftover)
+
     def test_code_review_and_validate_prompts_render_destination_and_out_of_scope(self):
         import re
         substitutions = {
