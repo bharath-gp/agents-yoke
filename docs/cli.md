@@ -48,7 +48,7 @@ Ticket ids continue after the highest GitHub issue or pull request number, so `T
 | `yoke run --detach [--parallel N]` | Start the background runner. It always resumes from disk. `--parallel` is saved for the run. |
 | `yoke run --resume --detach` | Restart a runner that died. |
 | `yoke wait [--timeout S]` | Block until an escalation, run end, runner death or timeout (default 3000 s). Rate-limit pauses do not end the wait. |
-| `yoke escalations` | List open escalations. |
+| `yoke escalations` | List open escalations, showing ticket, optional [kind], and reason. |
 | `yoke unblock T-001 --note TEXT \| --skip \| --reset-attempts` | Answer a ticket escalation. |
 | `yoke unblock --milestone MS-01 [--note TEXT \| --waive REASON]` | Retry or waive a milestone gate. |
 | `yoke nudge T-001 --note TEXT` | Add guidance to a ticket's next attempt or review round. |

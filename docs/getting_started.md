@@ -90,7 +90,7 @@ To stop the runner, run `yoke stop`.
 
 ## Answer an escalation
 
-The runner escalates when a ticket fails `max_attempts_per_ticket` times (default 3), when a milestone gate fails after its fix tickets, when a budget cap is reached, or when the safety guard needs a decision. `yoke wait` returns, and the agent shows you the escalation. Answer it in chat, or run one of these yourself:
+The runner escalates when a ticket fails `max_attempts_per_ticket` times (default 3), when a review finding is escalated (`review_escalate`), when a milestone gate fails after its fix tickets, when a budget cap is reached, or when the safety guard needs a decision. `yoke wait` returns, and the agent shows you the escalation. Answer it in chat, or run one of these yourself:
 
 | Situation | Command |
 |---|---|
@@ -100,7 +100,7 @@ The runner escalates when a ticket fails `max_attempts_per_ticket` times (defaul
 | Retry a milestone gate | `yoke unblock --milestone MS-01 [--note "TEXT"]` |
 | Accept a failing milestone gate | `yoke unblock --milestone MS-01 --waive "REASON"` |
 
-`yoke escalations` lists open escalations.
+`yoke escalations` lists open escalations, displaying ticket, kind tag (when present), and reason.
 
 ## Resume a run
 

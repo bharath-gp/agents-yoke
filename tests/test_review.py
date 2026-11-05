@@ -2030,5 +2030,141 @@ class TestZoomOut(PipeBase):
         self.assertTrue(zo_events[0]["revised"])
 
 
+class TestEscalate(PipeBase):
+    def test_escalate_blocks_with_kind(self):
+        self.run_.update(config=dict(
+            self.run_.cfg,
+            review_mode="adversarial",
+            escalate_findings=True,
+            review_lenses=["security"],
+        ))
+        f = finding(severity="blocker", file="a.py", line=1, comment="blocker 1")
+        script = {
+            "code": [resp(CODE, "c1", write={"a.py": "v1"})],
+            "review-security": [resp(rev_changes([f]))],
+            "rebut-r0-1": [resp({
+                "responses": [{"id": "f1", "stance": "escalate", "argument": "need user decision", "evidence": ""}],
+                "summary": "escalating",
+            })],
+            "validate": [resp(val())],
+            "router": [{"exit": 1}],
+        }
+        self.setup_tickets([ticket(1)], script)
+        self.assertEqual(self.go(), "needs_user")
+        st = self.tstate(1)
+        self.assertEqual(st["status"], "blocked")
+
+        attempt_dir = self.run_.path("tickets/T-001/attempt-1")
+        self.assertFalse(os.path.exists(os.path.join(attempt_dir, "judge-r0")))
+
+        debate_json = self.run_.read_json("tickets/T-001/attempt-1/debate-r0.json")
+        self.assertIn("escalated", debate_json)
+        self.assertEqual(len(debate_json["escalated"]), 1)
+        self.assertEqual(debate_json["escalated"][0]["comment"], "blocker 1")
+
+        with open(os.path.join(attempt_dir, "rebut-r0-1", "prompt.md")) as pf:
+            rebut_prompt = pf.read()
+        self.assertIn(pipeline.ESCALATE_RULE, rebut_prompt)
+
+        escs = self.run_.read_json("escalations.json")
+        self.assertTrue(len(escs) > 0)
+        self.assertEqual(escs[-1].get("kind"), "review_escalate")
+
+        self.assertIn("review_resume", st)
+        self.assertEqual(st["review_resume"]["round"], 0)
+        self.assertEqual(st["start_stage"], "review")
+        self.assertIn("code", st["last_results"])
+        self.assertEqual(len(st["review_resume"]["escalated"]), 1)
+        self.assertEqual(st["review_resume"]["escalated"][0]["lens"], "security")
+        self.assertEqual(st["review_resume"]["escalated"][0]["comment"], "blocker 1")
+
+    def test_escalate_off_is_dispute(self):
+        self.run_.update(config=dict(
+            self.run_.cfg,
+            review_mode="adversarial",
+            escalate_findings=False,
+            review_lenses=["security"],
+        ))
+        f = finding(severity="blocker", file="a.py", line=1, comment="blocker 1")
+        script = {
+            "code": [resp(CODE, "c1", write={"a.py": "v1"})],
+            "review-security": [resp(rev_changes([f]))],
+            "rebut-r0-1": [resp({
+                "responses": [{"id": "f1", "stance": "escalate", "argument": "need user decision", "evidence": ""}],
+                "summary": "escalating",
+            })],
+            "judge-r0": [resp({
+                "rulings": [{"id": "f1", "ruling": "overruled", "reason": "not a bug"}],
+                "summary": "judge ruling",
+            })],
+            "validate": [resp(val())],
+            "router": [{"exit": 1}],
+        }
+        self.setup_tickets([ticket(1)], script)
+        self.assertEqual(self.go(), "done")
+        st = self.tstate(1)
+        self.assertEqual(st["status"], "closed")
+
+        attempt_dir = self.run_.path("tickets/T-001/attempt-1")
+        self.assertTrue(os.path.isdir(os.path.join(attempt_dir, "judge-r0")))
+
+        debate_json = self.run_.read_json("tickets/T-001/attempt-1/debate-r0.json")
+        self.assertNotIn("escalated", debate_json)
+
+        with open(os.path.join(attempt_dir, "rebut-r0-1", "prompt.md")) as pf:
+            rebut_prompt = pf.read()
+        self.assertNotIn(pipeline.ESCALATE_RULE, rebut_prompt)
+
+    def test_escalations_cli_formatting(self):
+        import contextlib
+        import io
+        from yoke import cli
+        st1 = ticketstate.load(self.run_, "T-001")
+        ticketstate.block(self.run_, "T-001", st1, "ordinary failure")
+        st2 = ticketstate.load(self.run_, "T-002")
+        ticketstate.block(self.run_, "T-002", st2, "needs user input", kind="review_escalate")
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.assertEqual(cli.main(["escalations", "--run", self.run_.run_id]), 0)
+        lines = buf.getvalue().strip().splitlines()
+        self.assertEqual(lines, [
+            "#1 T-001: ordinary failure",
+            "#2 T-002 [review_escalate]: needs user input",
+        ])
+
+    def test_debate_allow_escalate_false_ignores_escalate_findings(self):
+        from tests.test_core import FAKE_CLI
+        from yoke import adapters
+        self.run_.update(config=dict(
+            self.run_.cfg,
+            review_mode="adversarial",
+            escalate_findings=True,
+            review_lenses=["security"],
+        ))
+        f = finding(severity="blocker", file="a.py", line=1, comment="blocker 1")
+        self.setup_tickets([ticket(1)], {
+            "rebut-test-1": [resp({
+                "responses": [{"id": "f1", "stance": "escalate", "argument": "need user decision", "evidence": ""}],
+                "summary": "escalating",
+            })],
+            "judge-test": [resp({
+                "rulings": [{"id": "f1", "ruling": "overruled", "reason": "not a bug"}],
+                "summary": "judge ruling",
+            })],
+        })
+        st = ticketstate.load(self.run_, "T-001")
+        adapter_for = lambda role: adapters.FakeAdapter(FAKE_CLI)
+        upheld, err, escalated = pipeline._debate(
+            self.run_, adapter_for, self.env, ticket(1), st, self.repo, "HEAD",
+            {}, "", [f], 0, tag="test", allow_escalate=False
+        )
+        self.assertIsNone(err)
+        self.assertEqual(escalated, [])
+        self.assertEqual(upheld, [])
+        debate_json = self.run_.read_json("tickets/T-001/attempt-1/debate-test.json")
+        self.assertNotIn("escalated", debate_json)
+
+
 if __name__ == "__main__":
     unittest.main()

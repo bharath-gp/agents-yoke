@@ -120,6 +120,8 @@ If a blocking finding re-emerges at a location modified in an earlier revision (
 
 When `zoom_out_after_fix` is enabled and at least one revision was made, yoke runs a read-only zoom-out review across the entire revision diff (against the tree before the first revision). The zoom-out reviewer inspects the accumulated changes for defensive bloat, duplicated guards, scope creep, and architectural drift, ignoring findings already fixed. If blocking findings are upheld in debate (`tag="z0"`), at most one revision (`code-z1`) runs, followed by a re-review round (`suffix="z1"`). Any remaining blocking findings are recorded as unresolved.
 
+When `escalate_findings` is enabled, the coder in an adversarial debate can respond to a finding with stance `escalate` when the finding requires user clarification or outside knowledge (such as a product decision or external system behavior). Escalated findings skip the reviewer reply and judge, save a review resume point (`review_resume`), and raise an escalation with kind `review_escalate`, blocking the ticket. When `escalate_findings` is off, an `escalate` stance falls through as a dispute and proceeds to the judge.
+
 ## Plan and ticket review
 
 | Key | Default | Effect |

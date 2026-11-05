@@ -21,7 +21,12 @@ STAGE_TIER = {"rebut": "cheap", "reply": "cheap", "judge": "plan"}
 
 
 class Escalate(Exception):
-    pass
+    def __init__(self, msg="", kind=None):
+        super().__init__(msg)
+        self.kind = kind
+
+
+ESCALATE_RULE = "Escalate only a finding that no code or plan text in reach can settle and that needs outside knowledge from the user (a product decision, an external system's behaviour). Give the question for the user in `argument`."
 
 
 class AwaitGate(Exception):
@@ -814,7 +819,7 @@ def _apply_settled(st, findings, lens_of):
 def _debate(run, adapter_for, env, ticket, st, wt, base, results, feedback, blocking, n, tag=None, allow_escalate=True):
     """Run attack/rebut/(reply)/judge debate on blocking findings.
 
-    Returns (upheld, error). Only conceded or judge-upheld findings are returned in upheld.
+    Returns (upheld, error, escalated). Only conceded or judge-upheld findings are returned in upheld.
     Overruled findings are appended to st['review']['overruled'], debate-<tag>.json is written,
     and a review_debate event is emitted.
     """
@@ -823,6 +828,7 @@ def _debate(run, adapter_for, env, ticket, st, wt, base, results, feedback, bloc
     cfg = run.cfg
     R = config.debate_rounds(cfg)
     tag = tag or ("r%d" % n)
+    esc_on = allow_escalate and config.escalate_findings(cfg)
 
     items = [dict(f, id="f%d" % (i + 1)) for i, f in enumerate(blocking)]
     findings_json = json.dumps(
@@ -833,6 +839,7 @@ def _debate(run, adapter_for, env, ticket, st, wt, base, results, feedback, bloc
     open_ids = [it["id"] for it in items]
     conceded_ids = []
     withdrawn_ids = []
+    escalated_ids = []
     transcript = []
 
     for k in range(1, R + 1):
@@ -843,6 +850,7 @@ def _debate(run, adapter_for, env, ticket, st, wt, base, results, feedback, bloc
         rebut_vars = {
             "findings": findings_json,
             "transcript": json.dumps(transcript) if transcript else "(none)",
+            "escalate_rule": ESCALATE_RULE if esc_on else "",
         }
         res = _call(
             run, adapter_for, env, ticket, "rebut", attempt, wt, base, "read",
@@ -857,7 +865,7 @@ def _debate(run, adapter_for, env, ticket, st, wt, base, results, feedback, bloc
                     adapter=adapter_for("code"), extra_vars=rebut_vars,
                 )
             if not res.ok:
-                return [], "rebut call failed: %s" % res.error
+                return [], "rebut call failed: %s" % res.error, []
 
         rebut_out = res.structured_output if isinstance(res.structured_output, dict) else {}
         responses = rebut_out.get("responses")
@@ -867,7 +875,10 @@ def _debate(run, adapter_for, env, ticket, st, wt, base, results, feedback, bloc
 
         for fid in list(open_ids):
             r = resp_map.get(fid)
-            if r and r.get("stance") == "concede":
+            if esc_on and r and r.get("stance") == "escalate":
+                escalated_ids.append(fid)
+                open_ids.remove(fid)
+            elif r and r.get("stance") == "concede":
                 conceded_ids.append(fid)
                 open_ids.remove(fid)
 
@@ -884,7 +895,7 @@ def _debate(run, adapter_for, env, ticket, st, wt, base, results, feedback, bloc
                 adapter=adapter_for("review"), extra_vars=reply_vars,
             )
             if not reply_res.ok:
-                return [], "reply call failed: %s" % reply_res.error
+                return [], "reply call failed: %s" % reply_res.error, []
 
             reply_out = reply_res.structured_output if isinstance(reply_res.structured_output, dict) else {}
             exchange["reply"] = reply_out
@@ -918,7 +929,7 @@ def _debate(run, adapter_for, env, ticket, st, wt, base, results, feedback, bloc
             adapter=adapter_for("review"), extra_vars=judge_vars,
         )
         if not judge_res.ok:
-            return [], "judge call failed: %s" % judge_res.error
+            return [], "judge call failed: %s" % judge_res.error, []
 
         judge_out = judge_res.structured_output if isinstance(judge_res.structured_output, dict) else {}
         rulings_data = judge_out.get("rulings")
@@ -938,13 +949,17 @@ def _debate(run, adapter_for, env, ticket, st, wt, base, results, feedback, bloc
     upheld_id_set = set(conceded_ids) | set(judge_upheld_ids)
     withdrawn_id_set = set(withdrawn_ids)
     judge_overruled_id_set = set(judge_overruled_ids)
+    escalated_id_set = set(escalated_ids)
 
     upheld = []
     overruled = []
+    escalated = []
 
     for i, f in enumerate(blocking):
         fid = "f%d" % (i + 1)
-        if fid in upheld_id_set:
+        if fid in escalated_id_set:
+            escalated.append(f)
+        elif fid in upheld_id_set:
             upheld.append(f)
         elif fid in withdrawn_id_set:
             overruled.append({"finding": f, "reason": "withdrawn by reviewer"})
@@ -959,6 +974,8 @@ def _debate(run, adapter_for, env, ticket, st, wt, base, results, feedback, bloc
         "upheld": upheld,
         "overruled": overruled,
     }
+    if escalated:
+        debate_data["escalated"] = escalated
     run.write_json("tickets/%s/attempt-%d/debate-%s.json" % (tid, attempt, tag), debate_data)
 
     st.setdefault("review", {"rounds": 0, "unresolved": [], "overruled": []})
@@ -968,7 +985,7 @@ def _debate(run, adapter_for, env, ticket, st, wt, base, results, feedback, bloc
 
     run.event("review_debate", ticket=tid, attempt=attempt, round=n, tag=tag, upheld=len(upheld), overruled=len(overruled))
 
-    return upheld, None
+    return upheld, None, escalated
 
 
 def _revise(run, adapter_for, env, ticket, st, wt, base, results, coder_fb, label, round_, fixed, lens_of):
@@ -1157,7 +1174,7 @@ def _zoom_out(run, adapter_for, env, ticket, st, wt, base, results, feedback, le
 
     if blocking and config.review_mode(cfg) == "adversarial":
         before = len(st["review"].get("overruled", []))
-        upheld, deb_err = _debate(
+        upheld, deb_err, _ = _debate(
             run, adapter_for, env, ticket, st, wt, base, results, feedback, blocking, n, tag="z0", allow_escalate=False
         )
         if deb_err:
@@ -1239,7 +1256,7 @@ def _zoom_out(run, adapter_for, env, ticket, st, wt, base, results, feedback, le
 
     if z1_blocking and config.review_mode(cfg) == "adversarial":
         before = len(st["review"].get("overruled", []))
-        z1_upheld, deb_err = _debate(
+        z1_upheld, deb_err, _ = _debate(
             run, adapter_for, env, ticket, st, wt, base, results, feedback, z1_blocking, n, tag="z1", allow_escalate=False
         )
         if deb_err:
@@ -1330,7 +1347,7 @@ def _review_loop(run, adapter_for, env, ticket, st, wt, base, results, feedback)
             return _zoom_out(run, adapter_for, env, ticket, st, wt, base, results, feedback, lens_of)
         if blocking and config.review_mode(cfg) == "adversarial":
             before = len(st["review"]["overruled"])
-            upheld, err = _debate(run, adapter_for, env, ticket, st, wt, base, results, feedback, blocking, n)
+            upheld, err, escalated = _debate(run, adapter_for, env, ticket, st, wt, base, results, feedback, blocking, n)
             if err:
                 return err
             for e in st["review"]["overruled"][before:]:
@@ -1345,6 +1362,26 @@ def _review_loop(run, adapter_for, env, ticket, st, wt, base, results, feedback)
                     "round": n,
                 })
             ticketstate.save(run, tid, st)
+            if escalated:
+                tagged_upheld = [dict(f, lens=lens_of.get(id(f), "review")) for f in upheld]
+                tagged_escalated = [dict(f, lens=lens_of.get(id(f), "review")) for f in escalated]
+                suggestions = [f for f in findings if f.get("severity") in ("minor", "nit")]
+                st["last_results"] = dict(results)
+                st["start_stage"] = "review"
+                st["review_resume"] = {
+                    "round": n,
+                    "upheld": tagged_upheld,
+                    "escalated": tagged_escalated,
+                    "suggestions": suggestions,
+                    "feedback": feedback,
+                    "note": None,
+                }
+                ticketstate.save(run, tid, st)
+                run.event("review_escalate", ticket=tid, attempt=attempt, round=n, escalated=len(escalated))
+                raise Escalate(
+                    "review escalated %d finding(s) for the user:\n" % len(escalated) + _format_findings(escalated),
+                    kind="review_escalate",
+                )
             overruled = [f for f in blocking if not any(f is u for u in upheld)]
             findings = [f for f in findings if not any(f is o for o in overruled)]
             results["review"] = dict(results["review"], findings=findings, verdict="changes_requested" if upheld else "approve")
@@ -1900,5 +1937,5 @@ def run_ticket(run, ticket, adapter_for=None, env=None, merge_lock=None):
         ticketstate.await_gate(run, tid, st, str(e))
         return "awaiting_gate"
     except Escalate as e:
-        ticketstate.block(run, tid, st, str(e))
+        ticketstate.block(run, tid, st, str(e), kind=getattr(e, "kind", None))
         return "blocked"

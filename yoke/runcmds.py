@@ -493,7 +493,8 @@ def dispatch(args):
         print(json.dumps(run.status(), indent=2) if args.json else brief(run) if args.brief else run.render_status())
     elif args.cmd == "escalations":
         for e in ticketstate.escalations(run):
-            print("#%d %s: %s" % (e["id"], e["ticket"] or "-", e["reason"]))
+            k = " [%s]" % e["kind"] if e.get("kind") else ""
+            print("#%d %s%s: %s" % (e["id"], e["ticket"] or "-", k, e["reason"]))
     elif args.cmd == "unblock":
         if not args.ticket and not args.milestone:
             print("yoke: give ticket or --milestone", file=sys.stderr)

@@ -668,12 +668,15 @@ class TestAdversarialPrompts(unittest.TestCase):
             worktree="/w",
             feedback="",
             prior_results="{}",
+            escalate_rule="",
         )
         self.assertIn("$findings", _read("rebut"))
         self.assertIn("$transcript", _read("rebut"))
         self.assertIn("$base_sha", _read("rebut"))
         self.assertIn("$worktree", _read("rebut"))
         self.assertIn("$ticket", _read("rebut"))
+        self.assertIn("$escalate_rule", _read("rebut"))
+        self.assertIn("reviewer could read", _read("rebut"))
 
         self.assertIn("$findings", _read("reply"))
         self.assertIn("$transcript", _read("reply"))
