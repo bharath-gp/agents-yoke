@@ -111,6 +111,8 @@ The `review` stage reviews each ticket's diff, then sends blocking findings back
 | `review_mode` | `"adversarial"` | Blocker and major findings go to debate: the coder rebuts, and a plan-tier judge rules on disputes. Only upheld findings go back to the coder. `"independent"` skips the debate. |
 | `debate_rounds` | `1` | Above 1, the reviewer can reply to the rebuttal before the judge rules. |
 | `goldfish_context` | `true` | Reviewers, the judge and the validator do not see the coder's and QA's own reports. They see the diff, the runner's test evidence and the ticket. |
+| `zoom_out_after_fix` | `false` | Opt-in flag to run a zoom-out review after code fixes. |
+| `escalate_findings` | `false` | Opt-in flag enabling review rebuttals to escalate findings. |
 
 Findings the judge overruled, or that were fixed, are remembered for the ticket. A lens that raises the same finding again is ignored. Findings still open at the round cap do not fail the ticket. They are recorded and listed in the pull request under "Unresolved review findings".
 

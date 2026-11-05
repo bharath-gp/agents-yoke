@@ -47,10 +47,10 @@ def await_gate(run, tid, st, gates):
     run.event("ticket_awaiting_gate", ticket=tid, gates=gates)
 
 
-def block(run, tid, st, reason):
+def block(run, tid, st, reason, kind=None):
     """Blocked is status, escalation and events together."""
     _set(run, tid, st, "blocked")
-    escalate(run, tid, reason)
+    escalate(run, tid, reason, kind=kind)
 
 
 def unblock(run, tid, skip=False, reset_attempts=False):
@@ -68,14 +68,25 @@ def escalations(run):
     return run.read_json("escalations.json", [])
 
 
-def escalate(run, tid, reason):
+def open_kinds(run, tid):
+    """Set of kind values among open escalations for ticket tid."""
+    return {e["kind"] for e in escalations(run) if e.get("ticket") == tid and e.get("kind")}
+
+
+def escalate(run, tid, reason, kind=None):
     """Open an escalation; tid is a ticket id, a milestone id, or None for run-level."""
     from . import tracker  # lazy: tracker -> prbody imports this module
     with state._LOCK:
         esc = escalations(run)
-        esc.append({"id": len(esc) + 1, "ticket": tid, "reason": reason, "at": state.now()})
+        rec = {"id": len(esc) + 1, "ticket": tid, "reason": reason, "at": state.now()}
+        if kind:
+            rec["kind"] = kind
+        esc.append(rec)
         run.write_json("escalations.json", esc)
-    run.event("escalation", ticket=tid, reason=reason)
+    if kind:
+        run.event("escalation", ticket=tid, reason=reason, esc_kind=kind)
+    else:
+        run.event("escalation", ticket=tid, reason=reason)
     if tid:
         tracker.comment(run, tid, "yoke escalation: " + reason)
 

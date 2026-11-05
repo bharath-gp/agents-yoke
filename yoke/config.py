@@ -156,6 +156,20 @@ def goldfish_context(cfg=None):
     return cfg.get("goldfish_context", True) is not False
 
 
+def zoom_out_after_fix(cfg=None):
+    """Return configured zoom_out_after_fix, defaulting to False."""
+    if cfg is None:
+        cfg = load()
+    return cfg.get("zoom_out_after_fix", False) is True
+
+
+def escalate_findings(cfg=None):
+    """Return configured escalate_findings, defaulting to False."""
+    if cfg is None:
+        cfg = load()
+    return cfg.get("escalate_findings", False) is True
+
+
 def write_boundary(cfg=None):
     """Return whether the write boundary check is enabled, defaulting to True."""
     if cfg is None:

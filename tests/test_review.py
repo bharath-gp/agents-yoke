@@ -5,7 +5,8 @@ from unittest import mock
 
 from tests.test_gitops import git
 from tests.test_pipeline import CODE, DOCS, PipeBase, qa, resp, ticket, val
-from yoke import pipeline, prbody, tracker
+from tests.test_planreview import Base
+from yoke import config, pipeline, prbody, schema, ticketstate, tracker
 
 os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
 
@@ -1511,6 +1512,64 @@ class TestSettledLedger(PipeBase):
         self.assertIn('"verdict": "changes_requested"', val_prompt)
         self.assertIn("issue B remains", val_prompt)
         self.assertNotIn("issue A reraised", val_prompt)
+
+
+class TestM41Basics(Base):
+    def test_config_defaults_off(self):
+        self.assertFalse(config.zoom_out_after_fix({}))
+        self.assertFalse(config.escalate_findings({}))
+        self.assertTrue(config.zoom_out_after_fix({"zoom_out_after_fix": True}))
+        self.assertTrue(config.escalate_findings({"escalate_findings": True}))
+        self.assertFalse(config.zoom_out_after_fix({"zoom_out_after_fix": "yes"}))
+        self.assertFalse(config.escalate_findings({"escalate_findings": "yes"}))
+        self.assertFalse(config.zoom_out_after_fix({"zoom_out_after_fix": 1}))
+        self.assertFalse(config.escalate_findings({"escalate_findings": 1}))
+
+    def test_escalation_kind_optional(self):
+        st1 = ticketstate.load(self.run_, "T-001")
+        ticketstate.block(self.run_, "T-001", st1, "no kind")
+        escs = ticketstate.escalations(self.run_)
+        self.assertEqual(len(escs), 1)
+        self.assertEqual(set(escs[0].keys()), {"id", "ticket", "reason", "at"})
+
+        st2 = ticketstate.load(self.run_, "T-002")
+        ticketstate.block(self.run_, "T-002", st2, "with kind", kind="review_escalate")
+        escs = ticketstate.escalations(self.run_)
+        self.assertEqual(len(escs), 2)
+        self.assertIn("kind", escs[1])
+        self.assertEqual(escs[1]["kind"], "review_escalate")
+        self.assertEqual(set(escs[1].keys()), {"id", "ticket", "reason", "at", "kind"})
+        self.assertEqual(ticketstate.open_kinds(self.run_, "T-002"), {"review_escalate"})
+        self.assertEqual(ticketstate.open_kinds(self.run_, "T-001"), set())
+
+        ticketstate.escalate(self.run_, "T-002", "second kind", kind="another_kind")
+        ticketstate.escalate(self.run_, None, "run-level kind", kind="budget_kind")
+        self.assertEqual(ticketstate.open_kinds(self.run_, "T-002"), {"review_escalate", "another_kind"})
+        self.assertEqual(ticketstate.open_kinds(self.run_, None), {"budget_kind"})
+
+        with open(self.run_.path("events.jsonl")) as f:
+            evs = [json.loads(line) for line in f if line.strip()]
+        esc_evs = [e for e in evs if e.get("kind") == "escalation"]
+        self.assertNotIn("esc_kind", esc_evs[0])
+        self.assertEqual(esc_evs[1].get("esc_kind"), "review_escalate")
+        self.assertEqual(esc_evs[2].get("esc_kind"), "another_kind")
+        self.assertEqual(esc_evs[3].get("esc_kind"), "budget_kind")
+
+    def test_rebut_schema_accepts_escalate(self):
+        s = schema.load_schema("rebut")
+        self.assertIn("escalate", s["properties"]["responses"]["items"]["properties"]["stance"]["enum"])
+        valid = {
+            "responses": [
+                {
+                    "id": "item-1",
+                    "stance": "escalate",
+                    "argument": "Escalating finding.",
+                    "evidence": "Disputed and irreconcilable.",
+                }
+            ],
+            "summary": "Escalating finding.",
+        }
+        self.assertEqual(schema.validate(valid, s), [])
 
 
 if __name__ == "__main__":
