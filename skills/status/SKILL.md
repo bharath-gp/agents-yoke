@@ -8,7 +8,7 @@ description: Show the state of the current yoke run in a few lines. Use when the
 Gate: run `yoke setup --check` first. If it fails or `yoke` is not found, stop and tell the user to run `/yoke:setup`.
 If the user gives a run id, pass `--run <id>` to every `yoke` command.
 
-Run `yoke status` (add `--json` for scripts) and `yoke escalations`. Report run state, closed/total tickets, agent calls used and any open escalation in a few lines. Read nothing else unless the user asks.
+Run `yoke status` (add `--json` for scripts) and `yoke escalations`. Report run state, closed/total tickets, agent calls used and any open escalation in a few lines. Churn stops and zoom-out results show as `review_churn` / `review_zoom_out` events and unresolved findings. Read nothing else unless the user asks.
 
 If the run is in the `waiting_limit` state, it is paused waiting for a provider rate limit or quota reset; report the `resume_at` time and target ticket from `waiting_limit`.
 

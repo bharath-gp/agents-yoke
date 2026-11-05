@@ -868,7 +868,7 @@ Files: `yoke/planreview.py`, `yoke/readiness.py`, `yoke/cli.py`, `yoke/config.py
 - Notes: Deviations: readiness in its own module (Decision 8), `skills/go` added, readiness on plan tier (Decision 9), gate also refuses without a review at the current hash (Decision 12), `review-tickets` is a no-op when `ticket_review` is off (Decision 13), debate reused via synthetic result (Decision 1).
 
 <a id="m41"></a>
-### M41: Review loop convergence, churn, and escalation (0.19.0) `[ ]`
+### M41: Review loop convergence, churn, and escalation (0.19.0) `[x]`
 Files: `yoke/pipeline.py`, `yoke/planreview.py`, `yoke/ticketstate.py`, `yoke/config.py`, `yoke/defaults.json`, `yoke/prompts/{rebut,plan_rebut,plan_lens,review_zoom_out}.md`, `yoke/schemas/rebut.json`, `skills/{plan,run,status}/SKILL.md`, `.yoke.json`, `tests/test_{pipeline,review,planreview}.py`, `README.md`, `docs/PLAN.md`.
 - Why: review loops can ping-pong between reviewer and coder, grow defensive code to satisfy reviewers, and let the author out-argue a reviewer on points only a human can settle. EGM's loop rules (`skills/egm-review-loop/SKILL.md` step 2.4) and resolution engine (`skills/egm-resolve/SKILL.md`) target each of these.
 - (G7) Churn stop, on by default (no agent calls). A blocking finding in round n is churn when its file:line falls inside a hunk that an earlier `code-r<k>` revision in the same attempt changed while fixing a finding upheld in round k, and it sits at that upheld finding's location (same file, lines within 3, the M39 settled-ledger tolerance). Any churn finding stops the loop. On churn the review loop stops revising, records the remaining blockers as unresolved (as at the revision cap, M11), and emits a `review_churn` audit event.
@@ -876,7 +876,7 @@ Files: `yoke/pipeline.py`, `yoke/planreview.py`, `yoke/ticketstate.py`, `yoke/co
 - (G8) Escalate as a resolution outcome, config `escalate_findings` (default `false`). Source: EGM `skills/egm-resolve/SKILL.md` (`ESCALATE`, and "a contest must cite evidence the reviewer could read"). The `rebut` schema gains a ruling `escalate` for a finding only outside knowledge can refute. An escalated ticket finding skips the judge; `ticketstate` blocks the ticket with an escalation of kind `review_escalate`. `yoke unblock T-xxx --note TEXT` resumes the ticket at the same review round without using an attempt: the escalated finding is added to the settled ledger with the note as its reason, the note goes to the resumed coder session as feedback for one `code-r<n>` revision, and the review loop continues. An escalated plan finding is listed by `yoke review-plan` for the primary to put to the user. The `rebut` and `plan_rebut` prompts require a rebuttal to cite code or plan text the reviewer could read, and findings from the `comprehension` lens cannot be rebutted.
 - Dogfood: this repo's `.yoke.json` sets `zoom_out_after_fix: true` and `escalate_findings: true`.
 - Exit criteria: a reviewer/coder ping-pong fixture stops at churn with a `review_churn` event; post-fix zoom-out runs once only after a revision and stays off by default; an `escalate` rebuttal blocks the ticket through `ticketstate` and `unblock --note` resumes it; a comprehension finding is never sent to rebut; all unit tests pass.
-- Notes:
+- Notes: Deviations: tree-sha diff base instead of `..HEAD`; churn check before debate; zoom-out failure advisory; plan diff gated by `zoom_out_after_fix`; escalation `kind` optional.
 
 <a id="m42"></a>
 ### M42: Review sampling, plan drift, and requirements shootdown (0.20.0) `[ ]`
