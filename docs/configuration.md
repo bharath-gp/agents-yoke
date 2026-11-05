@@ -116,6 +116,8 @@ The `review` stage reviews each ticket's diff, then sends blocking findings back
 
 Findings the judge overruled, or that were fixed, are remembered for the ticket. A lens that raises the same finding again is ignored. Findings still open at the round cap do not fail the ticket. They are recorded and listed in the pull request under "Unresolved review findings".
 
+If a blocking finding re-emerges at a location modified in an earlier revision (within 3 lines of an earlier fix and falling inside that revision's changed hunks), yoke detects review churn. The review loop stops revising early, records remaining blocking findings as unresolved, posts a comment on the tracker, and emits a `review_churn` event.
+
 ## Plan and ticket review
 
 | Key | Default | Effect |

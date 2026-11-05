@@ -708,6 +708,71 @@ def _ledger_match(finding, lens, entries):
     return None
 
 
+def _churn(st, blocking, lens_of):
+    """Return findings from blocking that are churn.
+
+    A finding f is churn when, for some revision r and some u in r.fixed,
+    f.file == u.file, abs(int(f.line) - int(u.line)) <= SETTLED_LINE_WINDOW
+    and f.line falls inside one of r.hunks[f.file].
+    """
+    if not isinstance(st, dict) or not blocking:
+        return []
+    revisions = (st.get("review") or {}).get("revisions", [])
+    if not revisions:
+        return []
+
+    churned = []
+    for f in blocking:
+        if not isinstance(f, dict):
+            continue
+        f_file = f.get("file")
+        if not f_file:
+            continue
+        f_line = f.get("line")
+        if f_line is None:
+            continue
+        try:
+            f_line_int = int(f_line)
+        except (ValueError, TypeError, OverflowError):
+            continue
+
+        is_churn = False
+        for r in revisions:
+            if not isinstance(r, dict):
+                continue
+            hunks = r.get("hunks") or {}
+            file_hunks = hunks.get(f_file) or []
+            inside_hunk = any(
+                isinstance(h, (list, tuple)) and len(h) >= 2 and h[0] <= f_line_int <= h[1]
+                for h in file_hunks
+            )
+            if not inside_hunk:
+                continue
+
+            for u in r.get("fixed", []):
+                if not isinstance(u, dict):
+                    continue
+                if u.get("file") != f_file:
+                    continue
+                u_line = u.get("line")
+                if u_line is None:
+                    continue
+                try:
+                    u_line_int = int(u_line)
+                except (ValueError, TypeError, OverflowError):
+                    continue
+                if abs(f_line_int - u_line_int) <= SETTLED_LINE_WINDOW:
+                    is_churn = True
+                    break
+            if is_churn:
+                break
+
+        if is_churn:
+            churned.append(f)
+
+    return churned
+
+
 def _settled_text(st, lens):
     """'' when no entries for lens, else 'Settled findings (already ruled on; do not raise them again):\n' + '\n'.join('- <file>:<line>: <comment> (settled: <reason>)') + '\n\n'"""
     if not isinstance(st, dict):
@@ -905,6 +970,47 @@ def _debate(run, adapter_for, env, ticket, st, wt, base, results, feedback, bloc
     return upheld, None
 
 
+def _revise(run, adapter_for, env, ticket, st, wt, base, results, coder_fb, label, round_, fixed, lens_of):
+    """Execute coder revision call, bracketed by write-tree snapshots, and record revision record."""
+    tid = ticket["id"] if isinstance(ticket, dict) else ticket
+    attempt = st["attempt"]
+    since = gitops.head_sha(wt)
+    tree_before = gitops.write_tree(wt)
+    coder_res = _call(run, adapter_for, env, ticket, "code", attempt, wt, base, "write",
+                      results, coder_fb, resume=st["sessions"].get("code"), label=label)
+    if not coder_res.ok:
+        return "code call failed: %s" % coder_res.error
+    results["code"] = coder_res.structured_output
+    _post_code(run, ticket, st, wt, since, coder_res)
+    gitops.git(wt, "add", "-A")
+    tree_after = gitops.write_tree(wt)
+
+    st.setdefault("review", {})
+    st["review"].setdefault("fixed", [])
+    rev_fixed = []
+    for f in fixed:
+        entry = {
+            "lens": lens_of.get(id(f), "review"),
+            "file": f.get("file", ""),
+            "line": f.get("line", 0),
+            "comment": f.get("comment", ""),
+        }
+        rev_fixed.append(entry)
+        st["review"]["fixed"].append(dict(entry, attempt=attempt, round=round_))
+
+    hunks = gitops.changed_ranges(wt, tree_before, tree_after)
+    st["review"].setdefault("revisions", []).append({
+        "label": label,
+        "round": round_,
+        "tree_before": tree_before,
+        "tree_after": tree_after,
+        "hunks": hunks,
+        "fixed": rev_fixed,
+    })
+    ticketstate.save(run, tid, st)
+    return None
+
+
 def _review_loop(run, adapter_for, env, ticket, st, wt, base, results, feedback):
     """Run iterative review loop with resumed coder revisions up to max_review_rounds.
 
@@ -917,12 +1023,15 @@ def _review_loop(run, adapter_for, env, ticket, st, wt, base, results, feedback)
     Persists overruled and withdrawn findings in st['review']['settled'] and fixed findings
     in st['review']['fixed'], dropping settled findings within +/-3 lines before deduplication
     and debate, counting fixed-ledger matches as reopened, and emitting review_settled events.
+    Halts iterative revisions upon detecting churn (blocking findings within SETTLED_LINE_WINDOW
+    and inside revision hunks), emitting review_churn and recording unresolved findings.
     """
     tid, attempt = ticket["id"], st["attempt"]
     st.setdefault("review", {"rounds": 0, "unresolved": [], "overruled": []})
     st["review"].setdefault("overruled", [])
     st["review"].setdefault("settled", [])
     st["review"].setdefault("fixed", [])
+    st["review"].setdefault("revisions", [])
     cfg = run.cfg
     lenses = config.review_lenses(cfg)
     max_rounds = cfg.get("max_review_rounds", 2)
@@ -1003,6 +1112,14 @@ def _review_loop(run, adapter_for, env, ticket, st, wt, base, results, feedback)
             run.event("review_settled", ticket=tid, attempt=attempt, round=n, dropped=dropped, reopened=reopened)
 
         blocking = [f for f in findings if f.get("severity") in ("blocker", "major")]
+        churn = _churn(st, blocking, lens_of)
+        if churn:
+            st["review"]["rounds"] = n
+            st["review"]["unresolved"] = blocking
+            ticketstate.save(run, tid, st)
+            run.event("review_churn", ticket=tid, attempt=attempt, round=n, churn=churn, unresolved=len(blocking))
+            tracker.comment(run, tid, "Review churn, stopped revising:\n" + _format_findings(blocking))
+            return None
         if blocking and config.review_mode(cfg) == "adversarial":
             before = len(st["review"]["overruled"])
             upheld, err = _debate(run, adapter_for, env, ticket, st, wt, base, results, feedback, blocking, n)
@@ -1050,24 +1167,9 @@ def _review_loop(run, adapter_for, env, ticket, st, wt, base, results, feedback)
             write_feedback(run, tid, attempt, nudge_str, append=True)
         # kept out of feedback.md: that file is the previous attempt's feedback and must survive a re-run
         coder_fb = "\n\n".join(p for p in [feedback] + fb_parts if p)
-        since = gitops.head_sha(wt)
-        coder_res = _call(run, adapter_for, env, ticket, "code", attempt, wt, base, "write",
-                          results, coder_fb, resume=st["sessions"].get("code"), label="code-r%d" % n)
-        if not coder_res.ok:
-            return "code call failed: %s" % coder_res.error
-        results["code"] = coder_res.structured_output
-        _post_code(run, ticket, st, wt, since, coder_res)
-        gitops.git(wt, "add", "-A")
-        for f in blocking:
-            st["review"]["fixed"].append({
-                "lens": lens_of.get(id(f), "review"),
-                "file": f.get("file", ""),
-                "line": f.get("line", 0),
-                "comment": f.get("comment", ""),
-                "attempt": attempt,
-                "round": n,
-            })
-        ticketstate.save(run, tid, st)
+        err = _revise(run, adapter_for, env, ticket, st, wt, base, results, coder_fb, "code-r%d" % n, n, blocking, lens_of)
+        if err:
+            return err
         clean_parts = [p for p in fb_parts if not p.startswith("User note:")]
         feedback = "\n\n".join(p for p in [feedback] + clean_parts if p)  # the re-review sees what the coder was asked to fix
 
@@ -1184,6 +1286,7 @@ def _attempt_body(run, adapter_for, env, ticket, st, wt, stages, start_idx, resu
             "overruled": [],
             "settled": list(prev.get("settled", [])),
             "fixed": list(prev.get("fixed", [])),
+            "revisions": [],
         }
         ticketstate.save(run, tid, st)
     feedback = _read_feedback(run, tid, attempt)

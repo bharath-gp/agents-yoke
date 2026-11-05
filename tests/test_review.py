@@ -6,7 +6,7 @@ from unittest import mock
 from tests.test_gitops import git
 from tests.test_pipeline import CODE, DOCS, PipeBase, qa, resp, ticket, val
 from tests.test_planreview import Base
-from yoke import config, pipeline, prbody, schema, ticketstate, tracker
+from yoke import config, gitops, pipeline, prbody, schema, ticketstate, tracker
 
 os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
 
@@ -1570,6 +1570,180 @@ class TestM41Basics(Base):
             "summary": "Escalating finding.",
         }
         self.assertEqual(schema.validate(valid, s), [])
+
+
+class TestChurnStop(PipeBase):
+    def test_ping_pong_stops_at_churn(self):
+        self.run_.update(config=dict(
+            self.run_.cfg,
+            review_lenses=["security"],
+            review_mode="independent",
+            max_review_rounds=5,
+        ))
+        lines_10 = "\n".join("line %d" % i for i in range(1, 11)) + "\n"
+        lines_rev = ["line %d" % i for i in range(1, 11)]
+        lines_rev[3:6] = ["line 4 revised", "line 5 revised", "line 6 revised"]
+        lines_r1 = "\n".join(lines_rev) + "\n"
+
+        f_5 = finding(severity="blocker", file="a.py", line=5, comment="issue at line 5")
+        f_6 = finding(severity="blocker", file="a.py", line=6, comment="issue at line 6")
+
+        script = {
+            "code": [resp(CODE, "c1", write={"a.py": lines_10})],
+            "code-r1": [resp(CODE, "c1", write={"a.py": lines_r1})],
+            "review-security": [resp(rev_changes([f_5]))],
+            "review-security-r1": [resp(rev_changes([f_6]))],
+            "validate": [resp(val())],
+            "router": [{"exit": 1}],
+        }
+        self.setup_tickets([ticket(1)], script)
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+
+        attempt_dir = self.run_.path("tickets/T-001/attempt-1")
+        self.assertTrue(os.path.isdir(os.path.join(attempt_dir, "code-r1")))
+        self.assertFalse(os.path.exists(os.path.join(attempt_dir, "code-r2")))
+
+        with open(self.run_.path("events.jsonl")) as f:
+            churn_events = [json.loads(l) for l in f if json.loads(l).get("kind") == "review_churn"]
+        self.assertEqual(len(churn_events), 1)
+        self.assertEqual(churn_events[0]["ticket"], "T-001")
+        self.assertEqual(churn_events[0]["round"], 1)
+
+        st = self.tstate(1)
+        self.assertEqual(len(st["review"]["unresolved"]), 1)
+        self.assertEqual(st["review"]["unresolved"][0]["file"], "a.py")
+        self.assertEqual(st["review"]["unresolved"][0]["line"], 6)
+        self.assertEqual(st["review"]["unresolved"][0]["comment"], "issue at line 6")
+
+        revisions = st["review"].get("revisions", [])
+        self.assertEqual(len(revisions), 1)
+        rev = revisions[0]
+        self.assertEqual(rev["label"], "code-r1")
+        self.assertEqual(rev["round"], 1)
+        self.assertTrue(rev.get("tree_before"))
+        self.assertTrue(rev.get("tree_after"))
+        self.assertEqual(rev["hunks"], {"a.py": [[4, 6]]})
+        self.assertEqual(rev["fixed"], [
+            {"lens": "security", "file": "a.py", "line": 5, "comment": "issue at line 5"}
+        ])
+
+        self.assertEqual(len(st["review"]["fixed"]), 1)
+        self.assertEqual(st["review"]["fixed"][0], {
+            "lens": "security",
+            "file": "a.py",
+            "line": 5,
+            "comment": "issue at line 5",
+            "attempt": 1,
+            "round": 1,
+        })
+
+    def test_new_location_is_not_churn(self):
+        self.run_.update(config=dict(
+            self.run_.cfg,
+            review_lenses=["security"],
+            review_mode="independent",
+            max_review_rounds=5,
+        ))
+        lines_10 = "\n".join("line %d" % i for i in range(1, 11)) + "\n"
+        lines_rev = ["line %d" % i for i in range(1, 11)]
+        lines_rev[3:6] = ["line 4 revised", "line 5 revised", "line 6 revised"]
+        lines_r1 = "\n".join(lines_rev) + "\n"
+
+        f_5 = finding(severity="blocker", file="a.py", line=5, comment="issue at line 5")
+        f_40 = finding(severity="blocker", file="a.py", line=40, comment="issue at line 40")
+
+        script = {
+            "code": [resp(CODE, "c1", write={"a.py": lines_10})],
+            "code-r1": [resp(CODE, "c1", write={"a.py": lines_r1})],
+            "code-r2": [resp(CODE, "c1", write={"a.py": lines_r1})],
+            "review-security": [resp(rev_changes([f_5]))],
+            "review-security-r1": [resp(rev_changes([f_40]))],
+            "review-security-r2": [resp(REV_APPROVE)],
+            "validate": [resp(val())],
+            "router": [{"exit": 1}],
+        }
+        self.setup_tickets([ticket(1)], script)
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+
+        attempt_dir = self.run_.path("tickets/T-001/attempt-1")
+        self.assertTrue(os.path.isdir(os.path.join(attempt_dir, "code-r1")))
+        self.assertTrue(os.path.isdir(os.path.join(attempt_dir, "code-r2")))
+
+        with open(self.run_.path("events.jsonl")) as f:
+            churn_events = [json.loads(l) for l in f if json.loads(l).get("kind") == "review_churn"]
+        self.assertEqual(len(churn_events), 0)
+
+    def test_changed_ranges_parses_hunks(self):
+        f_lines = ["line %d\n" % i for i in range(1, 7)]
+        self.put(self.repo, "f.py", "".join(f_lines))
+        self.put(self.repo, "g.py", "to be deleted\n")
+        tree_a = gitops.write_tree(self.repo)
+
+        f_lines[2] = "line 3 changed\n"
+        f_lines[3] = "line 4 changed\n"
+        self.put(self.repo, "f.py", "".join(f_lines))
+        os.remove(os.path.join(self.repo, "g.py"))
+        tree_b = gitops.write_tree(self.repo)
+
+        ranges = gitops.changed_ranges(self.repo, tree_a, tree_b)
+        self.assertEqual(ranges, {"f.py": [[3, 4]]})
+
+    def test_changed_ranges_edge_cases(self):
+        f_lines = ["line %d\n" % i for i in range(1, 11)]
+        self.put(self.repo, "f.py", "".join(f_lines))
+        tree_a = gitops.write_tree(self.repo)
+
+        # Hunk 1: single line change at line 1 (+1)
+        f_lines[0] = "line 1 revised\n"
+        # Hunk 2: pure deletion of line 5 (+4,0)
+        f_lines.pop(4)
+        # Hunk 3: multi-line change at lines 7-8 (+6,2)
+        f_lines[5] = "line 7 revised\n"
+        f_lines[6] = "line 8 revised\n"
+        self.put(self.repo, "f.py", "".join(f_lines))
+
+        # Add a new file
+        self.put(self.repo, "new.py", "alpha\nbeta\n")
+        tree_b = gitops.write_tree(self.repo)
+
+        ranges = gitops.changed_ranges(self.repo, tree_a, tree_b)
+        self.assertIn("f.py", ranges)
+        self.assertIn("new.py", ranges)
+        self.assertEqual(ranges["f.py"], [[1, 1], [4, 4], [6, 7]])
+        self.assertEqual(ranges["new.py"], [[1, 2]])
+
+    def test_churn_unit_decisions(self):
+        from yoke import pipeline
+        # Empty revisions
+        self.assertEqual(pipeline._churn({}, [finding(file="a.py", line=5)], {}), [])
+        st = {"review": {"revisions": []}}
+        self.assertEqual(pipeline._churn(st, [finding(file="a.py", line=5)], {}), [])
+
+        # Non-matching line or outside hunk
+        st = {
+            "review": {
+                "revisions": [{
+                    "hunks": {"a.py": [[10, 15]]},
+                    "fixed": [{"file": "a.py", "line": 12}],
+                }]
+            }
+        }
+        # Outside hunk
+        self.assertEqual(pipeline._churn(st, [finding(file="a.py", line=5)], {}), [])
+        # Inside hunk but outside window (> 3 from 12)
+        self.assertEqual(pipeline._churn(st, [finding(file="a.py", line=16)], {}), [])
+        # Different file
+        self.assertEqual(pipeline._churn(st, [finding(file="b.py", line=12)], {}), [])
+        # Invalid / missing line
+        self.assertEqual(pipeline._churn(st, [{"file": "a.py", "line": "invalid"}], {}), [])
+        self.assertEqual(pipeline._churn(st, [{"file": "a.py"}], {}), [])
+        self.assertEqual(pipeline._churn(st, [{"line": 12}], {}), [])
+
+        # Match inside hunk and within SETTLED_LINE_WINDOW (<= 3)
+        match_f = finding(file="a.py", line=11)
+        self.assertEqual(pipeline._churn(st, [match_f], {}), [match_f])
 
 
 if __name__ == "__main__":
