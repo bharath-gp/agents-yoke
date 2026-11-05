@@ -256,8 +256,12 @@ def _front_half(args):
             print("yoke: plan.md %s" % e, file=sys.stderr)
         print("yoke: add a `## Contents` index at the top of plan.md, then approve again", file=sys.stderr)
         return 1
+    accept_unready = getattr(args, "accept_unready", None)
+    if accept_unready is not None and not accept_unready.strip():
+        print("yoke: --accept-unready needs a reason", file=sys.stderr)
+        return 1
     try:
-        entry = planreview.approve(run, args.kind)
+        entry = planreview.approve(run, args.kind, accept_unready=accept_unready)
     except planreview.ApprovalError as e:
         print("yoke: %s" % e, file=sys.stderr)
         return 1
@@ -497,6 +501,8 @@ def main(argv=None):
     rtk.add_argument("--run")
     a = sub.add_parser("approve", help="record hash-bound approval")
     a.add_argument("kind", choices=("plan", "tickets", "final"))
+    a.add_argument("--accept-unready", metavar="REASON",
+                   help="override readiness gate with explanation written to plan-review/arbitration.md")
     a.add_argument("--run")
     d = sub.add_parser("doctor", help="check environment")
     d.add_argument("--live", action="store_true", help="one tiny -p call per agent CLI")

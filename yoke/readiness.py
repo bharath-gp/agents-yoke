@@ -4,7 +4,7 @@ import os
 import re
 import string
 
-from . import adapters, calls, config, planreview, schema
+from . import adapters, calls, config, planreview, schema, state
 
 PKG = os.path.dirname(os.path.abspath(__file__))
 
@@ -246,3 +246,57 @@ def review_tickets(run, adapter=None, env=None):
     run.event("ticket_review", round=n, ready=len(ready), not_ready=len(not_ready), skipped=len(skipped))
 
     return n, summary
+
+
+def gate_problems(run):
+    """Return reasons why tickets cannot be approved yet, or [] if fine.
+
+    Scans ticket-review/round-* in round order and finds the latest whose
+    tickets_sha256 matches current tickets hash. If none matches, returns
+    ['no readiness review at the current tickets hash']. Otherwise returns
+    ['%s not_ready' % tid for tid in summary['not_ready']].
+    """
+    cur_hash = planreview.current_hash(run, "tickets")
+    d = run.path("ticket-review")
+    if not os.path.isdir(d):
+        return ["no readiness review at the current tickets hash"]
+
+    round_dirs = []
+    for name in os.listdir(d):
+        if name.startswith("round-") and os.path.isdir(os.path.join(d, name)):
+            suffix = name[len("round-"):]
+            try:
+                num = int(suffix)
+                round_dirs.append((num, name))
+            except ValueError:
+                continue
+
+    round_dirs.sort(key=lambda x: x[0])
+    latest_matching = None
+    for _, name in round_dirs:
+        try:
+            summary = run.read_json("ticket-review/%s/summary.json" % name)
+        except (FileNotFoundError, ValueError, TypeError):
+            continue
+        if isinstance(summary, dict) and summary.get("tickets_sha256") == cur_hash:
+            latest_matching = summary
+
+    if latest_matching is None:
+        return ["no readiness review at the current tickets hash"]
+
+    not_ready = latest_matching.get("not_ready") or []
+    return ["%s not_ready" % tid for tid in not_ready]
+
+
+def record_accept(run, problems, reason):
+    """Append accepted unready tickets block to plan-review/arbitration.md and emit event."""
+    os.makedirs(run.path("plan-review"), exist_ok=True)
+    block = (
+        "\n## Accepted unready tickets (%s)\n\n- " % state.now()
+        + "\n- ".join(problems)
+        + "\n\nReason: %s\n" % reason
+    )
+    with open(run.path("plan-review/arbitration.md"), "a", encoding="utf-8") as f:
+        f.write(block)
+    run.event("ticket_review_accepted", reason=reason)
+

@@ -128,6 +128,7 @@ Ticket readiness review (`yoke review-tickets` / `readiness.review_tickets`) per
 - **Budget and failure handling**: Calls are budget-checked against `max_agent_calls_total`. If budget is exhausted, remaining tickets in the review range are marked `not_ready` with error `budget exhausted`. Any failed or schema-invalid call is marked `not_ready` with an error message.
 - **Round cap**: Rounds are capped by `max_ticket_review_rounds` (default: 2), raising a `RuntimeError` when exceeded.
 - **CLI behavior**: When `ticket_review` is disabled in configuration, `yoke review-tickets` prints `ticket_review is off; skipped` and exits 0. When enabled, it prints the round directory, readiness counts, and first questions or errors for not_ready tickets, warning on stderr if tickets exceeded `ticket_review_max`.
+- **Readiness gate on approve (`yoke approve tickets`)**: When `ticket_review` is enabled, `yoke approve tickets` requires the latest readiness review round matching the current `tickets.json` hash to have no unready tickets. If unreviewed at the current hash or if `not_ready` tickets exist, approval is refused with an `ApprovalError`. Operators can override with `--accept-unready REASON` (blank or whitespace-only reasons are rejected), which appends an acceptance block to `plan-review/arbitration.md` and emits a `ticket_review_accepted` event before recording approval. When `ticket_review` is disabled (the default), `yoke approve tickets` behaves unchanged.
 
 #### Adversarial debate
 
@@ -639,7 +640,7 @@ The skills run these for you; the raw commands below are for scripting and debug
 yoke init --requirements req.md   # prints run_id; write plan.md into ~/.yoke/runs/<run_id>/
 yoke review-plan                  # one read-only secondary review round (warns on missing paths / TOC; prints debate summary)
 yoke review-tickets               # one read-only readiness review call per ticket (up to ticket_review_max)
-yoke approve plan                 # also: tickets (creates GitHub milestones/issues if tracker=github), final
+yoke approve plan                 # also: tickets [--accept-unready REASON] (creates GitHub milestones/issues if tracker=github), final
 yoke tickets chart [--feedback "note"] # map approved plan to milestones/tickets via wayfinder
                                   # ticket ids continue after the highest GitHub issue/PR number (T-0057 after #56)
 yoke tickets import tickets.json  # validate milestones/tickets and warn; `yoke tickets show` groups by milestone

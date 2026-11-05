@@ -6,7 +6,7 @@ import unittest
 from unittest import mock
 
 from tests.test_core import FAKE_CLI, slurp
-from tests.test_planreview import Base
+from tests.test_planreview import Base, GOOD_PLAN
 from yoke import adapters, calls, cli, config, planreview, readiness, schema
 
 READY_OUT = {
@@ -296,6 +296,213 @@ class TestReadiness(Base):
             f.write("{not-valid-json}")
         with self.assertRaises(planreview.ApprovalError):
             readiness.review_tickets(self.run_)
+
+
+class TestApproveGate(Base):
+    def setUp(self):
+        super().setUp()
+        self.run_.update(config=dict(self.run_.cfg, ticket_review=True))
+        self.plan(GOOD_PLAN)
+        planreview.approve(self.run_, "plan")
+        self.tickets([
+            {
+                "id": "T-001",
+                "title": "first ticket",
+                "plan_sections": ["t1"],
+                "files": [{"action": "create", "path": "file1.py"}],
+            },
+            {
+                "id": "T-002",
+                "title": "second ticket",
+                "plan_sections": ["t1"],
+                "files": [{"action": "create", "path": "file2.py"}],
+            },
+        ])
+
+    def test_refuses_without_review_at_hash(self):
+        with self.assertRaises(planreview.ApprovalError) as ctx:
+            planreview.approve(self.run_, "tickets")
+        self.assertIn("review-tickets", str(ctx.exception))
+
+    def test_refuses_on_not_ready(self):
+        h = planreview.current_hash(self.run_, "tickets")
+        self.run_.write_json("ticket-review/round-1/summary.json", {
+            "round": 1,
+            "tickets_sha256": h,
+            "ready": ["T-001"],
+            "not_ready": ["T-002"],
+            "skipped": [],
+        })
+        with self.assertRaises(planreview.ApprovalError) as ctx:
+            planreview.approve(self.run_, "tickets")
+        self.assertIn("T-002", str(ctx.exception))
+
+    def test_accepts_when_all_ready(self):
+        h = planreview.current_hash(self.run_, "tickets")
+        self.run_.write_json("ticket-review/round-1/summary.json", {
+            "round": 1,
+            "tickets_sha256": h,
+            "ready": ["T-001", "T-002"],
+            "not_ready": [],
+            "skipped": [],
+        })
+        entry = planreview.approve(self.run_, "tickets")
+        self.assertTrue(entry and "sha256" in entry)
+        self.assertFalse(os.path.exists(self.run_.path("plan-review/arbitration.md")))
+
+    def test_edit_after_review_refuses(self):
+        h = planreview.current_hash(self.run_, "tickets")
+        self.run_.write_json("ticket-review/round-1/summary.json", {
+            "round": 1,
+            "tickets_sha256": h,
+            "ready": ["T-001", "T-002"],
+            "not_ready": [],
+            "skipped": [],
+        })
+        self.tickets([
+            {
+                "id": "T-001",
+                "title": "first ticket edited",
+                "plan_sections": ["t1"],
+                "files": [{"action": "create", "path": "file1.py"}],
+            },
+            {
+                "id": "T-002",
+                "title": "second ticket",
+                "plan_sections": ["t1"],
+                "files": [{"action": "create", "path": "file2.py"}],
+            },
+        ])
+        with self.assertRaises(planreview.ApprovalError) as ctx:
+            planreview.approve(self.run_, "tickets")
+        self.assertIn("no readiness review at the current tickets hash", str(ctx.exception))
+
+    def test_accept_unready_records_reason(self):
+        h = planreview.current_hash(self.run_, "tickets")
+        self.run_.write_json("ticket-review/round-1/summary.json", {
+            "round": 1,
+            "tickets_sha256": h,
+            "ready": ["T-001"],
+            "not_ready": ["T-002"],
+            "skipped": [],
+        })
+        entry = planreview.approve(self.run_, "tickets", accept_unready="coder can infer")
+        self.assertTrue(entry and "sha256" in entry)
+        arb_path = self.run_.path("plan-review/arbitration.md")
+        self.assertTrue(os.path.exists(arb_path))
+        with open(arb_path, encoding="utf-8") as f:
+            content = f.read()
+        self.assertIn("T-002 not_ready", content)
+        self.assertIn("coder can infer", content)
+        events = [json.loads(l) for l in slurp(self.run_.path("events.jsonl")).splitlines()]
+        accepted_events = [e for e in events if e.get("kind") == "ticket_review_accepted"]
+        self.assertEqual(len(accepted_events), 1)
+        self.assertEqual(accepted_events[0].get("reason"), "coder can infer")
+
+    def test_cli_accept_unready_flag(self):
+        h = planreview.current_hash(self.run_, "tickets")
+        self.run_.write_json("ticket-review/round-1/summary.json", {
+            "round": 1,
+            "tickets_sha256": h,
+            "ready": ["T-001"],
+            "not_ready": ["T-002"],
+            "skipped": [],
+        })
+        buf_out = io.StringIO()
+        buf_err = io.StringIO()
+        with mock.patch.dict(os.environ, {"YOKE_HOME": self.tmp}), \
+             mock.patch("yoke.cli.tracker.detect", return_value=None), \
+             contextlib.redirect_stdout(buf_out), \
+             contextlib.redirect_stderr(buf_err):
+            ret = cli.main(["approve", "tickets", "--run", self.run_.run_id, "--accept-unready", "why"])
+        self.assertEqual(ret, 0)
+        self.assertIn("approved tickets", buf_out.getvalue())
+        arb_path = self.run_.path("plan-review/arbitration.md")
+        self.assertTrue(os.path.exists(arb_path))
+        with open(arb_path, encoding="utf-8") as f:
+            self.assertIn("why", f.read())
+
+        buf_err2 = io.StringIO()
+        with mock.patch.dict(os.environ, {"YOKE_HOME": self.tmp}), \
+             mock.patch("yoke.cli.tracker.detect", return_value=None), \
+             contextlib.redirect_stderr(buf_err2):
+            ret2 = cli.main(["approve", "tickets", "--run", self.run_.run_id, "--accept-unready", " "])
+        self.assertEqual(ret2, 1)
+        self.assertIn("yoke: --accept-unready needs a reason", buf_err2.getvalue())
+
+    def test_approve_blank_reason_raises(self):
+        h = planreview.current_hash(self.run_, "tickets")
+        self.run_.write_json("ticket-review/round-1/summary.json", {
+            "round": 1,
+            "tickets_sha256": h,
+            "ready": ["T-001"],
+            "not_ready": ["T-002"],
+        })
+        for blank in ("", "   "):
+            with self.assertRaises(planreview.ApprovalError):
+                planreview.approve(self.run_, "tickets", accept_unready=blank)
+            self.assertFalse(os.path.exists(self.run_.path("plan-review/arbitration.md")))
+            self.assertNotIn("tickets", self.run_.read_json("approvals.json", {}))
+
+    def test_plan_changed_refuses_before_recording_accept(self):
+        h = planreview.current_hash(self.run_, "tickets")
+        self.run_.write_json("ticket-review/round-1/summary.json", {
+            "round": 1,
+            "tickets_sha256": h,
+            "ready": ["T-001"],
+            "not_ready": ["T-002"],
+        })
+        self.plan("changed plan")
+        with self.assertRaises(planreview.ApprovalError):
+            planreview.approve(self.run_, "tickets", accept_unready="coder can infer")
+        self.assertFalse(os.path.exists(self.run_.path("plan-review/arbitration.md")))
+
+    def test_gate_problems_edge_cases(self):
+        # Missing ticket-review directory returns problem
+        clean_run = planreview.init_run(self.repo, os.path.join(self.tmp, "req.md"), home=self.tmp)
+        clean_run.write_json("tickets.json", {"tickets": []})
+        self.assertEqual(readiness.gate_problems(clean_run), ["no readiness review at the current tickets hash"])
+
+        # round-1 matches, round-2 stale hash, round-invalid directory name, round-3 corrupt json
+        h = planreview.current_hash(self.run_, "tickets")
+        self.run_.write_json("ticket-review/round-1/summary.json", {
+            "round": 1,
+            "tickets_sha256": h,
+            "not_ready": ["T-001"],
+        })
+        self.run_.write_json("ticket-review/round-2/summary.json", {
+            "round": 2,
+            "tickets_sha256": "stalehash",
+            "not_ready": ["T-002"],
+        })
+        os.makedirs(self.run_.path("ticket-review/round-invalid"), exist_ok=True)
+        os.makedirs(self.run_.path("ticket-review/round-3"), exist_ok=True)
+        with open(self.run_.path("ticket-review/round-3/summary.json"), "w") as f:
+            f.write("corrupted json")
+
+        # Latest matching is still round-1
+        self.assertEqual(readiness.gate_problems(self.run_), ["T-001 not_ready"])
+
+    def test_gate_off_by_default(self):
+        self.run_.update(config=dict(self.run_.cfg, ticket_review=False))
+        entry = planreview.approve(self.run_, "tickets")
+        self.assertTrue(entry and "sha256" in entry)
+        self.assertFalse(os.path.exists(self.run_.path("plan-review/arbitration.md")))
+
+    def test_round_ordering_picks_latest_numeric_round(self):
+        h = planreview.current_hash(self.run_, "tickets")
+        self.run_.write_json("ticket-review/round-2/summary.json", {
+            "round": 2,
+            "tickets_sha256": h,
+            "not_ready": ["T-002"],
+        })
+        self.run_.write_json("ticket-review/round-10/summary.json", {
+            "round": 10,
+            "tickets_sha256": h,
+            "not_ready": ["T-010"],
+        })
+        problems = readiness.gate_problems(self.run_)
+        self.assertEqual(problems, ["T-010 not_ready"])
 
 
 if __name__ == "__main__":

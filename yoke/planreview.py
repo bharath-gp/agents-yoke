@@ -109,12 +109,27 @@ def approval_stage(run):
     return "run"
 
 
-def approve(run, kind):
-    """Record sha256 for `kind`. tickets needs plan approved+unchanged; final needs tickets."""
+def approve(run, kind, accept_unready=None):
+    """Record sha256 for `kind`. tickets needs plan approved+unchanged; final needs tickets.
+
+    When ticket_review is true in config, kind='tickets' requires the latest readiness
+    round matching current tickets hash to have no not_ready tickets, unless accept_unready
+    reason is supplied to override and record acceptance to plan-review/arbitration.md.
+    """
     if kind == "final":
         check_approval(run, "tickets")
     elif kind == "tickets":
         check_approval(run, "plan")
+        if config.ticket_review(run.cfg):
+            from . import readiness
+            problems = readiness.gate_problems(run)
+            if problems:
+                if not (accept_unready and accept_unready.strip()):
+                    raise ApprovalError(
+                        "tickets not ready: %s; fix tickets.json and run `yoke review-tickets`, or pass --accept-unready REASON"
+                        % "; ".join(problems)
+                    )
+                readiness.record_accept(run, problems, accept_unready)
     entry = {"sha256": current_hash(run, "plan" if kind == "plan" else "tickets"), "at": state.now()}
     with state._LOCK:
         approvals = run.read_json("approvals.json", {})
