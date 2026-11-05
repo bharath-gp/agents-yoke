@@ -8,6 +8,7 @@
       "wayfinder": "primary",
       "orchestrator": "primary",
       "plan_review": "secondary",
+      "readiness": "secondary",
       "code": "secondary",
       "review": "auto",
       "qa": "secondary",
@@ -25,6 +26,10 @@
   "models": {},
   "max_attempts_per_ticket": 3,
   "max_plan_review_rounds": 3,
+  "plan_review_lenses": [],
+  "ticket_review": false,
+  "ticket_review_max": 30,
+  "max_ticket_review_rounds": 2,
   "max_review_rounds": 2,
   "max_test_fix_rounds": 2,
   "review_lenses": [
@@ -74,6 +79,7 @@
   "parallel": 1,
   "timeouts_s": {
     "plan_review": 900,
+    "readiness": 900,
     "code": 2400,
     "review": 1200,
     "qa": 1800,

@@ -18,6 +18,15 @@
         }
       }
     },
-    "summary": {"type": "string"}
+    "summary": {"type": "string"},
+    "paraphrase": {
+      "type": "object",
+      "required": ["proposes", "existing_system"],
+      "additionalProperties": false,
+      "properties": {
+        "proposes": {"type": "string"},
+        "existing_system": {"type": "string"}
+      }
+    }
   }
 }

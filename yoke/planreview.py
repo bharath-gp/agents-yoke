@@ -12,6 +12,11 @@ PKG = os.path.dirname(os.path.abspath(__file__))
 KINDS = ("plan", "tickets", "final")
 
 
+def load_standard(name):
+    with open(os.path.join(PKG, "standards", name + ".md")) as f:
+        return f.read()
+
+
 class ApprovalError(Exception):
     pass
 

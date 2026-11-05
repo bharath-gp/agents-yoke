@@ -620,7 +620,7 @@ class TestE2EPrompt(unittest.TestCase):
 
 class TestAdversarialPrompts(unittest.TestCase):
     def test_review_prompts_demand_evidence(self):
-        prompts = ("review", "review_security", "review_performance", "review_tests", "plan_review")
+        prompts = ("review", "review_security", "review_performance", "review_tests", "plan_review", "plan_lens")
         for name in prompts:
             content = _read(name)
             self.assertIn("concrete", content, "%s missing 'concrete'" % name)
@@ -695,6 +695,97 @@ class TestAdversarialPrompts(unittest.TestCase):
         self.assertIn("burden of proof", _read("judge").lower())
         self.assertIn("burden of proof", _read("plan_judge").lower())
         self.assertIn("withdraw", _read("reply").lower())
+
+
+class TestPlanLens(unittest.TestCase):
+    def test_renders_without_leftover_vars(self):
+        from yoke import planreview
+        content = _read("plan_lens")
+        for var in ("$lens", "$standard", "$plan", "$requirements_block", "$round", "$prior"):
+            self.assertIn(var, content)
+        template = string.Template(content)
+        for lens in config.PLAN_LENSES:
+            standard_text = planreview.load_standard(lens)
+            rendered = template.safe_substitute(
+                lens=lens,
+                standard=standard_text,
+                plan="Plan text",
+                requirements_block="Requirements block",
+                round=1,
+                prior="Prior text",
+            )
+            leftover = re.findall(r"\$[a-zA-Z_][a-zA-Z0-9_]*", rendered)
+            self.assertEqual(leftover, [], "Leftover variables in plan_lens for lens %s: %s" % (lens, leftover))
+            self.assertIn(standard_text, rendered)
+            self.assertIn("Plan text", rendered)
+            self.assertIn("Requirements block", rendered)
+            self.assertIn("Prior text", rendered)
+            self.assertIn("goldfish", rendered)
+            self.assertIn("paraphrase", rendered)
+            self.assertIn("Verdict:", rendered)
+
+    def test_standards_exist_and_have_no_template_vars(self):
+        from yoke import planreview
+        for name in config.PLAN_LENSES:
+            content = planreview.load_standard(name)
+            self.assertTrue(len(content) > 0, "standard %s is empty" % name)
+            self.assertNotIn("$", content, "standard %s contains $" % name)
+            self.assertTrue(content.startswith("# "), "standard %s must start with '# '" % name)
+            lines = content.splitlines()
+            self.assertTrue(15 <= len(lines) <= 40, "standard %s line count %d not in [15, 40]" % (name, len(lines)))
+
+    def test_plan_review_schema_paraphrase_optional(self):
+        s = schema.load_schema("plan-review")
+        without_paraphrase = {
+            "verdict": "approve",
+            "findings": [],
+            "summary": "all good",
+        }
+        self.assertEqual(schema.validate(without_paraphrase, s), [])
+
+        with_paraphrase = {
+            "verdict": "approve",
+            "findings": [],
+            "summary": "all good",
+            "paraphrase": {
+                "proposes": "New feature",
+                "existing_system": "Old system",
+            },
+        }
+        self.assertEqual(schema.validate(with_paraphrase, s), [])
+
+        lacking_proposes = {
+            "verdict": "approve",
+            "findings": [],
+            "summary": "all good",
+            "paraphrase": {
+                "existing_system": "Old system",
+            },
+        }
+        self.assertTrue(len(schema.validate(lacking_proposes, s)) > 0)
+
+        extra_field = {
+            "verdict": "approve",
+            "findings": [],
+            "summary": "all good",
+            "paraphrase": {
+                "proposes": "New feature",
+                "existing_system": "Old system",
+                "extra": "disallowed",
+            },
+        }
+        self.assertTrue(len(schema.validate(extra_field, s)) > 0)
+
+        non_string_proposes = {
+            "verdict": "approve",
+            "findings": [],
+            "summary": "all good",
+            "paraphrase": {
+                "proposes": 123,
+                "existing_system": "Old system",
+            },
+        }
+        self.assertTrue(len(schema.validate(non_string_proposes, s)) > 0)
 
 
 if __name__ == "__main__":
