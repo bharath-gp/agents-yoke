@@ -122,6 +122,31 @@ Yoke supports adversarial review debates during ticket review and plan review:
   - **Plan Judge (`plan_judge`)**: Disputed IDs proceed to the plan review agent acting as judge in read mode using the `judge` schema and `plan_judge.md` prompt. The judge issues rulings (`upheld` or `overruled` with reason). A missing ruling or failed judge call defaults to upheld. If all findings are conceded during rebut, the judge call is skipped.
   - **Artifacts and audit**: For plan review round `n`, debate details are saved to `plan-review/round-<n>/debate.json` (`{upheld, overruled, rebuttals, rulings}`), audit calls are logged to `plan-review/round-<n>/rebut` and `plan-review/round-<n>/judge`, and a `plan_debate` audit event is emitted (`round`, `upheld`, `overruled`). When `debate.json` exists, `yoke review-plan` prints `debate: U upheld, O overruled (see <path>)` after the verdict line. Nested directories preserve the round count in `next_round`.
 
+### Goldfish context and write boundary
+
+Yoke enforces clean review context and target scope boundaries across review and close gates:
+
+```json
+{
+  "goldfish_context": true,
+  "write_boundary": true,
+  "write_boundary_extra": [
+    "tests/**",
+    "docs/**",
+    "README.md"
+  ]
+}
+```
+
+- **Goldfish context diet (`goldfish_context`)**: Enabled by default (`true`). When active, `pipeline.build_spec` filters `$prior_results` for read-only reviewer stages (`review` lenses, `judge`, and `validate`) by dropping the coder and QA self-reports (`code` and `qa` stage results) while preserving `qa.test_command`, runner test evidence (`$test_evidence`), unresolved review findings, and `$upstream`. The author-side stages (`rebut` and `reply`) retain full context. Setting `goldfish_context: false` restores full prior results for byte-identical 0.16.x prompts.
+- **Settled findings ledger and `review_settled` event**: A per-ticket ledger tracks overruled, withdrawn, and fixed findings across review rounds and attempts. When a review lens flags an issue matching a previously settled finding (same lens, same file, and line number within a fixed 3-line window), the duplicate finding is dropped before debate and counted in a `review_settled` audit event (`dropped`). If a previously upheld and fixed finding reappears at the same location, it is reopened and counted under `reopened` in the `review_settled` event. Lens prompts receive `$settled` instructing reviewers not to re-raise settled items.
+- **Write boundary enforcement (`write_boundary`)**: Enabled by default (`true`). When enabled, the close gate verifies that all modified and untracked files in the ticket worktree stay within allowed boundaries.
+- **Ticket `files` field**: Tickets may optionally declare explicit file boundaries via `files: [{"path": "...", "action": "create"|"modify"|"delete"}]`. The field is supported across all ticket schemas (`ticket`, `ticket-list`, `chart`).
+- **Extra write boundaries (`write_boundary_extra`)**: Configurable list of glob patterns permitted across tickets (default: `["tests/**", "docs/**", "README.md"]`), accommodating QA tests and documentation updates.
+- **Close-gate failure feedback**: If a ticket's worktree diff touches files outside its declared `files` and `write_boundary_extra`, the close gate fails and feeds the offending paths back to the coder in retry feedback. Tickets without a `files` field are not restricted by write boundary checks.
+- **Overlap deferral with `files`**: When `parallel > 1`, ready tickets whose `files` paths overlap any currently running ticket are deferred if `files_hint` is empty.
+- **Reference warnings**: `yoke tickets import`, `yoke tickets chart`, and `yoke review-plan` scan backticked repo-relative paths in `plan.md` and ticket fields, issuing reference warnings for any paths that neither exist in the target repository nor are declared with action `create` in a ticket's `files` list. `tickets.warnings` also warns when a feature, bugfix, or refactor ticket lacks a `files` definition.
+
 ### Model selection and tiers
 
 Models can be configured per agent across two tiers: `plan` (used for `requirements`, `planner`, `plan_review`, `wayfinder`) and `cheap` (used for all other execution stages such as `code`, `qa`, `docs`, `review`, and `validate`):
