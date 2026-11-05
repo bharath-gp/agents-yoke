@@ -132,8 +132,13 @@ When `escalate_findings` is enabled, the coder in an adversarial debate can resp
 | `ticket_review` | `false` | Review each ticket for readiness before approval. `yoke approve tickets` then refuses tickets that are not ready. |
 | `ticket_review_max` | `30` | Most tickets reviewed per round. |
 | `max_ticket_review_rounds` | `2` | Readiness review rounds. |
+| `escalate_findings` | `false` | Opt-in flag enabling plan and review rebuttals to escalate findings. |
 
 Each review round saves a copy of `plan.md` to `plan-review/round-<n>/plan.md`. The rubric for each lens is in [`yoke/standards/`](../yoke/standards/).
+
+Merged plan findings track their source lenses. In adversarial plan debate, blocker and major findings tagged with the `comprehension` lens bypass rebuttal and judge ruling, and are upheld directly (a reader's comprehension difficulty cannot be argued away). If all blocking findings come from the `comprehension` lens, the rebuttal and judge calls are skipped entirely.
+
+When `escalate_findings` is enabled, the planner in an adversarial debate can respond to a finding with stance `escalate` when no code or plan text in reach can settle it and it needs outside knowledge from the user. Escalated findings skip the judge and are recorded in `plan-review/round-<n>/debate.json` under `escalated`. When `escalate_findings` is off, an `escalate` stance counts as a dispute and proceeds to the judge.
 
 ## Retries and test fixes
 

@@ -694,6 +694,8 @@ class TestAdversarialPrompts(unittest.TestCase):
         self.assertIn("$requirements", _read("plan_rebut"))
         self.assertIn("$plan", _read("plan_rebut"))
         self.assertIn("$round", _read("plan_rebut"))
+        self.assertIn("$escalate_rule", _read("plan_rebut"))
+        self.assertIn("reviewer could read", _read("plan_rebut"))
         self.assertNotIn("$rebuttals", _read("plan_rebut"))
 
         self.assertIn("$findings", _read("plan_judge"))

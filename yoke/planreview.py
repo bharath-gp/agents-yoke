@@ -12,6 +12,7 @@ from . import adapters, calls, config, schema, state
 
 PKG = os.path.dirname(os.path.abspath(__file__))
 KINDS = ("plan", "tickets", "final")
+ESCALATE_RULE = "Escalate only a finding that no code or plan text in reach can settle and that needs outside knowledge from the user (a product decision, an external system's behaviour). Give the question for the user in `argument`."
 
 
 def load_standard(name):
@@ -29,7 +30,9 @@ def merge_findings(per_lens):
 
     Deduplicates based on (section.strip().lower(), issue.strip().lower()). Keeps first-seen
     finding dict and raises its severity to highest seen (blocker > major > minor). Output
-    order preserves lens order then finding order.
+    order preserves lens order then finding order. When input findings carry a 'lens' key,
+    sets a 'lenses' list on the merged copy and appends subsequent lenses on duplicates,
+    dropping the individual 'lens' key. Findings without 'lens' pass through unchanged.
     """
     # shortcut: exact-text dedupe; add fuzzy match if duplicate findings pile up
     seen = {}
@@ -45,10 +48,19 @@ def merge_findings(per_lens):
             key = (section, issue)
             if key not in seen:
                 copied = dict(f)
+                if "lens" in copied:
+                    copied["lenses"] = [copied.pop("lens")]
                 seen[key] = copied
                 merged.append(copied)
             else:
                 existing = seen[key]
+                if "lens" in f:
+                    lens_val = f["lens"]
+                    if "lenses" in existing:
+                        if lens_val not in existing["lenses"]:
+                            existing["lenses"].append(lens_val)
+                    else:
+                        existing["lenses"] = [lens_val]
                 cur_rank = _SEVERITY_RANK.get(existing.get("severity"), -1)
                 new_rank = _SEVERITY_RANK.get(f.get("severity"), -1)
                 if new_rank > cur_rank:
@@ -239,7 +251,13 @@ def next_round(run):
 
 def debate_round(run, n, res, adapter_for=None, env=None):
     """Run a planner rebuttal and judge pass when review has blocker/major findings in adversarial mode.
-    Returns debate dict or {} when skipped."""
+
+    Blocker and major findings tagged with the comprehension lens bypass rebuttal and judge,
+    going directly into upheld. When escalate_findings is enabled in config, a plan_rebut
+    response with stance 'escalate' routes the finding to debate.json escalated instead of
+    the judge. When every blocking finding is a comprehension finding, the rebuttal call is
+    skipped. Returns debate dict or {} when skipped.
+    """
     cfg = run.cfg
     if config.review_mode(cfg) != "adversarial":
         return {}
@@ -250,11 +268,26 @@ def debate_round(run, n, res, adapter_for=None, env=None):
     if not blocking:
         return {}
 
+    exempt = [f for f in blocking if "comprehension" in (f.get("lenses") or [])]
+    to_debate = [f for f in blocking if "comprehension" not in (f.get("lenses") or [])]
+
+    if not to_debate:
+        debate_data = {
+            "upheld": list(exempt),
+            "overruled": [],
+            "escalated": [],
+            "rebuttals": [],
+            "rulings": [],
+        }
+        run.write_json("plan-review/round-%d/debate.json" % n, debate_data)
+        run.event("plan_debate", round=n, upheld=len(debate_data["upheld"]), overruled=len(debate_data["overruled"]), escalated=len(debate_data["escalated"]))
+        return debate_data
+
     if adapter_for is None:
         adapter_for = lambda role: adapters.get(config.agent_for(cfg, role))
 
     items = []
-    for i, f in enumerate(blocking):
+    for i, f in enumerate(to_debate):
         items.append({
             "id": "p%d" % (i + 1),
             "severity": f.get("severity"),
@@ -271,12 +304,15 @@ def debate_round(run, n, res, adapter_for=None, env=None):
 
     planner_agent = config.agent_for(cfg, "planner")
     rebut_model, rebut_effort = config.model_for_tier(cfg, planner_agent, "plan")
+    esc_on = config.escalate_findings(cfg)
+    escalate_rule = ESCALATE_RULE if esc_on else ""
     with open(os.path.join(PKG, "prompts", "plan_rebut.md")) as f:
         rebut_prompt = string.Template(f.read()).safe_substitute(
             requirements=requirements,
             plan=plan,
             round=n,
             findings=json.dumps(items, indent=2),
+            escalate_rule=escalate_rule,
         )
     repo = run.read_json("run.json")["repo"]
     rebut_spec = adapters.CallSpec(
@@ -293,25 +329,30 @@ def debate_round(run, n, res, adapter_for=None, env=None):
 
     if not (rebut_res.ok and rebut_res.schema_valid is not False):
         debate_data = {
-            "upheld": list(blocking),
+            "upheld": list(exempt) + list(to_debate),
             "overruled": [],
+            "escalated": [],
             "rebuttals": [],
             "rulings": [],
             "error": rebut_res.error or "rebut failed",
         }
         run.write_json("plan-review/round-%d/debate.json" % n, debate_data)
-        run.event("plan_debate", round=n, upheld=len(debate_data["upheld"]), overruled=len(debate_data["overruled"]))
+        run.event("plan_debate", round=n, upheld=len(debate_data["upheld"]), overruled=len(debate_data["overruled"]), escalated=len(debate_data["escalated"]))
         return debate_data
 
     responses = (rebut_res.structured_output or {}).get("responses", []) if isinstance(rebut_res.structured_output, dict) else []
     resp_by_id = {r.get("id"): r for r in responses if isinstance(r, dict)}
 
     conceded_ids = set()
+    escalated_ids = set()
     disputed_ids = set()
     for item in items:
         pid = item["id"]
-        if pid in resp_by_id and resp_by_id[pid].get("stance") == "concede":
+        stance = resp_by_id.get(pid, {}).get("stance") if pid in resp_by_id else None
+        if stance == "concede":
             conceded_ids.add(pid)
+        elif stance == "escalate" and esc_on:
+            escalated_ids.add(pid)
         else:
             disputed_ids.add(pid)
 
@@ -347,11 +388,14 @@ def debate_round(run, n, res, adapter_for=None, env=None):
         else:
             judge_failed = True
 
-    upheld = []
+    upheld = list(exempt)
     overruled = []
-    for item, f in zip(items, blocking):
+    escalated = []
+    for item, f in zip(items, to_debate):
         pid = item["id"]
-        if pid in conceded_ids:
+        if pid in escalated_ids:
+            escalated.append(f)
+        elif pid in conceded_ids:
             upheld.append(f)
         elif judge_failed:
             upheld.append(f)
@@ -363,11 +407,12 @@ def debate_round(run, n, res, adapter_for=None, env=None):
     debate_data = {
         "upheld": upheld,
         "overruled": overruled,
+        "escalated": escalated,
         "rebuttals": responses,
         "rulings": rulings,
     }
     run.write_json("plan-review/round-%d/debate.json" % n, debate_data)
-    run.event("plan_debate", round=n, upheld=len(upheld), overruled=len(overruled))
+    run.event("plan_debate", round=n, upheld=len(upheld), overruled=len(overruled), escalated=len(escalated))
     return debate_data
 
 
@@ -453,7 +498,8 @@ def _lens_round(run, n, lenses, plan, requirements, prior, adapter, env):
             out = res.structured_output
             raw_findings = out.get("findings")
             f_list = [f for f in raw_findings if isinstance(f, dict)] if isinstance(raw_findings, list) else []
-            per_lens_findings.append(f_list)
+            tagged = [dict(f, lens=lens) for f in f_list]
+            per_lens_findings.append(tagged)
             lens_meta[lens] = {"ok": True, "error": None, "findings": len(f_list)}
             summary = str(out.get("summary") or "").strip()
             summaries.append("%s: %s" % (lens, summary))
