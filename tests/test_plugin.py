@@ -69,7 +69,7 @@ class TestPackaging(unittest.TestCase):
         for name in SKILLS:
             with open(os.path.join(ROOT, "skills", name, "SKILL.md")) as f:
                 subs.update(re.findall(r"`yoke ([a-z-]+)", f.read()))
-        known = {"setup", "init", "review-plan", "approve", "tickets", "run", "wait", "status", "escalations",
+        known = {"setup", "init", "review-plan", "review-tickets", "approve", "tickets", "run", "wait", "status", "escalations",
                  "unblock", "stop", "pr", "route", "doctor", "models", "runs", "map", "dashboard", "nudge", "guard"}
         self.assertFalse(subs - known, subs - known)
 

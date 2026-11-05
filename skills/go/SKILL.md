@@ -18,6 +18,7 @@ Argument: optional work description, used to seed the interview.
 4. Tickets without a gate: chart tickets using `yoke tickets chart --run R`.
    - Alternatively, write `tickets.json` in the run dir and run `yoke tickets import --run R <file>`. Fix every reported error and re-run until clean.
    - Run `yoke map --run R` (or `yoke tickets show --run R`) and print the table and frontier for information.
+   - Run `yoke review-tickets --run R`. When it reports not_ready tickets, do the fix and re-run loop from the tickets skill without asking, up to `max_ticket_review_rounds`. Only if tickets are still not_ready after the cap, stop and ask the user (fix, or `yoke approve tickets --run R --accept-unready "REASON"`).
    - Run `yoke approve tickets --run R` without asking.
 5. Runner execution:
    - Start runner: `yoke run --run R --detach --parallel N`.
@@ -29,4 +30,4 @@ Argument: optional work description, used to seed the interview.
    - Summarize commits, diff stat, and open or skipped tickets. Run `yoke map --run R` so the decisions log is part of the final summary. Ask whether to approve the result.
    - Only on an explicit yes, run `yoke approve final --run R`.
    - Only for a GitHub repo and on an explicit yes, run `yoke pr --run R`.
-7. Rules: stops are only plan approval, escalations, final approval, and PR confirmation. Never push except via `yoke pr --run R`. Never pass permission-bypass flags to any agent.
+7. Rules: stops are only plan approval, tickets still not_ready after max_ticket_review_rounds, escalations, final approval, and PR confirmation. Never push except via `yoke pr --run R`. Never pass permission-bypass flags to any agent.
