@@ -1128,5 +1128,141 @@ class TestPlanLenses(Base):
         self.assertEqual(pr_events[0]["lenses"], ["zoom_out", "critic"])
 
 
+class TestPlanDiff(Base):
+    def test_round_dir_saves_plan(self):
+        self.plan("the plan for round 1\nline 2\n")
+        self.review(APPROVE)
+        round_plan_path = self.run_.path("plan-review/round-1/plan.md")
+        self.assertTrue(os.path.exists(round_plan_path))
+        with open(round_plan_path) as f:
+            round_plan = f.read()
+        with open(self.run_.path("plan.md")) as f:
+            current_plan = f.read()
+        self.assertEqual(round_plan, current_plan)
+
+    def test_zoom_out_gets_diff_from_round_2(self):
+        self.plan("line 1\nline 2\n")
+        self.run_.update(config=dict(self.run_.cfg, zoom_out_after_fix=True, plan_review_lenses=["zoom_out", "critic"]))
+        script = {
+            "lens-zoom_out": [
+                {"structured_output": APPROVE, "session_id": "s1"},
+                {"structured_output": APPROVE, "session_id": "s3"},
+            ],
+            "lens-critic": [
+                {"structured_output": APPROVE, "session_id": "s2"},
+                {"structured_output": APPROVE, "session_id": "s4"},
+            ],
+        }
+        with open(self.script, "w") as f:
+            json.dump(script, f)
+
+        # round 1
+        planreview.review_round(self.run_, adapters.FakeAdapter(FAKE_CLI), env={"FAKE_SCRIPT": self.script})
+
+        # round 1 zoom_out prompt should not contain diff
+        with open(self.run_.path("plan-review/round-1/lens-zoom_out/prompt.md")) as f:
+            zo_prompt_r1 = f.read()
+        self.assertNotIn("Changes since", zo_prompt_r1)
+
+        # rewrite plan.md with a changed line
+        changed_line = "changed line in plan\n"
+        self.plan("line 1\n" + changed_line)
+
+        # round 2
+        planreview.review_round(self.run_, adapters.FakeAdapter(FAKE_CLI), env={"FAKE_SCRIPT": self.script})
+
+        # assert round-2/lens-zoom_out/prompt.md contains 'Changes since round 1', diff fence, headers, and the changed line
+        with open(self.run_.path("plan-review/round-2/lens-zoom_out/prompt.md")) as f:
+            zo_prompt = f.read()
+        self.assertIn("Changes since round 1", zo_prompt)
+        self.assertIn("```diff\n", zo_prompt)
+        self.assertIn("--- round-1/plan.md\n", zo_prompt)
+        self.assertIn("+++ plan.md\n", zo_prompt)
+        self.assertIn("-line 2\n", zo_prompt)
+        self.assertIn("+changed line in plan\n", zo_prompt)
+        self.assertIn("```\n\n\n## Plan", zo_prompt)
+
+        # and round-2/lens-critic/prompt.md does not
+        with open(self.run_.path("plan-review/round-2/lens-critic/prompt.md")) as f:
+            critic_prompt = f.read()
+        self.assertNotIn("Changes since round 1", critic_prompt)
+
+    def test_zoom_out_no_diff_when_flag_off(self):
+        changed_line = "changed line in plan\n"
+        script = {
+            "lens-zoom_out": [
+                {"structured_output": APPROVE, "session_id": "s1"},
+                {"structured_output": APPROVE, "session_id": "s3"},
+            ],
+            "lens-critic": [
+                {"structured_output": APPROVE, "session_id": "s2"},
+                {"structured_output": APPROVE, "session_id": "s4"},
+            ],
+        }
+        req = os.path.join(self.tmp, "req.md")
+        run_off = planreview.init_run(
+            self.repo, req,
+            {"max_plan_review_rounds": 2, "review_mode": "independent", "zoom_out_after_fix": False, "plan_review_lenses": ["zoom_out", "critic"]},
+            home=self.tmp,
+        )
+        with open(run_off.path("plan.md"), "w") as f:
+            f.write("line 1\nline 2\n")
+        script_off = os.path.join(self.tmp, "script_off.json")
+        with open(script_off, "w") as f:
+            json.dump(script, f)
+
+        planreview.review_round(run_off, adapters.FakeAdapter(FAKE_CLI), env={"FAKE_SCRIPT": script_off})
+        with open(run_off.path("plan.md"), "w") as f:
+            f.write("line 1\n" + changed_line)
+        planreview.review_round(run_off, adapters.FakeAdapter(FAKE_CLI), env={"FAKE_SCRIPT": script_off})
+
+        with open(run_off.path("plan-review/round-2/lens-zoom_out/prompt.md")) as f:
+            zo_prompt_off = f.read()
+        self.assertNotIn("Changes since round 1", zo_prompt_off)
+
+        with open(run_off.path("plan-review/round-2/lens-critic/prompt.md")) as f:
+            critic_prompt_off = f.read()
+        self.assertNotIn("Changes since round 1", critic_prompt_off)
+
+    def test_zoom_out_no_diff_when_prev_plan_missing(self):
+        self.plan("line 1\nline 2\n")
+        self.run_.update(config=dict(self.run_.cfg, zoom_out_after_fix=True, plan_review_lenses=["zoom_out"]))
+        script = {
+            "lens-zoom_out": [
+                {"structured_output": APPROVE, "session_id": "s1"},
+                {"structured_output": APPROVE, "session_id": "s2"},
+            ],
+        }
+        with open(self.script, "w") as f:
+            json.dump(script, f)
+        planreview.review_round(self.run_, adapters.FakeAdapter(FAKE_CLI), env={"FAKE_SCRIPT": self.script})
+        # Remove round-1/plan.md to simulate missing prev plan
+        os.remove(self.run_.path("plan-review/round-1/plan.md"))
+        self.plan("line 1\nline 2 modified\n")
+        planreview.review_round(self.run_, adapters.FakeAdapter(FAKE_CLI), env={"FAKE_SCRIPT": self.script})
+        with open(self.run_.path("plan-review/round-2/lens-zoom_out/prompt.md")) as f:
+            prompt = f.read()
+        self.assertNotIn("Changes since", prompt)
+
+    def test_diff_fence_closed_when_no_trailing_newline(self):
+        self.plan("line 1\nline 2")
+        self.run_.update(config=dict(self.run_.cfg, zoom_out_after_fix=True, plan_review_lenses=["zoom_out"]))
+        script = {
+            "lens-zoom_out": [
+                {"structured_output": APPROVE, "session_id": "s1"},
+                {"structured_output": APPROVE, "session_id": "s2"},
+            ],
+        }
+        with open(self.script, "w") as f:
+            json.dump(script, f)
+        planreview.review_round(self.run_, adapters.FakeAdapter(FAKE_CLI), env={"FAKE_SCRIPT": self.script})
+        self.plan("line 1\nline 2 changed")
+        planreview.review_round(self.run_, adapters.FakeAdapter(FAKE_CLI), env={"FAKE_SCRIPT": self.script})
+        with open(self.run_.path("plan-review/round-2/lens-zoom_out/prompt.md")) as f:
+            prompt = f.read()
+        self.assertIn("```diff\n", prompt)
+        self.assertIn("+line 2 changed\n```\n\n\n## Plan", prompt)
+
+
 if __name__ == "__main__":
     unittest.main()

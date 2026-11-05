@@ -701,7 +701,7 @@ class TestPlanLens(unittest.TestCase):
     def test_renders_without_leftover_vars(self):
         from yoke import planreview
         content = _read("plan_lens")
-        for var in ("$lens", "$standard", "$plan", "$requirements_block", "$round", "$prior"):
+        for var in ("$lens", "$standard", "$plan", "$requirements_block", "$round", "$prior", "$plan_diff"):
             self.assertIn(var, content)
         template = string.Template(content)
         for lens in config.PLAN_LENSES:
@@ -713,6 +713,7 @@ class TestPlanLens(unittest.TestCase):
                 requirements_block="Requirements block",
                 round=1,
                 prior="Prior text",
+                plan_diff="",
             )
             leftover = re.findall(r"\$[a-zA-Z_][a-zA-Z0-9_]*", rendered)
             self.assertEqual(leftover, [], "Leftover variables in plan_lens for lens %s: %s" % (lens, leftover))

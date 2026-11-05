@@ -1,5 +1,6 @@
 """Front half: init, bounded plan-review rounds, hash-bound approvals (PLAN 2.3, M2)."""
 import concurrent.futures
+import difflib
 import hashlib
 import json
 import os
@@ -374,7 +375,9 @@ def _lens_round(run, n, lenses, plan, requirements, prior, adapter, env):
     """Execute multi-lens plan review round, merging findings and writing paraphrase/result artifacts.
 
     Runs one read-only call per lens in parallel or sequential mode, merging findings via merge_findings
-    and recording per-lens health metadata. Returns a synthetic CallResult wrapping the merged output.
+    and recording per-lens health metadata. When zoom_out_after_fix is enabled and n > 1, provides the
+    zoom_out lens with a unified diff against the previous round's copy of plan.md. Returns a synthetic
+    CallResult wrapping the merged output.
     """
     cfg = run.cfg
     role = "plan_review"
@@ -391,6 +394,17 @@ def _lens_round(run, n, lenses, plan, requirements, prior, adapter, env):
     for lens in lenses:
         requirements_block = ("## Requirements\n\n" + requirements + "\n\n") if lens == "critic" else ""
         standard = load_standard(lens)
+        plan_diff = ""
+        if lens == "zoom_out" and config.zoom_out_after_fix(cfg) and n > 1:
+            prev_plan_path = run.path("plan-review/round-%d/plan.md" % (n - 1))
+            if os.path.exists(prev_plan_path):
+                with open(prev_plan_path, encoding="utf-8", errors="replace") as f:
+                    old = f.read().splitlines(keepends=True)
+                new = plan.splitlines(keepends=True)
+                diff_text = "".join(difflib.unified_diff(old, new, "round-%d/plan.md" % (n - 1), "plan.md"))
+                if not diff_text.endswith("\n"):
+                    diff_text += "\n"
+                plan_diff = "## Changes since round %d\n\n```diff\n%s```\n\n" % (n - 1, diff_text)
         prompt = template.safe_substitute(
             lens=lens,
             standard=standard,
@@ -398,6 +412,7 @@ def _lens_round(run, n, lenses, plan, requirements, prior, adapter, env):
             requirements_block=requirements_block,
             round=n,
             prior=prior,
+            plan_diff=plan_diff,
         )
         spec = adapters.CallSpec(
             prompt=prompt,
@@ -474,6 +489,7 @@ def _lens_round(run, n, lenses, plan, requirements, prior, adapter, env):
 def review_round(run, adapter=None, env=None):
     """One secondary read-only review of plan.md.
 
+    Saves the plan being reviewed to plan-review/round-<n>/plan.md.
     Dispatches to multi-lens review (_lens_round) when plan_review_lenses is non-empty,
     or legacy single-call review when empty. Returns (round, CallResult). Raises
     RuntimeError when max_plan_review_rounds is used up.
@@ -485,6 +501,7 @@ def review_round(run, adapter=None, env=None):
         raise RuntimeError("max_plan_review_rounds (%d) reached: arbitrate the findings in "
                            "plan-review/arbitration.md and ask the user" % cfg["max_plan_review_rounds"])
     plan = _read(run, "plan.md")
+    state._write_atomic(run.path("plan-review/round-%d/plan.md" % n), plan)
     try:
         requirements = _read(run, "requirements.md")
     except ApprovalError:

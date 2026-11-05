@@ -18,6 +18,7 @@ Return only a JSON object matching the schema: verdict, findings[] {severity: bl
 
 $requirements_block
 
+$plan_diff
 ## Plan
 
 $plan

@@ -124,11 +124,12 @@ If a blocking finding re-emerges at a location modified in an earlier revision (
 |---|---|---|
 | `max_plan_review_rounds` | `3` | Review rounds per plan. |
 | `plan_review_lenses` | `[]` | One review per lens: `zoom_out` (simpler, reuse), `comprehension` (can a new reader restate it), `critic` (failure modes, requirements), `readiness` (no decisions left to the coder). `[]` runs a single review. |
+| `zoom_out_after_fix` | `false` | When enabled, the `zoom_out` plan review lens from round 2 onward receives a unified diff against round `n-1`'s copy of `plan.md`. |
 | `ticket_review` | `false` | Review each ticket for readiness before approval. `yoke approve tickets` then refuses tickets that are not ready. |
 | `ticket_review_max` | `30` | Most tickets reviewed per round. |
 | `max_ticket_review_rounds` | `2` | Readiness review rounds. |
 
-The rubric for each lens is in [`yoke/standards/`](../yoke/standards/).
+Each review round saves a copy of `plan.md` to `plan-review/round-<n>/plan.md`. The rubric for each lens is in [`yoke/standards/`](../yoke/standards/).
 
 ## Retries and test fixes
 
