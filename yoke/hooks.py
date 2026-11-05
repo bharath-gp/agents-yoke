@@ -27,6 +27,8 @@ def _kill_group(proc: subprocess.Popen, grace: float = 1.0) -> None:
         os.killpg(pgid, signal.SIGTERM)
     except (ProcessLookupError, PermissionError):
         pass
+    except PermissionError as e:
+        logger.debug("killpg(%s) EPERM: %s", pgid, e)
 
     if grace:
         try:
@@ -38,6 +40,8 @@ def _kill_group(proc: subprocess.Popen, grace: float = 1.0) -> None:
         os.killpg(pgid, signal.SIGKILL)
     except (ProcessLookupError, PermissionError):
         pass
+    except PermissionError as e:
+        logger.debug("killpg(%s) EPERM: %s", pgid, e)
 
     try:
         proc.wait(timeout=1.0)
