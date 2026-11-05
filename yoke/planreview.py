@@ -1,4 +1,5 @@
 """Front half: init, bounded plan-review rounds, hash-bound approvals (PLAN 2.3, M2)."""
+import concurrent.futures
 import hashlib
 import json
 import os
@@ -10,6 +11,48 @@ from . import adapters, calls, config, schema, state
 
 PKG = os.path.dirname(os.path.abspath(__file__))
 KINDS = ("plan", "tickets", "final")
+
+
+def load_standard(name):
+    if name not in config.PLAN_LENSES:
+        raise ValueError("unknown standard %r" % name)
+    with open(os.path.join(PKG, "standards", name + ".md")) as f:
+        return f.read()
+
+
+_SEVERITY_RANK = {"minor": 0, "major": 1, "blocker": 2}
+
+
+def merge_findings(per_lens):
+    """Merge findings from multiple lenses, deduplicating by (section, issue) and escalating severity.
+
+    Deduplicates based on (section.strip().lower(), issue.strip().lower()). Keeps first-seen
+    finding dict and raises its severity to highest seen (blocker > major > minor). Output
+    order preserves lens order then finding order.
+    """
+    # shortcut: exact-text dedupe; add fuzzy match if duplicate findings pile up
+    seen = {}
+    merged = []
+    for findings in per_lens or []:
+        if not isinstance(findings, list):
+            continue
+        for f in findings:
+            if not isinstance(f, dict):
+                continue
+            section = str(f.get("section") or "").strip().lower()
+            issue = str(f.get("issue") or "").strip().lower()
+            key = (section, issue)
+            if key not in seen:
+                copied = dict(f)
+                seen[key] = copied
+                merged.append(copied)
+            else:
+                existing = seen[key]
+                cur_rank = _SEVERITY_RANK.get(existing.get("severity"), -1)
+                new_rank = _SEVERITY_RANK.get(f.get("severity"), -1)
+                if new_rank > cur_rank:
+                    existing["severity"] = f.get("severity")
+    return merged
 
 
 class ApprovalError(Exception):
@@ -66,12 +109,27 @@ def approval_stage(run):
     return "run"
 
 
-def approve(run, kind):
-    """Record sha256 for `kind`. tickets needs plan approved+unchanged; final needs tickets."""
+def approve(run, kind, accept_unready=None):
+    """Record sha256 for `kind`. tickets needs plan approved+unchanged; final needs tickets.
+
+    When ticket_review is true in config, kind='tickets' requires the latest readiness
+    round matching current tickets hash to have no not_ready tickets, unless accept_unready
+    reason is supplied to override and record acceptance to plan-review/arbitration.md.
+    """
     if kind == "final":
         check_approval(run, "tickets")
     elif kind == "tickets":
         check_approval(run, "plan")
+        if config.ticket_review(run.cfg):
+            from . import readiness
+            problems = readiness.gate_problems(run)
+            if problems:
+                if not (accept_unready and accept_unready.strip()):
+                    raise ApprovalError(
+                        "tickets not ready: %s; fix tickets.json and run `yoke review-tickets`, or pass --accept-unready REASON"
+                        % "; ".join(problems)
+                    )
+                readiness.record_accept(run, problems, accept_unready)
     entry = {"sha256": current_hash(run, "plan" if kind == "plan" else "tickets"), "at": state.now()}
     with state._LOCK:
         approvals = run.read_json("approvals.json", {})
@@ -312,9 +370,114 @@ def debate_round(run, n, res, adapter_for=None, env=None):
     return debate_data
 
 
+def _lens_round(run, n, lenses, plan, requirements, prior, adapter, env):
+    """Execute multi-lens plan review round, merging findings and writing paraphrase/result artifacts.
+
+    Runs one read-only call per lens in parallel or sequential mode, merging findings via merge_findings
+    and recording per-lens health metadata. Returns a synthetic CallResult wrapping the merged output.
+    """
+    cfg = run.cfg
+    role = "plan_review"
+    adapter = adapter or adapters.get(config.agent_for(cfg, role))
+    repo = run.read_json("run.json")["repo"]
+    schema_path = os.path.join(schema.SCHEMA_DIR, "plan-review.json")
+    timeout_s = cfg["timeouts_s"][role]
+    setting_sources = ((cfg.get("agents") or {}).get("claude") or {}).get("setting_sources", "project,local")
+
+    with open(os.path.join(PKG, "prompts", "plan_lens.md")) as f:
+        template = string.Template(f.read())
+
+    specs = []
+    for lens in lenses:
+        requirements_block = ("## Requirements\n\n" + requirements + "\n\n") if lens == "critic" else ""
+        standard = load_standard(lens)
+        prompt = template.safe_substitute(
+            lens=lens,
+            standard=standard,
+            plan=plan,
+            requirements_block=requirements_block,
+            round=n,
+            prior=prior,
+        )
+        spec = adapters.CallSpec(
+            prompt=prompt,
+            schema_path=schema_path,
+            cwd=repo,
+            mode="read",
+            timeout_s=timeout_s,
+            env=env or {},
+            setting_sources=setting_sources,
+        )
+        specs.append((lens, spec))
+
+    try:
+        parallel = int(cfg.get("parallel", 1))
+    except (TypeError, ValueError):
+        parallel = 1
+
+    def _call(item):
+        lens_name, call_spec = item
+        return calls.run_call(run, adapter, call_spec, stage="plan_review", attempt=n, label="lens-" + lens_name)
+
+    if parallel > 1 and len(specs) > 1:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(specs), parallel)) as pool:
+            futures = [pool.submit(_call, item) for item in specs]
+            results = [f.result() for f in futures]
+    else:
+        results = [_call(item) for item in specs]
+
+    per_lens_findings = []
+    lens_meta = {}
+    errs_by_lens = {}
+    summaries = []
+    paraphrase = None
+
+    for (lens, _), res in zip(specs, results):
+        is_ok = res.ok and res.schema_valid is not False and isinstance(res.structured_output, dict)
+        if is_ok:
+            out = res.structured_output
+            raw_findings = out.get("findings")
+            f_list = [f for f in raw_findings if isinstance(f, dict)] if isinstance(raw_findings, list) else []
+            per_lens_findings.append(f_list)
+            lens_meta[lens] = {"ok": True, "error": None, "findings": len(f_list)}
+            summary = str(out.get("summary") or "").strip()
+            summaries.append("%s: %s" % (lens, summary))
+            if lens == "comprehension" and isinstance(out.get("paraphrase"), dict):
+                paraphrase = out["paraphrase"]
+        else:
+            per_lens_findings.append([])
+            err = res.error or "schema invalid"
+            lens_meta[lens] = {"ok": False, "error": err, "findings": 0}
+            errs_by_lens[lens] = err
+
+    if not any(m["ok"] for m in lens_meta.values()):
+        err_msg = "all plan lenses failed: " + "; ".join("%s: %s" % (l, errs_by_lens[l]) for l in lenses)
+        return adapters.CallResult(error=err_msg)
+
+    merged_findings = merge_findings(per_lens_findings)
+    has_blocker_or_major = any(f.get("severity") in ("blocker", "major") for f in merged_findings)
+    verdict = "changes_requested" if has_blocker_or_major else "approve"
+    merged = {
+        "verdict": verdict,
+        "findings": merged_findings,
+        "summary": "; ".join(summaries),
+        "lenses": lens_meta,
+    }
+    if paraphrase is not None:
+        merged["paraphrase"] = paraphrase
+        run.write_json("plan-review/round-%d/paraphrase.json" % n, paraphrase)
+
+    run.write_json("plan-review/round-%d/result.json" % n, merged)
+    return adapters.CallResult(structured_output=merged, schema_valid=True)
+
+
 def review_round(run, adapter=None, env=None):
-    """One secondary read-only review of plan.md. Returns (round, CallResult). Raises
-    RuntimeError when max_plan_review_rounds is used up."""
+    """One secondary read-only review of plan.md.
+
+    Dispatches to multi-lens review (_lens_round) when plan_review_lenses is non-empty,
+    or legacy single-call review when empty. Returns (round, CallResult). Raises
+    RuntimeError when max_plan_review_rounds is used up.
+    """
     given_adapter = adapter
     cfg = run.cfg
     n = next_round(run)
@@ -330,19 +493,28 @@ def review_round(run, adapter=None, env=None):
     if n > 1:
         prior = ("\nPrevious round results and the primary's arbitration are in the run "
                  "directory; the plan below is the current revision.\n")
-    with open(os.path.join(PKG, "prompts", "plan_review.md")) as f:
-        prompt = string.Template(f.read()).safe_substitute(
-            requirements=requirements, plan=plan, round=n, prior=prior)
-    role = "plan_review"
-    spec = adapters.CallSpec(
-        prompt=prompt, schema_path=os.path.join(schema.SCHEMA_DIR, "plan-review.json"),
-        cwd=run.read_json("run.json")["repo"], mode="read",
-        timeout_s=cfg["timeouts_s"][role], env=env or {},
-        setting_sources=((cfg.get("agents") or {}).get("claude") or {}).get("setting_sources", "project,local"))
-    adapter = adapter or adapters.get(config.agent_for(cfg, role))
-    res = calls.run_call(run, adapter, spec, stage=role, attempt=n)
+    lenses = config.plan_review_lenses(cfg)
+    if not lenses:
+        with open(os.path.join(PKG, "prompts", "plan_review.md")) as f:
+            prompt = string.Template(f.read()).safe_substitute(
+                requirements=requirements, plan=plan, round=n, prior=prior)
+        role = "plan_review"
+        spec = adapters.CallSpec(
+            prompt=prompt, schema_path=os.path.join(schema.SCHEMA_DIR, "plan-review.json"),
+            cwd=run.read_json("run.json")["repo"], mode="read",
+            timeout_s=cfg["timeouts_s"][role], env=env or {},
+            setting_sources=((cfg.get("agents") or {}).get("claude") or {}).get("setting_sources", "project,local"))
+        adapter = adapter or adapters.get(config.agent_for(cfg, role))
+        res = calls.run_call(run, adapter, spec, stage=role, attempt=n)
+        run.event("plan_review", round=n, ok=res.ok and res.schema_valid is not False,
+                  plan_sha256=current_hash(run, "plan"))
+        if res.ok and res.schema_valid is not False:
+            debate_round(run, n, res, adapter_for=(lambda _role: given_adapter) if given_adapter is not None else None, env=env)
+        return n, res
+
+    res = _lens_round(run, n, lenses, plan, requirements, prior, adapter, env)
     run.event("plan_review", round=n, ok=res.ok and res.schema_valid is not False,
-              plan_sha256=current_hash(run, "plan"))
+              plan_sha256=current_hash(run, "plan"), lenses=lenses)
     if res.ok and res.schema_valid is not False:
         debate_round(run, n, res, adapter_for=(lambda _role: given_adapter) if given_adapter is not None else None, env=env)
     return n, res

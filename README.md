@@ -55,7 +55,7 @@ Development: `uv tool install --editable .`, then `claude plugin marketplace add
 
 ### Role mapping and review
 
-Agent roles are configured via `yoke setup --primary <agent> --secondary <agent> --map <role>=<who>`. Supported roles include `requirements`, `planner`, `wayfinder`, `orchestrator`, `plan_review`, `code`, `review`, `qa`, `validate`, `docs`, `search`, `research`, `factcheck`, `pr_body`, `hypotheses`, and `hypotheses_rank`.
+Agent roles are configured via `yoke setup --primary <agent> --secondary <agent> --map <role>=<who>`. Supported roles include `requirements`, `planner`, `wayfinder`, `orchestrator`, `plan_review`, `readiness`, `code`, `review`, `qa`, `validate`, `docs`, `search`, `research`, `factcheck`, `pr_body`, `hypotheses`, and `hypotheses_rank`.
 
 The `review` role defaults to `auto`, resolving dynamically to the opposite of the `code` agent (`claude` <-> `agy`), ensuring code review is performed by a different agent than the implementer. For custom code agent names outside `AGENTS`, it falls back to `primary` (or `secondary` if `primary` matches `code`). `yoke setup` warns if an explicit override assigns the same agent to both code and review. Use `--map review=auto` to restore automatic resolution.
 
@@ -147,9 +147,43 @@ Yoke enforces clean review context and target scope boundaries across review and
 - **Overlap deferral with `files`**: When `parallel > 1`, ready tickets whose `files` paths overlap any currently running ticket are deferred if `files_hint` is empty.
 - **Reference warnings**: `yoke tickets import`, `yoke tickets chart`, and `yoke review-plan` scan backticked repo-relative paths in `plan.md` and ticket fields, issuing reference warnings for any paths that neither exist in the target repository nor are declared with action `create` in a ticket's `files` list. `tickets.warnings` also warns when a feature, bugfix, or refactor ticket lacks a `files` definition.
 
+### Plan review lenses and ticket readiness
+
+Yoke supports multi-lens evaluation for plans and isolated readiness checks for tickets before execution:
+
+```json
+{
+  "plan_review_lenses": [
+    "zoom_out",
+    "comprehension",
+    "critic",
+    "readiness"
+  ],
+  "ticket_review": false,
+  "ticket_review_max": 30,
+  "max_ticket_review_rounds": 2,
+  "timeouts_s": {
+    "readiness": 900
+  }
+}
+```
+
+- **Plan review lenses (`plan_review_lenses`)**: Plan review (`yoke review-plan` / `planreview.review_round`) supports multi-lens evaluation via `plan_review_lenses` (defaults to `[]`, preserving single-call review on `plan.md`). Allowed values are `zoom_out` (YAGNI, simplification, reuse), `comprehension` (naive reader, paraphrase), `critic` (failure modes, edge cases, requirements compliance), and `readiness` (zero-decision rule, file boundaries).
+- **Rubric standards (`yoke/standards/`)**: When `plan_review_lenses` is non-empty, review executes one read-only call per configured lens using `plan_lens.md` and rubric standards in `yoke/standards/<name>.md` passed as `$standard`. Only `critic` receives `requirements.md`; other lenses evaluate `plan.md` against repository context alone.
+- **Concurrent evaluation**: When `parallel > 1`, lenses execute concurrently up to `min(len(lenses), parallel)` worker threads. Results are collected in lens order.
+- **Deduplication and merged result**: Findings across lenses are merged and deduplicated by `(section, issue)` (normalized case and whitespace), retaining the first-seen finding dict while raising its severity to the highest seen (`blocker` > `major` > `minor`). Individual lens failures are tolerated and recorded in `lenses` metadata. If all lenses fail, review fails without writing `result.json`. Otherwise, merged findings are written to `plan-review/round-<n>/result.json` and passed as a synthetic `CallResult` to `debate_round`.
+- **Paraphrase output (`paraphrase.json`)**: When `comprehension` is included, its extracted understanding (`{proposes, existing_system}`) is saved to `plan-review/round-<n>/paraphrase.json` and printed by `yoke review-plan` (`paraphrase: <path>`).
+- **Ticket readiness review (`yoke review-tickets`)**: Performs isolated, read-only evaluation of individual tickets against the readiness rubric before execution (`readiness.review_tickets`). Configured via `ticket_review` (default: `false`), `ticket_review_max` (default: `30`), and `max_ticket_review_rounds` (default: `2`).
+- **Readiness role and isolation**: Executes one read-only agent call per ticket using the `readiness` role (plan tier model selection, defaulting to `secondary`) up to `ticket_review_max`. Each call receives only the ticket JSON, repository context, and plan sections cited in the ticket's `plan_sections` field (extracted via `readiness.plan_section`).
+- **Zero-decision rubric**: Reviewers evaluate whether the ticket is unambiguous for a coder with no shell access. The reviewer returns a structured verdict (`ready` or `not_ready`), paraphrase, remaining decisions as `questions`, and missing repository references as `missing_refs`. A ticket is `ready` only when both questions and missing references are empty.
+- **Tagged records and round summary**: Per-ticket evaluations are saved to `ticket-review/round-<n>/<tid>.json` tagged with `tickets_sha256` (matching the current tickets hash). A round summary is saved to `ticket-review/round-<n>/summary.json` listing `ready`, `not_ready`, and `skipped` ticket IDs, and a `ticket_review` event is emitted.
+- **Budget and failure handling**: Calls are budget-checked against `max_agent_calls_total`. If budget is exhausted, remaining tickets in the review range are marked `not_ready` with error `budget exhausted`. Any failed or schema-invalid call is marked `not_ready` with an error message. Rounds are capped by `max_ticket_review_rounds` (default: 2), raising a `RuntimeError` when exceeded.
+- **CLI behavior**: When `ticket_review` is disabled in configuration, `yoke review-tickets` prints `ticket_review is off; skipped` and exits 0. When enabled, it prints the round directory, readiness counts, and first questions or errors for not_ready tickets, warning on stderr if tickets exceeded `ticket_review_max`.
+- **Readiness gate on approve (`yoke approve tickets`)**: When `ticket_review` is enabled, `yoke approve tickets` requires the latest readiness review round matching the current `tickets.json` hash to have no unready tickets. If unreviewed at the current hash or if `not_ready` tickets exist, approval is refused with an `ApprovalError`. Operators can override with `--accept-unready REASON` (blank or whitespace-only reasons are rejected), which appends an acceptance block to `plan-review/arbitration.md` and emits a `ticket_review_accepted` event before recording approval. When `ticket_review` is disabled (the default), `yoke approve tickets` behaves unchanged.
+
 ### Model selection and tiers
 
-Models can be configured per agent across two tiers: `plan` (used for `requirements`, `planner`, `plan_review`, `wayfinder`) and `cheap` (used for all other execution stages such as `code`, `qa`, `docs`, `review`, and `validate`):
+Models can be configured per agent across two tiers: `plan` (used for `requirements`, `planner`, `plan_review`, `wayfinder`, `readiness`) and `cheap` (used for all other execution stages such as `code`, `qa`, `docs`, `review`, and `validate`):
 
 ```json
 "models": {
@@ -595,7 +629,8 @@ The skills run these for you; the raw commands below are for scripting and debug
 ```bash
 yoke init --requirements req.md   # prints run_id; write plan.md into ~/.yoke/runs/<run_id>/
 yoke review-plan                  # one read-only secondary review round (warns on missing paths / TOC; prints debate summary)
-yoke approve plan                 # also: tickets (creates GitHub milestones/issues if tracker=github), final
+yoke review-tickets               # one read-only readiness review call per ticket (up to ticket_review_max)
+yoke approve plan                 # also: tickets [--accept-unready REASON] (creates GitHub milestones/issues if tracker=github), final
 yoke tickets chart [--feedback "note"] # map approved plan to milestones/tickets via wayfinder
                                   # ticket ids continue after the highest GitHub issue/PR number (T-0057 after #56)
 yoke tickets import tickets.json  # validate milestones/tickets and warn; `yoke tickets show` groups by milestone

@@ -418,6 +418,12 @@ class TestRunCall(Tmp):
         self.assertEqual(calls.audit_rel("plan_rebut", "T-001", 2, "x"), "tickets/T-001/attempt-2/plan_rebut")
         self.assertEqual(calls.audit_rel("plan_judge", "T-001", 2, "x"), "tickets/T-001/attempt-2/plan_judge")
 
+    def test_audit_rel_plan_review_lens(self):
+        self.assertEqual(calls.audit_rel("plan_review", None, 2, "x", label="lens-critic"), "plan-review/round-2/lens-critic")
+        self.assertEqual(calls.audit_rel("plan_review", None, None, "x", label="lens-critic"), "plan-review/round-1/lens-critic")
+        self.assertEqual(calls.audit_rel("plan_review", None, 2, "x"), "plan-review/round-2")
+        self.assertEqual(calls.audit_rel("plan_review", None, 2, "x", label="other"), "plan-review/round-2")
+
     def test_schema_reask_succeeds(self):
         res = self.call({"code": [{"structured_output": {"status": "bogus"}, "session_id": "s1"},
                                   {"structured_output": {"status": "done"}, "session_id": "s1"}]},

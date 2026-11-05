@@ -256,6 +256,37 @@ class TestModelsCLI(unittest.TestCase):
         self.assertEqual(data.get("models"), {})
 
 
+class TestPlanReviewLensesConfig(unittest.TestCase):
+    def test_default_empty_and_unknown_rejected(self):
+        self.assertEqual(config.plan_review_lenses(config.load()), [])
+        self.assertEqual(config.plan_review_lenses(), [])
+        self.assertEqual(
+            config.plan_review_lenses({"plan_review_lenses": ["critic", "critic", "zoom_out"]}),
+            ["critic", "zoom_out"],
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "unknown plan_review_lenses entry 'bogus'; allowed: zoom_out, comprehension, critic, readiness",
+        ):
+            config.plan_review_lenses({"plan_review_lenses": ["bogus"]})
+
+    def test_readiness_role_uses_plan_tier(self):
+        cfg = dict(config.load(), models={"agy": {"plan": {"model": "P"}, "cheap": {"model": "C"}}})
+        self.assertEqual(config.model_for(cfg, "agy", "readiness"), ("P", None))
+        self.assertEqual(config.agent_for(config.load(), "readiness"), config.load()["roles"]["secondary"])
+        self.assertIs(config.ticket_review(config.load()), False)
+        self.assertIs(config.ticket_review(), False)
+        self.assertIs(config.ticket_review({"ticket_review": True}), True)
+        self.assertIs(config.ticket_review({"ticket_review": "true"}), False)
+        self.assertIs(config.ticket_review({"ticket_review": 1}), False)
+
+        loaded = config.load()
+        self.assertEqual(loaded["ticket_review_max"], 30)
+        self.assertEqual(loaded["max_ticket_review_rounds"], 2)
+        self.assertEqual(loaded["timeouts_s"]["readiness"], 900)
+        self.assertEqual(loaded["roles"]["by_role"]["readiness"], "secondary")
+
+
 class TestConfigReviewMode(unittest.TestCase):
     def test_config_review_mode_defaults_and_clamps(self):
         cfg = config.load()

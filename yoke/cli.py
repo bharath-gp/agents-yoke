@@ -1,4 +1,4 @@
-"""yoke CLI: doctor, init, review-plan, approve, tickets, route; runner commands live in runcmds.py."""
+"""yoke CLI: doctor, init, review-plan, review-tickets, approve, tickets, route; runner commands live in runcmds.py."""
 import argparse
 import hashlib
 import json
@@ -204,13 +204,16 @@ def _front_half(args):
             print("warning: %s" % w, file=sys.stderr)
         try:
             n, res = planreview.review_round(run)
-        except (RuntimeError, planreview.ApprovalError) as e:
+        except (RuntimeError, planreview.ApprovalError, ValueError) as e:
             print("yoke: %s" % e, file=sys.stderr)
             return 1
         print("round %d: %s" % (n, run.path("plan-review/round-%d" % n)))
         if res.ok and res.schema_valid:
             out = res.structured_output
             print("verdict %s, %d findings: %s" % (out["verdict"], len(out["findings"]), out["summary"]))
+            para_path = run.path("plan-review/round-%d/paraphrase.json" % n)
+            if os.path.exists(para_path):
+                print("paraphrase: %s" % para_path)
             rel = "plan-review/round-%d/debate.json" % n
             try:
                 debate = run.read_json(rel, None)
@@ -223,14 +226,42 @@ def _front_half(args):
             return 0
         print("review failed: %s" % res.error, file=sys.stderr)
         return 1
+    if args.cmd == "review-tickets":
+        from . import readiness
+        if not config.ticket_review(run.cfg):
+            print("ticket_review is off; skipped")
+            return 0
+        try:
+            n, summary = readiness.review_tickets(run)
+        except (RuntimeError, planreview.ApprovalError) as e:
+            print("yoke: %s" % e, file=sys.stderr)
+            return 1
+        print("round %d: %s" % (n, run.path("ticket-review/round-%d" % n)))
+        ready = summary.get("ready") or []
+        not_ready = summary.get("not_ready") or []
+        skipped = summary.get("skipped") or []
+        print("ready %d, not_ready %d, skipped %d" % (len(ready), len(not_ready), len(skipped)))
+        for tid in not_ready:
+            rec = run.read_json("ticket-review/round-%d/%s.json" % (n, tid), {})
+            questions = rec.get("questions") or []
+            first = questions[0] if questions else (rec.get("error") or "not ready")
+            print("%s: %s" % (tid, first))
+        if skipped:
+            m = run.cfg.get("ticket_review_max", 30)
+            print("warning: %d tickets not reviewed (ticket_review_max=%d)" % (len(skipped), m), file=sys.stderr)
+        return 0
     toc_errs = _plan_toc_errors(run) if args.kind == "plan" else []
     if toc_errs:
         for e in toc_errs:
             print("yoke: plan.md %s" % e, file=sys.stderr)
         print("yoke: add a `## Contents` index at the top of plan.md, then approve again", file=sys.stderr)
         return 1
+    accept_unready = getattr(args, "accept_unready", None)
+    if accept_unready is not None and not accept_unready.strip():
+        print("yoke: --accept-unready needs a reason", file=sys.stderr)
+        return 1
     try:
-        entry = planreview.approve(run, args.kind)
+        entry = planreview.approve(run, args.kind, accept_unready=accept_unready)
     except planreview.ApprovalError as e:
         print("yoke: %s" % e, file=sys.stderr)
         return 1
@@ -466,8 +497,12 @@ def main(argv=None):
     i.add_argument("--requirements", help="file copied to requirements.md")
     r = sub.add_parser("review-plan", help="one secondary read-only review round on plan.md")
     r.add_argument("--run")
+    rtk = sub.add_parser("review-tickets", help="one read-only readiness review call per ticket")
+    rtk.add_argument("--run")
     a = sub.add_parser("approve", help="record hash-bound approval")
     a.add_argument("kind", choices=("plan", "tickets", "final"))
+    a.add_argument("--accept-unready", metavar="REASON",
+                   help="override readiness gate with explanation written to plan-review/arbitration.md")
     a.add_argument("--run")
     d = sub.add_parser("doctor", help="check environment")
     d.add_argument("--live", action="store_true", help="one tiny -p call per agent CLI")

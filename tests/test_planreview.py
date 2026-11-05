@@ -2,6 +2,7 @@ import contextlib
 import io
 import json
 import os
+import string
 import subprocess
 import unittest
 from unittest import mock
@@ -774,6 +775,357 @@ class TestReferenceCheck(Base):
         if os.path.exists(self.run_.path("plan.md")):
             os.remove(self.run_.path("plan.md"))
         self.assertEqual(planreview.reference_warnings(self.run_), [])
+
+
+class TestPlanLenses(Base):
+    def test_default_single_call_unchanged(self):
+        self.plan("the plan")
+        n, res = self.review(APPROVE)
+        self.assertEqual(n, 1)
+        self.assertTrue(res.ok and res.schema_valid)
+        prompt_path = self.run_.path("plan-review/round-1/prompt.md")
+        with open(prompt_path) as f:
+            actual_prompt = f.read()
+        pkg_prompt = os.path.join(planreview.PKG, "prompts", "plan_review.md")
+        with open(pkg_prompt) as f:
+            template = string.Template(f.read())
+        expected_prompt = template.safe_substitute(
+            requirements="build a thing", plan="the plan", round=1, prior=""
+        )
+        self.assertEqual(actual_prompt, expected_prompt)
+        round_dir = self.run_.path("plan-review/round-1")
+        lens_dirs = [d for d in os.listdir(round_dir) if d.startswith("lens-")]
+        self.assertEqual(lens_dirs, [])
+
+    def test_four_lenses_merge_and_dedupe(self):
+        self.plan("the plan")
+        self.run_.update(config=dict(self.run_.cfg, plan_review_lenses=["zoom_out", "comprehension", "critic", "readiness"]))
+        script = {
+            "lens-zoom_out": [{
+                "structured_output": {
+                    "verdict": "changes_requested",
+                    "findings": [
+                        {"severity": "minor", "section": "Section 1", "issue": "Missing error handling", "suggestion": "Add try/except"},
+                        {"severity": "minor", "section": "Section 2", "issue": "Zoom out concern", "suggestion": "Fix zoom"},
+                    ],
+                    "summary": "zoom_out summary",
+                },
+                "session_id": "s-zo",
+            }],
+            "lens-comprehension": [{
+                "structured_output": {
+                    "verdict": "changes_requested",
+                    "findings": [
+                        {"severity": "major", "section": "  section 1  ", "issue": "  missing error handling  ", "suggestion": "Add major try/except"},
+                    ],
+                    "summary": "comp summary",
+                },
+                "session_id": "s-comp",
+            }],
+            "lens-critic": [{
+                "structured_output": {
+                    "verdict": "approve",
+                    "findings": [
+                        {"severity": "minor", "section": "Section 3", "issue": "Critic issue", "suggestion": "Fix critic"},
+                    ],
+                    "summary": "critic summary",
+                },
+                "session_id": "s-crit",
+            }],
+            "lens-readiness": [{
+                "structured_output": {
+                    "verdict": "approve",
+                    "findings": [],
+                    "summary": "ready summary",
+                },
+                "session_id": "s-ready",
+            }],
+        }
+        with open(self.script, "w") as f:
+            json.dump(script, f)
+        n, res = planreview.review_round(self.run_, adapters.FakeAdapter(FAKE_CLI), env={"FAKE_SCRIPT": self.script})
+        self.assertEqual(n, 1)
+        self.assertTrue(res.ok and res.schema_valid)
+        result_json = self.run_.read_json("plan-review/round-1/result.json")
+        findings = result_json["findings"]
+        self.assertEqual(len(findings), 3)
+        self.assertEqual(findings[0]["section"], "Section 1")
+        self.assertEqual(findings[0]["issue"], "Missing error handling")
+        self.assertEqual(findings[0]["suggestion"], "Add try/except")
+        self.assertEqual(findings[0]["severity"], "major")
+        self.assertEqual(findings[1]["issue"], "Zoom out concern")
+        self.assertEqual(findings[2]["issue"], "Critic issue")
+        lenses = result_json["lenses"]
+        self.assertEqual(len(lenses), 4)
+        for name in ["zoom_out", "comprehension", "critic", "readiness"]:
+            self.assertTrue(lenses[name]["ok"])
+            self.assertIsNone(lenses[name]["error"])
+        self.assertEqual(lenses["zoom_out"]["findings"], 2)
+        self.assertEqual(lenses["comprehension"]["findings"], 1)
+        self.assertEqual(lenses["critic"]["findings"], 1)
+        self.assertEqual(lenses["readiness"]["findings"], 0)
+        round_dir = self.run_.path("plan-review/round-1")
+        lens_dirs = sorted([d for d in os.listdir(round_dir) if d.startswith("lens-")])
+        self.assertEqual(lens_dirs, ["lens-comprehension", "lens-critic", "lens-readiness", "lens-zoom_out"])
+
+    def test_only_critic_gets_requirements(self):
+        self.plan("the plan")
+        self.run_.update(config=dict(self.run_.cfg, plan_review_lenses=["zoom_out", "comprehension", "critic", "readiness"]))
+        script = {
+            "lens-zoom_out": [{"structured_output": APPROVE, "session_id": "s1"}],
+            "lens-comprehension": [{"structured_output": APPROVE, "session_id": "s2"}],
+            "lens-critic": [{"structured_output": APPROVE, "session_id": "s3"}],
+            "lens-readiness": [{"structured_output": APPROVE, "session_id": "s4"}],
+        }
+        with open(self.script, "w") as f:
+            json.dump(script, f)
+        planreview.review_round(self.run_, adapters.FakeAdapter(FAKE_CLI), env={"FAKE_SCRIPT": self.script})
+        round_dir = self.run_.path("plan-review/round-1")
+        with open(os.path.join(round_dir, "lens-critic", "prompt.md")) as f:
+            critic_prompt = f.read()
+        self.assertIn("build a thing", critic_prompt)
+        for name in ["zoom_out", "comprehension", "readiness"]:
+            with open(os.path.join(round_dir, "lens-" + name, "prompt.md")) as f:
+                prompt = f.read()
+            self.assertNotIn("build a thing", prompt)
+
+    def test_lenses_never_see_each_other(self):
+        self.plan("the plan")
+        self.run_.update(config=dict(self.run_.cfg, plan_review_lenses=["zoom_out", "comprehension", "critic", "readiness"]))
+        distinctive_issue = "UNIQUE_CANARY_LEAK_CHECK_12345"
+        script = {
+            "lens-zoom_out": [{
+                "structured_output": {
+                    "verdict": "changes_requested",
+                    "findings": [{"severity": "major", "section": "1", "issue": distinctive_issue, "suggestion": "fix"}],
+                    "summary": "zo",
+                },
+                "session_id": "s1",
+            }],
+            "lens-comprehension": [{"structured_output": APPROVE, "session_id": "s2"}],
+            "lens-critic": [{"structured_output": APPROVE, "session_id": "s3"}],
+            "lens-readiness": [{"structured_output": APPROVE, "session_id": "s4"}],
+        }
+        with open(self.script, "w") as f:
+            json.dump(script, f)
+        planreview.review_round(self.run_, adapters.FakeAdapter(FAKE_CLI), env={"FAKE_SCRIPT": self.script})
+        round_dir = self.run_.path("plan-review/round-1")
+        for name in ["zoom_out", "comprehension", "critic", "readiness"]:
+            with open(os.path.join(round_dir, "lens-" + name, "prompt.md")) as f:
+                prompt = f.read()
+            self.assertNotIn(distinctive_issue, prompt)
+
+    def test_paraphrase_saved_and_printed(self):
+        self.plan("the plan")
+        self.run_.update(config=dict(self.run_.cfg, plan_review_lenses=["comprehension"]))
+        para_data = {
+            "proposes": "New authentication flow",
+            "existing_system": "Legacy session cookies",
+        }
+        script = {
+            "lens-comprehension": [{
+                "structured_output": {
+                    "verdict": "approve",
+                    "findings": [],
+                    "summary": "understood",
+                    "paraphrase": para_data,
+                },
+                "session_id": "s-comp",
+            }],
+        }
+        with open(self.script, "w") as f:
+            json.dump(script, f)
+
+        buf = io.StringIO()
+        with mock.patch.dict(os.environ, {"YOKE_HOME": self.tmp, "FAKE_SCRIPT": self.script}), \
+             mock.patch("yoke.planreview.adapters.get", return_value=adapters.FakeAdapter(FAKE_CLI)), \
+             contextlib.redirect_stdout(buf):
+            rc = cli.main(["review-plan", "--run", self.run_.run_id])
+
+        self.assertEqual(rc, 0)
+        para_path = self.run_.path("plan-review/round-1/paraphrase.json")
+        self.assertTrue(os.path.exists(para_path))
+        self.assertEqual(self.run_.read_json("plan-review/round-1/paraphrase.json"), para_data)
+        out = buf.getvalue()
+        self.assertIn("paraphrase: " + para_path, out)
+
+    def test_one_lens_failure_tolerated(self):
+        self.plan("the plan")
+        self.run_.update(config=dict(self.run_.cfg, plan_review_lenses=["zoom_out", "readiness"]))
+        script = {
+            "lens-zoom_out": [{
+                "structured_output": APPROVE,
+                "session_id": "s-zo",
+            }],
+            "lens-readiness": [
+                {"structured_output": {"findings": [], "summary": "no verdict"}, "session_id": "s-r1"},
+                {"structured_output": {"findings": [], "summary": "no verdict again"}, "session_id": "s-r2"},
+            ],
+        }
+        with open(self.script, "w") as f:
+            json.dump(script, f)
+        n, res = planreview.review_round(self.run_, adapters.FakeAdapter(FAKE_CLI), env={"FAKE_SCRIPT": self.script})
+        self.assertEqual(n, 1)
+        self.assertTrue(res.ok)
+        self.assertTrue(res.schema_valid)
+        lenses = res.structured_output["lenses"]
+        self.assertTrue(lenses["zoom_out"]["ok"])
+        self.assertFalse(lenses["readiness"]["ok"])
+        self.assertIn("schema", lenses["readiness"]["error"])
+
+    def test_all_lenses_fail(self):
+        self.plan("the plan")
+        self.run_.update(config=dict(self.run_.cfg, plan_review_lenses=["zoom_out", "readiness"]))
+        script = {
+            "lens-zoom_out": [
+                {"structured_output": {"findings": [], "summary": "missing verdict 1"}, "session_id": "s-z1"},
+                {"structured_output": {"findings": [], "summary": "missing verdict 2"}, "session_id": "s-z2"},
+            ],
+            "lens-readiness": [
+                {"structured_output": {"findings": [], "summary": "missing verdict 1"}, "session_id": "s-r1"},
+                {"structured_output": {"findings": [], "summary": "missing verdict 2"}, "session_id": "s-r2"},
+            ],
+        }
+        with open(self.script, "w") as f:
+            json.dump(script, f)
+        n, res = planreview.review_round(self.run_, adapters.FakeAdapter(FAKE_CLI), env={"FAKE_SCRIPT": self.script})
+        self.assertEqual(n, 1)
+        self.assertFalse(res.ok)
+        self.assertTrue(res.error.startswith("all plan lenses failed"))
+        self.assertFalse(os.path.exists(self.run_.path("plan-review/round-1/result.json")))
+        events = [json.loads(l) for l in slurp(self.run_.path("events.jsonl")).splitlines()]
+        pr_events = [e for e in events if e.get("kind") == "plan_review"]
+        self.assertEqual(len(pr_events), 1)
+        self.assertFalse(pr_events[0]["ok"])
+        self.assertEqual(pr_events[0]["lenses"], ["zoom_out", "readiness"])
+
+    def test_single_debate_for_merged_findings(self):
+        self.plan("the plan")
+        self.run_.update(config=dict(self.run_.cfg, review_mode="adversarial", plan_review_lenses=["zoom_out", "critic"]))
+        script = {
+            "lens-zoom_out": [{
+                "structured_output": {
+                    "verdict": "changes_requested",
+                    "findings": [{"severity": "major", "section": "1", "issue": "zo issue", "suggestion": "fix 1"}],
+                    "summary": "zo",
+                },
+                "session_id": "s-zo",
+            }],
+            "lens-critic": [{
+                "structured_output": {
+                    "verdict": "changes_requested",
+                    "findings": [{"severity": "major", "section": "2", "issue": "critic issue", "suggestion": "fix 2"}],
+                    "summary": "crit",
+                },
+                "session_id": "s-crit",
+            }],
+            "plan_rebut": [{
+                "structured_output": {
+                    "responses": [
+                        {"id": "p1", "stance": "concede", "argument": "concede p1", "evidence": "spec 1"},
+                        {"id": "p2", "stance": "concede", "argument": "concede p2", "evidence": "spec 2"},
+                    ],
+                    "summary": "conceded both",
+                },
+                "session_id": "s-rebut",
+            }],
+        }
+        with open(self.script, "w") as f:
+            json.dump(script, f)
+        n, res = planreview.review_round(self.run_, adapters.FakeAdapter(FAKE_CLI), env={"FAKE_SCRIPT": self.script})
+        self.assertEqual(n, 1)
+        debate = self.run_.read_json("plan-review/round-1/debate.json")
+        self.assertEqual(len(debate["upheld"]), 2)
+        self.assertEqual(len(debate["overruled"]), 0)
+        self.assertNotIn("error", debate)
+        self.assertEqual(debate["rebuttals"], script["plan_rebut"][0]["structured_output"]["responses"])
+        self.assertEqual(self.run_.read_json("run.json")["agent_calls"], 3)
+        self.assertTrue(os.path.exists(self.run_.path("plan-review/round-1/rebut/result.json")))
+
+    def test_unknown_lens_cli_error(self):
+        self.plan("the plan")
+        self.run_.update(config=dict(self.run_.cfg, plan_review_lenses=["bogus"]))
+        buf_out = io.StringIO()
+        buf_err = io.StringIO()
+        with mock.patch.dict(os.environ, {"YOKE_HOME": self.tmp}), \
+             contextlib.redirect_stdout(buf_out), \
+             contextlib.redirect_stderr(buf_err):
+            rc = cli.main(["review-plan", "--run", self.run_.run_id])
+        self.assertEqual(rc, 1)
+        self.assertIn("unknown plan_review_lenses", buf_err.getvalue())
+
+        self.run_.update(config=dict(self.run_.cfg, plan_review_lenses=["critic", "bogus"]))
+        buf_out = io.StringIO()
+        buf_err = io.StringIO()
+        with mock.patch.dict(os.environ, {"YOKE_HOME": self.tmp}), \
+             contextlib.redirect_stdout(buf_out), \
+             contextlib.redirect_stderr(buf_err):
+            rc = cli.main(["review-plan", "--run", self.run_.run_id])
+        self.assertEqual(rc, 1)
+        self.assertIn("unknown plan_review_lenses", buf_err.getvalue())
+        self.assertFalse(os.path.exists(self.run_.path("plan-review/round-1/lens-critic")))
+
+    def test_merge_findings_unit(self):
+        per_lens = [
+            [
+                {"severity": "minor", "section": "Sec 1", "issue": "Issue A", "suggestion": "sug 1"},
+                {"severity": "minor", "section": "Sec 2", "issue": "Issue B", "suggestion": "sug 2"},
+            ],
+            [
+                {"severity": "major", "section": " sec 1 ", "issue": " issue a ", "suggestion": "sug 1-major"},
+                {"severity": "blocker", "section": "Sec 3", "issue": "Issue C", "suggestion": "sug 3"},
+            ],
+            [
+                {"severity": "minor", "section": "sec 3", "issue": "issue c", "suggestion": "sug 3-minor"},
+            ],
+        ]
+        merged = planreview.merge_findings(per_lens)
+        self.assertEqual(len(merged), 3)
+        self.assertEqual(merged[0]["section"], "Sec 1")
+        self.assertEqual(merged[0]["issue"], "Issue A")
+        self.assertEqual(merged[0]["suggestion"], "sug 1")
+        self.assertEqual(merged[0]["severity"], "major")
+        self.assertEqual(merged[1]["section"], "Sec 2")
+        self.assertEqual(merged[1]["severity"], "minor")
+        self.assertEqual(merged[2]["section"], "Sec 3")
+        self.assertEqual(merged[2]["severity"], "blocker")
+
+    def test_parallel_lenses(self):
+        self.plan("the plan")
+        self.run_.update(config=dict(self.run_.cfg, parallel=2, plan_review_lenses=["zoom_out", "critic"]))
+        script = {
+            "lens-zoom_out": [{
+                "structured_output": {
+                    "verdict": "changes_requested",
+                    "findings": [{"severity": "minor", "section": "Sec 1", "issue": "ZO issue", "suggestion": "ZO fix"}],
+                    "summary": "zo ok",
+                },
+                "session_id": "s1",
+            }],
+            "lens-critic": [{
+                "structured_output": {
+                    "verdict": "changes_requested",
+                    "findings": [{"severity": "major", "section": "Sec 2", "issue": "Critic issue", "suggestion": "Critic fix"}],
+                    "summary": "crit ok",
+                },
+                "session_id": "s2",
+            }],
+        }
+        with open(self.script, "w") as f:
+            json.dump(script, f)
+        n, res = planreview.review_round(self.run_, adapters.FakeAdapter(FAKE_CLI), env={"FAKE_SCRIPT": self.script})
+        self.assertEqual(n, 1)
+        self.assertTrue(res.ok and res.schema_valid)
+        self.assertEqual(len(res.structured_output["lenses"]), 2)
+        findings = res.structured_output["findings"]
+        self.assertEqual(len(findings), 2)
+        self.assertEqual(findings[0]["issue"], "ZO issue")
+        self.assertEqual(findings[1]["issue"], "Critic issue")
+        events = [json.loads(l) for l in slurp(self.run_.path("events.jsonl")).splitlines()]
+        pr_events = [e for e in events if e.get("kind") == "plan_review"]
+        self.assertEqual(len(pr_events), 1)
+        self.assertTrue(pr_events[0]["ok"])
+        self.assertEqual(pr_events[0]["lenses"], ["zoom_out", "critic"])
 
 
 if __name__ == "__main__":

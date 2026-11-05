@@ -28,10 +28,21 @@ def check_budget(run):
 
 
 def audit_rel(stage, ticket, attempt, call_id, label=None):
+    """Return run-relative path for storing call audit artifacts.
+
+    Routes readiness review calls to ticket-review/round-<attempt>/<label>.
+    Routes plan review lens calls with labels starting with 'lens-' to
+    plan-review/round-<attempt>/<label>. All other stages and label formats
+    retain standard audit paths.
+    """
     tag = label or stage
     if ticket:
         return "tickets/%s/attempt-%s/%s" % (ticket, attempt or 1, tag)
+    if stage == "readiness":
+        return "ticket-review/round-%s/%s" % (attempt or 1, label or "ticket")
     if stage == "plan_review":
+        if label and label.startswith("lens-"):
+            return "plan-review/round-%s/%s" % (attempt or 1, label)
         return "plan-review/round-%s" % (attempt or 1)
     if stage == "plan_rebut":
         return "plan-review/round-%s/rebut" % (attempt or 1)

@@ -103,6 +103,7 @@ def load(repo=None, home=None, overrides=None):
 
 AGENTS = ("claude", "agy")
 DEFAULT_REVIEW_LENSES = ["security", "performance", "tests"]
+PLAN_LENSES = ("zoom_out", "comprehension", "critic", "readiness")
 DEFAULT_WRITE_BOUNDARY_EXTRA = ["tests/**", "docs/**", "README.md"]
 
 
@@ -114,6 +115,31 @@ def review_lenses(cfg=None):
     if lenses is not None:
         return list(lenses)
     return list(DEFAULT_REVIEW_LENSES)
+
+
+def plan_review_lenses(cfg=None):
+    """Return configured plan review lenses, duplicates removed keeping first-seen order."""
+    if cfg is None:
+        cfg = load()
+    raw = list(cfg.get("plan_review_lenses") or [])
+    out = []
+    seen = set()
+    for name in raw:
+        if name not in PLAN_LENSES:
+            raise ValueError(
+                "unknown plan_review_lenses entry %r; allowed: zoom_out, comprehension, critic, readiness" % name
+            )
+        if name not in seen:
+            seen.add(name)
+            out.append(name)
+    return out
+
+
+def ticket_review(cfg=None):
+    """Return whether ticket review is enabled, defaulting to False."""
+    if cfg is None:
+        cfg = load()
+    return cfg.get("ticket_review", False) is True
 
 
 def review_mode(cfg=None):
@@ -235,7 +261,7 @@ def save_roles(path, primary=None, secondary=None, mapping=None):
     return out["roles"]
 
 
-PLAN_ROLES = ("requirements", "planner", "plan_review", "wayfinder")
+PLAN_ROLES = ("requirements", "planner", "plan_review", "wayfinder", "readiness")
 
 
 def model_for(cfg, agent, role):
