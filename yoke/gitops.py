@@ -1,6 +1,7 @@
 """Git plumbing for the runner: feature branch, per-ticket worktrees, commit, rebase, ff merge (PLAN 2.9).
 Everything shells out to `git -C`. The runner never pushes."""
 import os
+import re
 import subprocess
 import threading
 
@@ -93,3 +94,31 @@ def agent_made_commits(wt, since_sha):
 def undo_commits(wt, since_sha):
     """Drop commits made after since_sha but keep their changes staged (agents must not commit)."""
     git(wt, "reset", "--soft", since_sha)
+
+
+def write_tree(wt):
+    """Stage all changes with git add -A and return the tree SHA via git write-tree."""
+    git(wt, "add", "-A")
+    return git(wt, "write-tree").stdout.strip()
+
+
+def changed_ranges(wt, tree_a, tree_b):
+    """Return dict of {path: [[start, end], ...]} new-side line ranges between tree_a and tree_b."""
+    # shortcut: ranges are as of that revision; later revisions can shift lines, map through later diffs if churn misses
+    r = git(wt, "diff", "-U0", "--no-renames", tree_a, tree_b)
+    ranges = {}
+    current_file = None
+    hunk_re = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+    for line in r.stdout.splitlines():
+        if line.startswith("+++ b/"):
+            current_file = line[len("+++ b/"):]
+        elif line.startswith("+++ /dev/null"):
+            current_file = None
+        elif current_file and line.startswith("@@ "):
+            m = hunk_re.match(line)
+            if m:
+                c = int(m.group(1))
+                d = int(m.group(2)) if m.group(2) is not None else 1
+                span = [c, c] if d == 0 else [c, c + max(d, 1) - 1]
+                ranges.setdefault(current_file, []).append(span)
+    return ranges

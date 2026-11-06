@@ -249,6 +249,7 @@ class TestPlanDebate(Base):
         self.assertEqual(len(debate["overruled"]), 1)
         self.assertEqual(debate["overruled"][0]["finding"]["issue"], "second issue")
         self.assertEqual(debate["overruled"][0]["reason"], "addressed in 2.1")
+        self.assertEqual(debate["escalated"], [])
         self.assertEqual(debate["rebuttals"], rebut["responses"])
         self.assertEqual(debate["rulings"], judge["rulings"])
 
@@ -258,6 +259,7 @@ class TestPlanDebate(Base):
         self.assertEqual(debate_events[0]["round"], 1)
         self.assertEqual(debate_events[0]["upheld"], 1)
         self.assertEqual(debate_events[0]["overruled"], 1)
+        self.assertEqual(debate_events[0]["escalated"], 0)
 
         self.assertTrue(os.path.isdir(self.run_.path("plan-review/round-1/rebut")))
         self.assertTrue(os.path.isdir(self.run_.path("plan-review/round-1/judge")))
@@ -286,6 +288,7 @@ class TestPlanDebate(Base):
         debate = self.run_.read_json("plan-review/round-1/debate.json")
         self.assertEqual(len(debate["upheld"]), 2)
         self.assertEqual(len(debate["overruled"]), 0)
+        self.assertEqual(debate["escalated"], [])
         self.assertEqual([f["issue"] for f in debate["upheld"]], ["first issue", "second issue"])
         self.assertEqual(debate["rulings"], [])
 
@@ -353,6 +356,7 @@ class TestPlanDebate(Base):
         debate = self.run_.read_json("plan-review/round-1/debate.json")
         self.assertEqual(len(debate["upheld"]), 2)
         self.assertEqual(len(debate["overruled"]), 0)
+        self.assertEqual(debate["escalated"], [])
         self.assertEqual(debate["rebuttals"], [])
         self.assertEqual(debate["rulings"], [])
         self.assertIn("error", debate)
@@ -363,6 +367,7 @@ class TestPlanDebate(Base):
         self.assertEqual(debate_events[0]["round"], 1)
         self.assertEqual(debate_events[0]["upheld"], 2)
         self.assertEqual(debate_events[0]["overruled"], 0)
+        self.assertEqual(debate_events[0]["escalated"], 0)
 
     def test_missing_ids_count_as_disputed_and_go_to_judge(self):
         self.plan()
@@ -426,6 +431,7 @@ class TestPlanDebate(Base):
         debate = self.run_.read_json("plan-review/round-1/debate.json")
         self.assertEqual(len(debate["upheld"]), 2)
         self.assertEqual(len(debate["overruled"]), 0)
+        self.assertEqual(debate["escalated"], [])
         self.assertEqual([f["issue"] for f in debate["upheld"]], ["first issue", "second issue"])
         self.assertEqual(len(debate["rulings"]), 1)
 
@@ -460,6 +466,7 @@ class TestPlanDebate(Base):
         debate = self.run_.read_json("plan-review/round-1/debate.json")
         self.assertEqual(len(debate["upheld"]), 2)
         self.assertEqual(len(debate["overruled"]), 0)
+        self.assertEqual(debate["escalated"], [])
         self.assertEqual([f["issue"] for f in debate["upheld"]], ["first issue", "second issue"])
 
         events = [json.loads(l) for l in slurp(self.run_.path("events.jsonl")).splitlines()]
@@ -499,6 +506,7 @@ class TestPlanDebate(Base):
         debate = self.run_.read_json("plan-review/round-1/debate.json")
         self.assertEqual(len(debate["upheld"]), 2)
         self.assertEqual(len(debate["overruled"]), 0)
+        self.assertEqual(debate["escalated"], [])
         self.assertEqual(debate["rulings"], [])
 
         events = [json.loads(l) for l in slurp(self.run_.path("events.jsonl")).splitlines()]
@@ -541,6 +549,7 @@ class TestPlanDebate(Base):
         debate = self.run_.read_json("plan-review/round-1/debate.json")
         self.assertEqual(len(debate["upheld"]), 1)
         self.assertEqual(debate["upheld"][0]["issue"], "real issue")
+        self.assertEqual(debate["escalated"], [])
         rebut_prompt = slurp(self.run_.path("plan-review/round-1/rebut/prompt.md"))
         self.assertIn("real issue", rebut_prompt)
         self.assertNotIn("minor nit", rebut_prompt)
@@ -718,6 +727,203 @@ class TestPlanDebate(Base):
         out = buf.getvalue()
         self.assertNotIn("debate:", out)
 
+    def test_comprehension_finding_never_rebutted(self):
+        self.plan()
+        self.run_.update(config=dict(self.run_.cfg, plan_review_lenses=["comprehension"]))
+        comp_output = {
+            "verdict": "changes_requested",
+            "findings": [
+                {"severity": "blocker", "section": "1", "issue": "hard to understand", "suggestion": "clarify"},
+            ],
+            "summary": "comprehension blocker",
+        }
+        script = {
+            "lens-comprehension": [{"structured_output": comp_output, "session_id": "s-comp"}],
+        }
+        with open(self.script, "w") as f:
+            json.dump(script, f)
+        n, res = planreview.review_round(self.run_, adapters.FakeAdapter(FAKE_CLI), env={"FAKE_SCRIPT": self.script})
+        self.assertEqual(n, 1)
+        self.assertFalse(os.path.exists(self.run_.path("plan-review/round-1/rebut")))
+        self.assertFalse(os.path.exists(self.run_.path("plan-review/round-1/judge")))
+        debate = self.run_.read_json("plan-review/round-1/debate.json")
+        self.assertEqual(len(debate["upheld"]), 1)
+        self.assertEqual(debate["upheld"][0]["issue"], "hard to understand")
+        self.assertEqual(debate["overruled"], [])
+        self.assertEqual(debate["escalated"], [])
+        events = [json.loads(l) for l in slurp(self.run_.path("events.jsonl")).splitlines()]
+        debate_events = [e for e in events if e.get("kind") == "plan_debate"]
+        self.assertEqual(len(debate_events), 1)
+        self.assertEqual(debate_events[0]["upheld"], 1)
+        self.assertEqual(debate_events[0]["overruled"], 0)
+        self.assertEqual(debate_events[0]["escalated"], 0)
+
+    def test_comprehension_finding_deduped_after_critic_is_exempt(self):
+        self.plan()
+        self.run_.update(config=dict(self.run_.cfg, plan_review_lenses=["critic", "comprehension"]))
+        critic_output = {
+            "verdict": "changes_requested",
+            "findings": [
+                {"severity": "major", "section": "1", "issue": "shared issue", "suggestion": "fix it"},
+            ],
+            "summary": "critic major",
+        }
+        comp_output = {
+            "verdict": "changes_requested",
+            "findings": [
+                {"severity": "blocker", "section": "1", "issue": "shared issue", "suggestion": "clarify"},
+            ],
+            "summary": "comprehension blocker",
+        }
+        script = {
+            "lens-critic": [{"structured_output": critic_output, "session_id": "s-crit"}],
+            "lens-comprehension": [{"structured_output": comp_output, "session_id": "s-comp"}],
+        }
+        with open(self.script, "w") as f:
+            json.dump(script, f)
+        n, res = planreview.review_round(self.run_, adapters.FakeAdapter(FAKE_CLI), env={"FAKE_SCRIPT": self.script})
+        self.assertEqual(n, 1)
+        self.assertFalse(os.path.exists(self.run_.path("plan-review/round-1/rebut")))
+        self.assertFalse(os.path.exists(self.run_.path("plan-review/round-1/judge")))
+        debate = self.run_.read_json("plan-review/round-1/debate.json")
+        self.assertEqual(len(debate["upheld"]), 1)
+        self.assertEqual(debate["upheld"][0]["issue"], "shared issue")
+        self.assertEqual(debate["upheld"][0]["lenses"], ["critic", "comprehension"])
+        self.assertEqual(debate["overruled"], [])
+        self.assertEqual(debate["escalated"], [])
+
+    def test_mixed_comprehension_and_debated_findings_with_judge(self):
+        self.plan()
+        self.run_.update(config=dict(self.run_.cfg, plan_review_lenses=["comprehension", "critic"]))
+        comp_output = {
+            "verdict": "changes_requested",
+            "findings": [
+                {"severity": "blocker", "section": "1", "issue": "comp blocker", "suggestion": "clarify"},
+            ],
+            "summary": "comp blocker",
+        }
+        critic_output = {
+            "verdict": "changes_requested",
+            "findings": [
+                {"severity": "major", "section": "2", "issue": "critic blocker", "suggestion": "fix 2"},
+            ],
+            "summary": "critic major",
+        }
+        rebut = {
+            "responses": [
+                {"id": "p1", "stance": "dispute", "argument": "critic is wrong", "evidence": "spec"},
+            ],
+            "summary": "disputed p1",
+        }
+        judge = {
+            "rulings": [
+                {"id": "p1", "ruling": "overruled", "reason": "planner is right"},
+            ],
+            "summary": "overruled p1",
+        }
+        script = {
+            "lens-comprehension": [{"structured_output": comp_output, "session_id": "s-comp"}],
+            "lens-critic": [{"structured_output": critic_output, "session_id": "s-crit"}],
+            "plan_rebut": [{"structured_output": rebut, "session_id": "s-rebut"}],
+            "plan_judge": [{"structured_output": judge, "session_id": "s-judge"}],
+        }
+        with open(self.script, "w") as f:
+            json.dump(script, f)
+        n, res = planreview.review_round(self.run_, adapters.FakeAdapter(FAKE_CLI), env={"FAKE_SCRIPT": self.script})
+        self.assertEqual(n, 1)
+        self.assertTrue(os.path.exists(self.run_.path("plan-review/round-1/rebut")))
+        self.assertTrue(os.path.exists(self.run_.path("plan-review/round-1/judge")))
+        rebut_prompt = slurp(self.run_.path("plan-review/round-1/rebut/prompt.md"))
+        self.assertNotIn("comp blocker", rebut_prompt)
+        self.assertIn("critic blocker", rebut_prompt)
+        self.assertNotIn('"lenses"', rebut_prompt)
+        self.assertNotIn('"lens"', rebut_prompt)
+        judge_prompt = slurp(self.run_.path("plan-review/round-1/judge/prompt.md"))
+        self.assertNotIn("comp blocker", judge_prompt)
+        self.assertIn("critic blocker", judge_prompt)
+        self.assertNotIn('"lenses"', judge_prompt)
+        self.assertNotIn('"lens"', judge_prompt)
+        debate = self.run_.read_json("plan-review/round-1/debate.json")
+        self.assertEqual(len(debate["upheld"]), 1)
+        self.assertEqual(debate["upheld"][0]["issue"], "comp blocker")
+        self.assertEqual(len(debate["overruled"]), 1)
+        self.assertEqual(debate["overruled"][0]["finding"]["issue"], "critic blocker")
+        self.assertEqual(debate["escalated"], [])
+
+    def test_escalate_listed(self):
+        self.plan()
+        self.run_.update(config=dict(self.run_.cfg, escalate_findings=True))
+        changes = {
+            "verdict": "changes_requested",
+            "summary": "fix",
+            "findings": [
+                {"severity": "major", "section": "1", "issue": "external decision needed", "suggestion": "ask user"},
+            ],
+        }
+        rebut = {
+            "responses": [
+                {"id": "p1", "stance": "escalate", "argument": "needs product decision", "evidence": "spec"},
+            ],
+            "summary": "escalated p1",
+        }
+        script = {
+            "plan_review": [{"structured_output": changes, "session_id": "s"}],
+            "plan_rebut": [{"structured_output": rebut, "session_id": "s"}],
+        }
+        with open(self.script, "w") as f:
+            json.dump(script, f)
+
+        buf = io.StringIO()
+        with mock.patch.dict(os.environ, {"YOKE_HOME": self.tmp, "FAKE_SCRIPT": self.script}), \
+             mock.patch("yoke.planreview.adapters.get", return_value=adapters.FakeAdapter(FAKE_CLI)), \
+             contextlib.redirect_stdout(buf):
+            rc = cli.main(["review-plan", "--run", self.run_.run_id])
+
+        self.assertEqual(rc, 0)
+        self.assertFalse(os.path.exists(self.run_.path("plan-review/round-1/judge")))
+        debate = self.run_.read_json("plan-review/round-1/debate.json")
+        self.assertEqual(len(debate["escalated"]), 1)
+        self.assertEqual(debate["escalated"][0]["issue"], "external decision needed")
+        self.assertEqual(len(debate["upheld"]), 0)
+        self.assertEqual(len(debate["overruled"]), 0)
+        out = buf.getvalue()
+        self.assertIn("escalated: 1 finding(s) need the user", out)
+        expected = "escalated: 1 finding(s) need the user (see %s)" % self.run_.path("plan-review/round-1/debate.json")
+        self.assertIn(expected, out)
+        rebut_prompt = slurp(self.run_.path("plan-review/round-1/rebut/prompt.md"))
+        self.assertIn(planreview.ESCALATE_RULE, rebut_prompt)
+        self.assertNotIn('"lenses"', rebut_prompt)
+        self.assertNotIn('"lens"', rebut_prompt)
+
+    def test_escalate_without_flag_counts_as_dispute(self):
+        self.plan()
+        changes = {
+            "verdict": "changes_requested",
+            "summary": "fix",
+            "findings": [
+                {"severity": "major", "section": "1", "issue": "external decision", "suggestion": "ask"},
+            ],
+        }
+        rebut = {
+            "responses": [
+                {"id": "p1", "stance": "escalate", "argument": "needs user", "evidence": "spec"},
+            ],
+            "summary": "escalated p1",
+        }
+        judge = {
+            "rulings": [
+                {"id": "p1", "ruling": "overruled", "reason": "not needed"},
+            ],
+            "summary": "overruled p1",
+        }
+        self.debate(changes, plan_rebut=rebut, plan_judge=judge)
+        self.assertTrue(os.path.isdir(self.run_.path("plan-review/round-1/judge")))
+        debate = self.run_.read_json("plan-review/round-1/debate.json")
+        self.assertEqual(len(debate["overruled"]), 1)
+        self.assertEqual(debate["escalated"], [])
+        rebut_prompt = slurp(self.run_.path("plan-review/round-1/rebut/prompt.md"))
+        self.assertNotIn(planreview.ESCALATE_RULE, rebut_prompt)
+
 
 class TestReferenceCheck(Base):
     def test_review_plan_prints_missing_path_warning(self):
@@ -853,8 +1059,14 @@ class TestPlanLenses(Base):
         self.assertEqual(findings[0]["issue"], "Missing error handling")
         self.assertEqual(findings[0]["suggestion"], "Add try/except")
         self.assertEqual(findings[0]["severity"], "major")
+        self.assertEqual(findings[0]["lenses"], ["zoom_out", "comprehension"])
+        self.assertNotIn("lens", findings[0])
         self.assertEqual(findings[1]["issue"], "Zoom out concern")
+        self.assertEqual(findings[1]["lenses"], ["zoom_out"])
+        self.assertNotIn("lens", findings[1])
         self.assertEqual(findings[2]["issue"], "Critic issue")
+        self.assertEqual(findings[2]["lenses"], ["critic"])
+        self.assertNotIn("lens", findings[2])
         lenses = result_json["lenses"]
         self.assertEqual(len(lenses), 4)
         for name in ["zoom_out", "comprehension", "critic", "readiness"]:
@@ -1037,10 +1249,14 @@ class TestPlanLenses(Base):
         debate = self.run_.read_json("plan-review/round-1/debate.json")
         self.assertEqual(len(debate["upheld"]), 2)
         self.assertEqual(len(debate["overruled"]), 0)
+        self.assertEqual(debate["escalated"], [])
         self.assertNotIn("error", debate)
         self.assertEqual(debate["rebuttals"], script["plan_rebut"][0]["structured_output"]["responses"])
         self.assertEqual(self.run_.read_json("run.json")["agent_calls"], 3)
         self.assertTrue(os.path.exists(self.run_.path("plan-review/round-1/rebut/result.json")))
+        rebut_prompt = slurp(self.run_.path("plan-review/round-1/rebut/prompt.md"))
+        self.assertNotIn('"lenses"', rebut_prompt)
+        self.assertNotIn('"lens"', rebut_prompt)
 
     def test_unknown_lens_cli_error(self):
         self.plan("the plan")
@@ -1090,6 +1306,22 @@ class TestPlanLenses(Base):
         self.assertEqual(merged[2]["section"], "Sec 3")
         self.assertEqual(merged[2]["severity"], "blocker")
 
+        per_lens_tagged = [
+            [
+                {"severity": "minor", "section": "Sec 1", "issue": "Issue A", "suggestion": "sug 1", "lens": "zoom_out"},
+            ],
+            [
+                {"severity": "major", "section": " sec 1 ", "issue": " issue a ", "suggestion": "sug 1-major", "lens": "comprehension"},
+                {"severity": "blocker", "section": "Sec 3", "issue": "Issue C", "suggestion": "sug 3", "lens": "critic"},
+            ],
+        ]
+        merged_tagged = planreview.merge_findings(per_lens_tagged)
+        self.assertEqual(len(merged_tagged), 2)
+        self.assertEqual(merged_tagged[0]["lenses"], ["zoom_out", "comprehension"])
+        self.assertNotIn("lens", merged_tagged[0])
+        self.assertEqual(merged_tagged[1]["lenses"], ["critic"])
+        self.assertNotIn("lens", merged_tagged[1])
+
     def test_parallel_lenses(self):
         self.plan("the plan")
         self.run_.update(config=dict(self.run_.cfg, parallel=2, plan_review_lenses=["zoom_out", "critic"]))
@@ -1126,6 +1358,142 @@ class TestPlanLenses(Base):
         self.assertEqual(len(pr_events), 1)
         self.assertTrue(pr_events[0]["ok"])
         self.assertEqual(pr_events[0]["lenses"], ["zoom_out", "critic"])
+
+
+class TestPlanDiff(Base):
+    def test_round_dir_saves_plan(self):
+        self.plan("the plan for round 1\nline 2\n")
+        self.review(APPROVE)
+        round_plan_path = self.run_.path("plan-review/round-1/plan.md")
+        self.assertTrue(os.path.exists(round_plan_path))
+        with open(round_plan_path) as f:
+            round_plan = f.read()
+        with open(self.run_.path("plan.md")) as f:
+            current_plan = f.read()
+        self.assertEqual(round_plan, current_plan)
+
+    def test_zoom_out_gets_diff_from_round_2(self):
+        self.plan("line 1\nline 2\n")
+        self.run_.update(config=dict(self.run_.cfg, zoom_out_after_fix=True, plan_review_lenses=["zoom_out", "critic"]))
+        script = {
+            "lens-zoom_out": [
+                {"structured_output": APPROVE, "session_id": "s1"},
+                {"structured_output": APPROVE, "session_id": "s3"},
+            ],
+            "lens-critic": [
+                {"structured_output": APPROVE, "session_id": "s2"},
+                {"structured_output": APPROVE, "session_id": "s4"},
+            ],
+        }
+        with open(self.script, "w") as f:
+            json.dump(script, f)
+
+        # round 1
+        planreview.review_round(self.run_, adapters.FakeAdapter(FAKE_CLI), env={"FAKE_SCRIPT": self.script})
+
+        # round 1 zoom_out prompt should not contain diff
+        with open(self.run_.path("plan-review/round-1/lens-zoom_out/prompt.md")) as f:
+            zo_prompt_r1 = f.read()
+        self.assertNotIn("Changes since", zo_prompt_r1)
+
+        # rewrite plan.md with a changed line
+        changed_line = "changed line in plan\n"
+        self.plan("line 1\n" + changed_line)
+
+        # round 2
+        planreview.review_round(self.run_, adapters.FakeAdapter(FAKE_CLI), env={"FAKE_SCRIPT": self.script})
+
+        # assert round-2/lens-zoom_out/prompt.md contains 'Changes since round 1', diff fence, headers, and the changed line
+        with open(self.run_.path("plan-review/round-2/lens-zoom_out/prompt.md")) as f:
+            zo_prompt = f.read()
+        self.assertIn("Changes since round 1", zo_prompt)
+        self.assertIn("```diff\n", zo_prompt)
+        self.assertIn("--- round-1/plan.md\n", zo_prompt)
+        self.assertIn("+++ plan.md\n", zo_prompt)
+        self.assertIn("-line 2\n", zo_prompt)
+        self.assertIn("+changed line in plan\n", zo_prompt)
+        self.assertIn("```\n\n\n## Plan", zo_prompt)
+
+        # and round-2/lens-critic/prompt.md does not
+        with open(self.run_.path("plan-review/round-2/lens-critic/prompt.md")) as f:
+            critic_prompt = f.read()
+        self.assertNotIn("Changes since round 1", critic_prompt)
+
+    def test_zoom_out_no_diff_when_flag_off(self):
+        changed_line = "changed line in plan\n"
+        script = {
+            "lens-zoom_out": [
+                {"structured_output": APPROVE, "session_id": "s1"},
+                {"structured_output": APPROVE, "session_id": "s3"},
+            ],
+            "lens-critic": [
+                {"structured_output": APPROVE, "session_id": "s2"},
+                {"structured_output": APPROVE, "session_id": "s4"},
+            ],
+        }
+        req = os.path.join(self.tmp, "req.md")
+        run_off = planreview.init_run(
+            self.repo, req,
+            {"max_plan_review_rounds": 2, "review_mode": "independent", "zoom_out_after_fix": False, "plan_review_lenses": ["zoom_out", "critic"]},
+            home=self.tmp,
+        )
+        with open(run_off.path("plan.md"), "w") as f:
+            f.write("line 1\nline 2\n")
+        script_off = os.path.join(self.tmp, "script_off.json")
+        with open(script_off, "w") as f:
+            json.dump(script, f)
+
+        planreview.review_round(run_off, adapters.FakeAdapter(FAKE_CLI), env={"FAKE_SCRIPT": script_off})
+        with open(run_off.path("plan.md"), "w") as f:
+            f.write("line 1\n" + changed_line)
+        planreview.review_round(run_off, adapters.FakeAdapter(FAKE_CLI), env={"FAKE_SCRIPT": script_off})
+
+        with open(run_off.path("plan-review/round-2/lens-zoom_out/prompt.md")) as f:
+            zo_prompt_off = f.read()
+        self.assertNotIn("Changes since round 1", zo_prompt_off)
+
+        with open(run_off.path("plan-review/round-2/lens-critic/prompt.md")) as f:
+            critic_prompt_off = f.read()
+        self.assertNotIn("Changes since round 1", critic_prompt_off)
+
+    def test_zoom_out_no_diff_when_prev_plan_missing(self):
+        self.plan("line 1\nline 2\n")
+        self.run_.update(config=dict(self.run_.cfg, zoom_out_after_fix=True, plan_review_lenses=["zoom_out"]))
+        script = {
+            "lens-zoom_out": [
+                {"structured_output": APPROVE, "session_id": "s1"},
+                {"structured_output": APPROVE, "session_id": "s2"},
+            ],
+        }
+        with open(self.script, "w") as f:
+            json.dump(script, f)
+        planreview.review_round(self.run_, adapters.FakeAdapter(FAKE_CLI), env={"FAKE_SCRIPT": self.script})
+        # Remove round-1/plan.md to simulate missing prev plan
+        os.remove(self.run_.path("plan-review/round-1/plan.md"))
+        self.plan("line 1\nline 2 modified\n")
+        planreview.review_round(self.run_, adapters.FakeAdapter(FAKE_CLI), env={"FAKE_SCRIPT": self.script})
+        with open(self.run_.path("plan-review/round-2/lens-zoom_out/prompt.md")) as f:
+            prompt = f.read()
+        self.assertNotIn("Changes since", prompt)
+
+    def test_diff_fence_closed_when_no_trailing_newline(self):
+        self.plan("line 1\nline 2")
+        self.run_.update(config=dict(self.run_.cfg, zoom_out_after_fix=True, plan_review_lenses=["zoom_out"]))
+        script = {
+            "lens-zoom_out": [
+                {"structured_output": APPROVE, "session_id": "s1"},
+                {"structured_output": APPROVE, "session_id": "s2"},
+            ],
+        }
+        with open(self.script, "w") as f:
+            json.dump(script, f)
+        planreview.review_round(self.run_, adapters.FakeAdapter(FAKE_CLI), env={"FAKE_SCRIPT": self.script})
+        self.plan("line 1\nline 2 changed")
+        planreview.review_round(self.run_, adapters.FakeAdapter(FAKE_CLI), env={"FAKE_SCRIPT": self.script})
+        with open(self.run_.path("plan-review/round-2/lens-zoom_out/prompt.md")) as f:
+            prompt = f.read()
+        self.assertIn("```diff\n", prompt)
+        self.assertIn("+line 2 changed\n```\n\n\n## Plan", prompt)
 
 
 if __name__ == "__main__":

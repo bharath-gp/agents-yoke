@@ -111,6 +111,32 @@ class TestReviewPrompt(unittest.TestCase):
         for var in substitutions:
             self.assertNotIn("$" + var, rendered)
 
+    def test_review_zoom_out_prompt_renders_with_string_template(self):
+        content = _read("review_zoom_out")
+        self.assertIn("$zoom_base", content)
+        self.assertIn("$upheld", content)
+        for expected in ("no edits", "no running tests", "no commits", "no push", "return only JSON", "concrete", "judge", "rebut", "minor at most"):
+            self.assertIn(expected, content)
+        template = string.Template(content)
+        substitutions = {
+            "ticket": '{"id": "T-0160", "title": "Zoom out test"}',
+            "plan_excerpt": "Relevant plan excerpt text",
+            "base_sha": "8ec46bde240ae91c626190371f5bf3c971955af6",
+            "zoom_base": "1234567890abcdef1234567890abcdef12345678",
+            "upheld": "[]",
+            "settled": "",
+            "worktree": "/tmp/worktree",
+        }
+        try:
+            rendered = template.substitute(substitutions)
+        except (KeyError, ValueError) as exc:
+            self.fail("Template substitution raised %s: %s" % (type(exc).__name__, exc))
+        self.assertIsInstance(rendered, str)
+        for var in substitutions:
+            self.assertNotIn("$" + var, rendered)
+        leftover = re.findall(r"\$[a-zA-Z_][a-zA-Z0-9_]*", rendered)
+        self.assertEqual(leftover, [], "Leftover variables in review_zoom_out: %s" % leftover)
+
     def test_code_review_and_validate_prompts_render_destination_and_out_of_scope(self):
         import re
         substitutions = {
@@ -642,12 +668,15 @@ class TestAdversarialPrompts(unittest.TestCase):
             worktree="/w",
             feedback="",
             prior_results="{}",
+            escalate_rule="",
         )
         self.assertIn("$findings", _read("rebut"))
         self.assertIn("$transcript", _read("rebut"))
         self.assertIn("$base_sha", _read("rebut"))
         self.assertIn("$worktree", _read("rebut"))
         self.assertIn("$ticket", _read("rebut"))
+        self.assertIn("$escalate_rule", _read("rebut"))
+        self.assertIn("reviewer could read", _read("rebut"))
 
         self.assertIn("$findings", _read("reply"))
         self.assertIn("$transcript", _read("reply"))
@@ -665,6 +694,8 @@ class TestAdversarialPrompts(unittest.TestCase):
         self.assertIn("$requirements", _read("plan_rebut"))
         self.assertIn("$plan", _read("plan_rebut"))
         self.assertIn("$round", _read("plan_rebut"))
+        self.assertIn("$escalate_rule", _read("plan_rebut"))
+        self.assertIn("reviewer could read", _read("plan_rebut"))
         self.assertNotIn("$rebuttals", _read("plan_rebut"))
 
         self.assertIn("$findings", _read("plan_judge"))
@@ -701,7 +732,7 @@ class TestPlanLens(unittest.TestCase):
     def test_renders_without_leftover_vars(self):
         from yoke import planreview
         content = _read("plan_lens")
-        for var in ("$lens", "$standard", "$plan", "$requirements_block", "$round", "$prior"):
+        for var in ("$lens", "$standard", "$plan", "$requirements_block", "$round", "$prior", "$plan_diff"):
             self.assertIn(var, content)
         template = string.Template(content)
         for lens in config.PLAN_LENSES:
@@ -713,6 +744,7 @@ class TestPlanLens(unittest.TestCase):
                 requirements_block="Requirements block",
                 round=1,
                 prior="Prior text",
+                plan_diff="",
             )
             leftover = re.findall(r"\$[a-zA-Z_][a-zA-Z0-9_]*", rendered)
             self.assertEqual(leftover, [], "Leftover variables in plan_lens for lens %s: %s" % (lens, leftover))

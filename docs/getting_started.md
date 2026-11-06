@@ -90,7 +90,7 @@ To stop the runner, run `yoke stop`.
 
 ## Answer an escalation
 
-The runner escalates when a ticket fails `max_attempts_per_ticket` times (default 3), when a milestone gate fails after its fix tickets, when a budget cap is reached, or when the safety guard needs a decision. `yoke wait` returns, and the agent shows you the escalation. Answer it in chat, or run one of these yourself:
+The runner escalates when a ticket fails `max_attempts_per_ticket` times (default 3), when a review finding is escalated (`review_escalate`), when a milestone gate fails after its fix tickets, when a budget cap is reached, or when the safety guard needs a decision. `yoke wait` returns, and the agent shows you the escalation. Answer it in chat, or run one of these yourself:
 
 | Situation | Command |
 |---|---|
@@ -100,7 +100,9 @@ The runner escalates when a ticket fails `max_attempts_per_ticket` times (defaul
 | Retry a milestone gate | `yoke unblock --milestone MS-01 [--note "TEXT"]` |
 | Accept a failing milestone gate | `yoke unblock --milestone MS-01 --waive "REASON"` |
 
-`yoke escalations` lists open escalations.
+`yoke escalations` lists open escalations, displaying ticket, kind tag (when present), and reason.
+
+When answering a `review_escalate` escalation, `yoke unblock T-001 --note "RULING"` settles the escalated finding(s) under your ruling, keeps the attempt count without appending to `feedback.md`, and resumes the review loop directly at a revision step (`code-r<n+1>`). Using `--skip` or `--reset-attempts` discards the saved review resume point.
 
 ## Resume a run
 
@@ -119,7 +121,7 @@ Each run lives in `~/.yoke/runs/<run_id>/` (set `$YOKE_HOME` to move it), never 
 | Path | Contents |
 |---|---|
 | `requirements.md`, `plan.md`, `tickets.json` | Inputs you approved. |
-| `plan-review/` | Review rounds, debates and your arbitration notes. |
+| `plan-review/` | Review rounds (including each round's saved `plan.md`), debates and your arbitration notes. |
 | `map.md` | Implementation map and decisions log. |
 | `run.json`, `events.jsonl` | Run state and the event stream. |
 | `tickets/<id>/` | Per-ticket state and every attempt's prompts, commands and outputs. |

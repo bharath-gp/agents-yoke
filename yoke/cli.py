@@ -223,6 +223,8 @@ def _front_half(args):
                 upheld = debate.get("upheld") or []
                 overruled = debate.get("overruled") or []
                 print("debate: %d upheld, %d overruled (see %s)" % (len(upheld), len(overruled), run.path(rel)))
+                if debate.get("escalated"):
+                    print("escalated: %d finding(s) need the user (see %s)" % (len(debate["escalated"]), run.path(rel)))
             return 0
         print("review failed: %s" % res.error, file=sys.stderr)
         return 1

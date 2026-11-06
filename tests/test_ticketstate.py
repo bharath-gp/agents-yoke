@@ -39,6 +39,8 @@ class TestTicketState(Base):
         self.assertEqual([(e["id"], e["ticket"], e["reason"]) for e in esc], [(1, "T-002", "stuck")])
         self.assertTrue(esc[0]["at"])
         self.assertEqual([e["kind"] for e in self.events("ticket_state", "escalation")], ["ticket_state", "escalation"])
+        esc_events = self.events("escalation")
+        self.assertNotIn("esc_kind", esc_events[0])
 
     def test_unblock_and_skip_clear_only_own_escalations(self):
         for tid in ("T-001", "T-002"):
@@ -62,6 +64,24 @@ class TestTicketState(Base):
         ticketstate.clear_escalations(self.run_, "MS-01")
         self.assertEqual([e["ticket"] for e in ticketstate.escalations(self.run_)], ["T-001"])
         self.assertTrue(os.path.isfile(self.run_.path("escalations.json")))
+
+    def test_block_with_kind_and_open_kinds(self):
+        st = ticketstate.load(self.run_, "T-003")
+        ticketstate.block(self.run_, "T-003", st, "needs review", kind="review_escalate")
+        self.assertEqual(ticketstate.open_kinds(self.run_, "T-003"), {"review_escalate"})
+        self.assertEqual(ticketstate.open_kinds(self.run_, "T-002"), set())
+        esc = ticketstate.escalations(self.run_)
+        self.assertEqual(esc[-1]["kind"], "review_escalate")
+        esc_events = self.events("escalation")
+        self.assertEqual(esc_events[-1].get("esc_kind"), "review_escalate")
+
+        ticketstate.unblock(self.run_, "T-003")
+        self.assertEqual(ticketstate.open_kinds(self.run_, "T-003"), set())
+
+        ticketstate.escalate(self.run_, "T-003", "empty kind", kind="")
+        esc2 = ticketstate.escalations(self.run_)
+        self.assertNotIn("kind", esc2[-1])
+        self.assertEqual(ticketstate.open_kinds(self.run_, "T-003"), set())
 
 
 if __name__ == "__main__":

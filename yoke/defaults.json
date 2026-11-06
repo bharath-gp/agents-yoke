@@ -40,6 +40,8 @@
   "review_mode": "adversarial",
   "debate_rounds": 1,
   "goldfish_context": true,
+  "zoom_out_after_fix": false,
+  "escalate_findings": false,
   "write_boundary": true,
   "write_boundary_extra": [
     "tests/**",

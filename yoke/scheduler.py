@@ -320,10 +320,25 @@ def unblock_milestone(run_, milestone, note=None, waive=None):
 
 
 def unblock(run_, tid, note=None, skip=False, reset_attempts=False):
-    """User's answer to an escalation. Attempts are kept (the blocked attempt re-runs) unless reset."""
-    if note and not skip:  # written before the status flips, so a live runner sees it
-        attempt = 1 if reset_attempts else ticketstate.load(run_, tid)["attempt"]
-        pipeline.write_feedback(run_, tid, attempt, "User note: " + note, append=True)
+    """User's answer to an escalation.
+
+    Attempts are kept (the blocked attempt re-runs) unless reset.
+    For review_escalate escalations with a note, settles escalated findings and resumes
+    the review round without writing to feedback.md or consuming an attempt.
+    """
+    kinds = ticketstate.open_kinds(run_, tid)
+    if "review_escalate" in kinds:
+        if note and not skip and not reset_attempts:
+            pipeline.resume_review_escalation(run_, tid, note)
+        elif skip or reset_attempts:
+            st = ticketstate.load(run_, tid)
+            st.pop("review_resume", None)
+            st.pop("start_stage", None)
+            ticketstate.save(run_, tid, st)
+    else:
+        if note and not skip:  # written before the status flips, so a live runner sees it
+            attempt = 1 if reset_attempts else ticketstate.load(run_, tid)["attempt"]
+            pipeline.write_feedback(run_, tid, attempt, "User note: " + note, append=True)
     ticketstate.unblock(run_, tid, skip=skip, reset_attempts=reset_attempts)
     pause.forget_ticket(run_, tid)
     run_.event("unblock", ticket=tid, skip=skip, reset_attempts=reset_attempts)

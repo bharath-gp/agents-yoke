@@ -111,8 +111,18 @@ The `review` stage reviews each ticket's diff, then sends blocking findings back
 | `review_mode` | `"adversarial"` | Blocker and major findings go to debate: the coder rebuts, and a plan-tier judge rules on disputes. Only upheld findings go back to the coder. `"independent"` skips the debate. |
 | `debate_rounds` | `1` | Above 1, the reviewer can reply to the rebuttal before the judge rules. |
 | `goldfish_context` | `true` | Reviewers, the judge and the validator do not see the coder's and QA's own reports. They see the diff, the runner's test evidence and the ticket. |
+| `zoom_out_after_fix` | `false` | Opt-in flag to run a post-fix zoom-out review over the whole revision diff after fixes. |
+| `escalate_findings` | `false` | Opt-in flag enabling review rebuttals to escalate findings. |
 
 Findings the judge overruled, or that were fixed, are remembered for the ticket. A lens that raises the same finding again is ignored. Findings still open at the round cap do not fail the ticket. They are recorded and listed in the pull request under "Unresolved review findings".
+
+If a blocking finding re-emerges at a location modified in an earlier revision (within 3 lines of an earlier fix and falling inside that revision's changed hunks), yoke detects review churn. The review loop stops revising early, records remaining blocking findings as unresolved, posts a comment on the tracker, and emits a `review_churn` event.
+
+When `zoom_out_after_fix` is enabled and at least one revision was made, yoke runs a read-only zoom-out review across the entire revision diff (against the tree before the first revision). The zoom-out reviewer inspects the accumulated changes for defensive bloat, duplicated guards, scope creep, and architectural drift, ignoring findings already fixed. If blocking findings are upheld in debate (`tag="z0"`), at most one revision (`code-z1`) runs, followed by a re-review round (`suffix="z1"`). Any remaining blocking findings are recorded as unresolved.
+
+When `escalate_findings` is enabled, the coder in an adversarial debate can respond to a finding with stance `escalate` when the finding requires user clarification or outside knowledge (such as a product decision or external system behavior). Escalated findings skip the reviewer reply and judge, save a review resume point (`review_resume`), and raise an escalation with kind `review_escalate`, blocking the ticket. When `escalate_findings` is off, an `escalate` stance falls through as a dispute and proceeds to the judge.
+
+Answering a `review_escalate` escalation via `yoke unblock T-001 --note "RULING"` settles the escalated finding(s) with reason `user: <ruling>` and sets `start_stage='review'`. On re-entry, the runner preserves the attempt count and review state, and jumps directly to revision `code-r<n+1>` carrying the ruling alongside any upheld blockers and suggestions. Once the revision succeeds, the resume point is cleared and normal review rounds continue. Passing `--skip` or `--reset-attempts` discards the saved resume point.
 
 ## Plan and ticket review
 
@@ -120,11 +130,17 @@ Findings the judge overruled, or that were fixed, are remembered for the ticket.
 |---|---|---|
 | `max_plan_review_rounds` | `3` | Review rounds per plan. |
 | `plan_review_lenses` | `[]` | One review per lens: `zoom_out` (simpler, reuse), `comprehension` (can a new reader restate it), `critic` (failure modes, requirements), `readiness` (no decisions left to the coder). `[]` runs a single review. |
+| `zoom_out_after_fix` | `false` | When enabled, the `zoom_out` plan review lens from round 2 onward receives a unified diff against round `n-1`'s copy of `plan.md`. |
 | `ticket_review` | `false` | Review each ticket for readiness before approval. `yoke approve tickets` then refuses tickets that are not ready. |
 | `ticket_review_max` | `30` | Most tickets reviewed per round. |
 | `max_ticket_review_rounds` | `2` | Readiness review rounds. |
+| `escalate_findings` | `false` | Opt-in flag enabling plan and review rebuttals to escalate findings. |
 
-The rubric for each lens is in [`yoke/standards/`](../yoke/standards/).
+Each review round saves a copy of `plan.md` to `plan-review/round-<n>/plan.md`. The rubric for each lens is in [`yoke/standards/`](../yoke/standards/).
+
+Merged plan findings track their source lenses. In adversarial plan debate, blocker and major findings tagged with the `comprehension` lens bypass rebuttal and judge ruling, and are upheld directly (a reader's comprehension difficulty cannot be argued away). If all blocking findings come from the `comprehension` lens, the rebuttal and judge calls are skipped entirely.
+
+When `escalate_findings` is enabled, the planner in an adversarial debate can respond to a finding with stance `escalate` when no code or plan text in reach can settle it and it needs outside knowledge from the user. Escalated findings skip the judge and are recorded in `plan-review/round-<n>/debate.json` under `escalated`. When `escalate_findings` is off, an `escalate` stance counts as a dispute and proceeds to the judge.
 
 ## Retries and test fixes
 

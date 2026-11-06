@@ -30,7 +30,7 @@ The skills run these commands for you. Use them directly for scripting and debug
 | Command | What it does |
 |---|---|
 | `yoke init --requirements FILE [--repo PATH]` | Create a run and print its id. Write `plan.md` into the run directory next. |
-| `yoke review-plan` | Run one read-only review round on `plan.md`. Prints the verdict, debate summary and warnings for missing paths or a broken `## Contents` list. |
+| `yoke review-plan` | Run one read-only review round on `plan.md`. Prints the verdict, debate summary (including any escalated findings needing user input), and warnings for missing paths or a broken `## Contents` list. |
 | `yoke approve plan` | Record plan approval. |
 | `yoke tickets chart [--feedback "NOTE"]` | Chart the approved plan into milestones and tickets. |
 | `yoke tickets import FILE` | Validate and import a hand-written `tickets.json`. |
@@ -48,8 +48,8 @@ Ticket ids continue after the highest GitHub issue or pull request number, so `T
 | `yoke run --detach [--parallel N]` | Start the background runner. It always resumes from disk. `--parallel` is saved for the run. |
 | `yoke run --resume --detach` | Restart a runner that died. |
 | `yoke wait [--timeout S]` | Block until an escalation, run end, runner death or timeout (default 3000 s). Rate-limit pauses do not end the wait. |
-| `yoke escalations` | List open escalations. |
-| `yoke unblock T-001 --note TEXT \| --skip \| --reset-attempts` | Answer a ticket escalation. |
+| `yoke escalations` | List open escalations, showing ticket, optional [kind], and reason. |
+| `yoke unblock T-001 --note TEXT \| --skip \| --reset-attempts` | Answer a ticket escalation. On a `review_escalate` escalation, `--note` resumes the same review round. |
 | `yoke unblock --milestone MS-01 [--note TEXT \| --waive REASON]` | Retry or waive a milestone gate. |
 | `yoke nudge T-001 --note TEXT` | Add guidance to a ticket's next attempt or review round. |
 | `yoke stop` | Stop the runner and its workers. |
