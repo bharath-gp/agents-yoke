@@ -31,6 +31,7 @@ def audit_rel(stage, ticket, attempt, call_id, label=None):
     """Return run-relative path for storing call audit artifacts.
 
     Routes readiness review calls to ticket-review/round-<attempt>/<label>.
+    Routes shootdown calls to shootdown/round-<attempt>/<label>.
     Routes plan review lens calls with labels starting with 'lens-' to
     plan-review/round-<attempt>/<label>. All other stages and label formats
     retain standard audit paths.
@@ -50,6 +51,8 @@ def audit_rel(stage, ticket, attempt, call_id, label=None):
         return "plan-review/round-%s/judge" % (attempt or 1)
     if stage == "wayfinder":
         return "chart/round-%s" % (attempt or 1)
+    if stage == "shootdown":
+        return "shootdown/round-%s/%s" % (attempt or 1, label or "lens")
     return "calls/%s-%s" % (tag, call_id)
 
 

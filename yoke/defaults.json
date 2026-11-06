@@ -20,7 +20,9 @@
       "pr_body": "primary",
       "hypotheses": "secondary",
       "hypotheses_rank": "primary",
-      "e2e": "primary"
+      "e2e": "primary",
+      "drift": "secondary",
+      "shootdown": "secondary"
     }
   },
   "models": {},
@@ -28,6 +30,9 @@
   "max_plan_review_rounds": 3,
   "plan_review_lenses": [],
   "ticket_review": false,
+  "review_samples": 1,
+  "drift_check": false,
+  "shootdown_lenses": [],
   "ticket_review_max": 30,
   "max_ticket_review_rounds": 2,
   "max_review_rounds": 2,
@@ -101,7 +106,9 @@
     "gate_hook": 300,
     "hypotheses": 600,
     "e2e": 900,
-    "test": 600
+    "test": 600,
+    "drift": 900,
+    "shootdown": 900
   },
   "kill_grace_s": 15,
   "router": {
