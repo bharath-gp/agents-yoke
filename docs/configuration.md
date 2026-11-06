@@ -53,7 +53,6 @@ yoke setup --primary claude --secondary agy --map code=claude --map review=auto
 |---|---|---|
 | `requirements`, `planner`, `wayfinder`, `orchestrator` | primary | Interview, plan, chart tickets. |
 | `plan_review`, `readiness` | secondary | Review the plan and the tickets. |
-| `shootdown`, `drift` | secondary | Plan shootdown review and drift check. |
 | `code`, `qa`, `docs` | secondary | Write code, tests and docs. |
 | `review` | `auto` | Review each ticket's diff. `auto` picks the agent that is not the coder. |
 | `validate` | primary | Check exit criteria and approve the ticket. |
@@ -61,12 +60,13 @@ yoke setup --primary claude --secondary agy --map code=claude --map review=auto
 | `pr_body` | primary | Fill the pull request template. |
 | `hypotheses` / `hypotheses_rank` | secondary / primary | Explain repeated failures. |
 | `e2e` | primary | Fallback for the browser stage. |
+| `drift`, `shootdown` | secondary | Check plan drift after a run and shoot down requirements. |
 
 `yoke setup` warns if you assign the same agent to `code` and `review`.
 
 ## Models and tiers
 
-Each agent has two tiers. The `plan` tier serves `requirements`, `planner`, `plan_review`, `wayfinder`, `readiness`, `shootdown` and `drift`. The `cheap` tier serves every other role.
+Each agent has two tiers. The `plan` tier serves `requirements`, `planner`, `plan_review`, `wayfinder`, `readiness`, `drift` and `shootdown`. The `cheap` tier serves every other role.
 
 ```json
 {
@@ -109,7 +109,7 @@ The `review` stage reviews each ticket's diff, then sends blocking findings back
 | Key | Default | Effect |
 |---|---|---|
 | `review_lenses` | `["security", "performance", "tests"]` | One read-only review per lens. Findings are merged by file and line. `[]` runs a single general review. |
-| `review_samples` | `1` | Number of review samples (1 or 2). Values >= 2 run two review samples. |
+| `review_samples` | `1` | Run each code-review and plan-review lens this many times (e.g. 2 runs a second instance labeled `-b`), deduplicating findings. Also covers plan lenses. |
 | `review_mode` | `"adversarial"` | Blocker and major findings go to debate: the coder rebuts, and a plan-tier judge rules on disputes. Only upheld findings go back to the coder. `"independent"` skips the debate. |
 | `debate_rounds` | `1` | Above 1, the reviewer can reply to the rebuttal before the judge rules. |
 | `goldfish_context` | `true` | Reviewers, the judge and the validator do not see the coder's and QA's own reports. They see the diff, the runner's test evidence and the ticket. |
@@ -134,14 +134,13 @@ Answering a `review_escalate` escalation via `yoke unblock T-001 --note "RULING"
 |---|---|---|
 | `max_plan_review_rounds` | `3` | Review rounds per plan. |
 | `plan_review_lenses` | `[]` | One review per lens: `zoom_out` (simpler, reuse), `comprehension` (can a new reader restate it), `critic` (failure modes, requirements), `readiness` (no decisions left to the coder). `[]` runs a single review. |
-| `review_samples` | `1` | Number of review samples (1 or 2). Values >= 2 run each plan lens twice (second call labeled `lens-<name>-b`), merging findings. |
-| `shootdown_lenses` | `[]` | Opt-in shootdown review lenses: `zoom_out`, `feasibility`, `ergonomics`. Duplicates dropped; unknown entries raise ValueError. `[]` disables shootdown review. |
-| `drift_check` | `false` | Opt-in flag to enable architectural drift checking against the plan. |
 | `zoom_out_after_fix` | `false` | When enabled, the `zoom_out` plan review lens from round 2 onward receives a unified diff against round `n-1`'s copy of `plan.md`. |
 | `ticket_review` | `false` | Review each ticket for readiness before approval. `yoke approve tickets` then refuses tickets that are not ready. |
 | `ticket_review_max` | `30` | Most tickets reviewed per round. |
 | `max_ticket_review_rounds` | `2` | Readiness review rounds. |
 | `escalate_findings` | `false` | Opt-in flag enabling plan and review rebuttals to escalate findings. |
+| `drift_check` | `false` | Check for plan drift against git diff before final approval and write `drift.json`. Advisory only. |
+| `shootdown_lenses` | `[]` | Lenses for requirements shootdown after requirements are written: `zoom_out`, `feasibility`, `ergonomics`. `[]` skips shootdown. |
 
 Each review round saves a copy of `plan.md` to `plan-review/round-<n>/plan.md`. The rubric for each lens is in [`yoke/standards/`](../yoke/standards/).
 
