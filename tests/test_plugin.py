@@ -70,7 +70,8 @@ class TestPackaging(unittest.TestCase):
             with open(os.path.join(ROOT, "skills", name, "SKILL.md")) as f:
                 subs.update(re.findall(r"`yoke ([a-z-]+)", f.read()))
         known = {"setup", "init", "review-plan", "review-tickets", "approve", "tickets", "run", "wait", "status", "escalations",
-                 "unblock", "stop", "pr", "route", "doctor", "models", "runs", "map", "dashboard", "nudge", "guard"}
+                 "unblock", "stop", "pr", "route", "doctor", "models", "runs", "map", "dashboard", "nudge", "guard",
+                 "shootdown", "drift"}
         self.assertFalse(subs - known, subs - known)
 
 
@@ -164,6 +165,18 @@ class TestPackaging(unittest.TestCase):
         self.assertIn("`yoke setup --check`", content)
         self.assertIn("waiting_limit", content)
         self.assertIn("`yoke nudge", content)
+
+    def test_m42_skill_commands(self):
+        with open(os.path.join(ROOT, "skills", "finish", "SKILL.md")) as f:
+            finish_text = f.read()
+        with open(os.path.join(ROOT, "skills", "go", "SKILL.md")) as f:
+            go_text = f.read()
+        with open(os.path.join(ROOT, "skills", "grill", "SKILL.md")) as f:
+            grill_text = f.read()
+        self.assertIn("yoke drift", finish_text)
+        self.assertIn("yoke drift", go_text)
+        self.assertIn("yoke shootdown", grill_text)
+        self.assertIn("yoke shootdown", go_text)
 
 
 class TestInstaller(unittest.TestCase):
