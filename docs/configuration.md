@@ -153,6 +153,8 @@ Merged plan findings track their source lenses. In adversarial plan debate, bloc
 
 When `escalate_findings` is enabled, the planner in an adversarial debate can respond to a finding with stance `escalate` when no code or plan text in reach can settle it and it needs outside knowledge from the user. Escalated findings skip the judge and are recorded in `plan-review/round-<n>/debate.json` under `escalated`. When `escalate_findings` is off, an `escalate` stance counts as a dispute and proceeds to the judge.
 
+When `drift_check` is enabled, `yoke drift` executes one read-only check comparing the plan work items against `git diff <base_sha>..<branch>`. It categorizes drift items as `missing` (planned item absent from diff), `divergent` (implemented differently), or `unplanned` (diff not covered by plan, ignoring tests, docs, and version bumps). Findings are saved to `drift.json` and appended to `map.md`.
+
 ## Retries and test fixes
 
 | Key | Default | Effect |

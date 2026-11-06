@@ -20,7 +20,7 @@ This page covers the parts of yoke you meet after the basic workflow: milestone 
 
 Pass `--feedback "NOTE"` to re-chart. Charting and import warn about tickets that are missing `steps`, `test_plan` or `files`, about long dependency chains that block parallel work, and about paths that do not exist in the repo.
 
-`yoke map` shows the destination, out-of-scope items, each milestone's gate status, what every waiting ticket is waiting for, the frontier of ready tickets and the decisions log. The same content is written to `map.md` in the run directory.
+`yoke map` shows the destination, out-of-scope items, each milestone's gate status, what every waiting ticket is waiting for, the frontier of ready tickets and the decisions log. The same content is written to `map.md` in the run directory. When drift checking is run (`yoke drift`), plan drift findings are appended to `map.md` as well.
 
 **Milestone gates.** Milestones merge in order. A ticket from a later milestone can start as soon as its dependencies close and a slot is free, but it cannot merge until every earlier milestone has passed or been waived. Until then it waits as `awaiting_gate`.
 
@@ -70,7 +70,7 @@ After `yoke approve final`, `yoke pr` pushes the feature branch and opens a pull
 - **Title**: the first `# ` heading of `plan.md`.
 - **Body**: the repo's pull request template, filled from the run by the `pr_body` agent. yoke looks in `.github/PULL_REQUEST_TEMPLATE/`, `.github/pull_request_template.md`, `.github/PULL_REQUEST_TEMPLATE.md`, `pull_request_template.md` and `docs/pull_request_template.md`. Without a template it writes Summary, Why, What changed, Verification and Review focus. If the agent fails, yoke fills the template itself.
 - **Checklists**: an item is ticked only when the run verified it.
-- **Links**: `Closes #N` for each tracked issue, and an "Unresolved review findings" section for plan and code review findings that were not resolved.
+- **Links**: `Closes #N` for each tracked issue, and an "Unresolved review findings" section for plan and code review findings that were not resolved. When drift results are present, a "Plan drift" section is included in the PR body.
 
 ## Research agents
 

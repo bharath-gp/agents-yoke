@@ -39,6 +39,7 @@ The skills run these commands for you. Use them directly for scripting and debug
 | `yoke review-tickets` | Run one read-only readiness review per ticket, when `ticket_review` is on. |
 | `yoke approve tickets [--accept-unready REASON]` | Record ticket approval. Creates GitHub milestones and issues when the tracker is on. |
 | `yoke route T-001` | Show the stages and agents for a ticket. |
+| `yoke drift` | Run one read-only check comparing plan work items to the git diff (`base_sha..branch`). |
 
 Ticket ids continue after the highest GitHub issue or pull request number, so `T-0057` follows `#56`.
 

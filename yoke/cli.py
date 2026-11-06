@@ -1,4 +1,4 @@
-"""yoke CLI: doctor, init, review-plan, review-tickets, shootdown, approve, tickets, route; runner commands live in runcmds.py."""
+"""yoke CLI: doctor, init, review-plan, review-tickets, shootdown, drift, approve, tickets, route; runner commands live in runcmds.py."""
 import argparse
 import hashlib
 import json
@@ -279,6 +279,27 @@ def _front_half(args):
         if all(records.get(l, {}).get("error") is not None for l in lenses):
             return 1
         return 0
+    if args.cmd == "drift":
+        from . import drift
+        if not config.drift_check(run.cfg):
+            print("drift_check is off; skipped")
+            return 0
+        try:
+            rec = drift.check_drift(run)
+        except (planreview.ApprovalError, ValueError, FileNotFoundError, KeyError) as e:
+            print("yoke: %s" % e, file=sys.stderr)
+            return 1
+        if rec.get("error") is not None:
+            print("drift failed: %s" % rec["error"], file=sys.stderr)
+            return 0
+        print("drift: %s" % run.path("drift.json"))
+        drift_items = rec.get("drift") or []
+        if drift_items:
+            for item in drift_items:
+                print("[%s] %s: %s" % (item.get("kind"), item.get("work_item"), item.get("detail")))
+        else:
+            print("drift: none")
+        return 0
     toc_errs = _plan_toc_errors(run) if args.kind == "plan" else []
     if toc_errs:
         for e in toc_errs:
@@ -530,6 +551,8 @@ def main(argv=None):
     rtk.add_argument("--run")
     sh = sub.add_parser("shootdown", help="one read-only requirements shootdown call per lens")
     sh.add_argument("--run")
+    dr = sub.add_parser("drift", help="one read-only call over plan work items and git diff")
+    dr.add_argument("--run")
     a = sub.add_parser("approve", help="record hash-bound approval")
     a.add_argument("kind", choices=("plan", "tickets", "final"))
     a.add_argument("--accept-unready", metavar="REASON",

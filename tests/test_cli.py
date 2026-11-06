@@ -217,5 +217,15 @@ class TestShootdownCLI(unittest.TestCase):
         self.assertIn("--run", out.getvalue())
 
 
+class TestDriftCLI(unittest.TestCase):
+    def test_drift_help(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            with self.assertRaises(SystemExit) as cm:
+                cli.main(["drift", "--help"])
+        self.assertEqual(cm.exception.code, 0)
+        self.assertIn("--run", out.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

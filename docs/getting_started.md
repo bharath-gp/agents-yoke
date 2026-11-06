@@ -123,7 +123,8 @@ Each run lives in `~/.yoke/runs/<run_id>/` (set `$YOKE_HOME` to move it), never 
 | `requirements.md`, `plan.md`, `tickets.json` | Inputs you approved. |
 | `shootdown/` | Requirements shootdown reviews and audit logs per lens. |
 | `plan-review/` | Review rounds (including each round's saved `plan.md`), debates and your arbitration notes. |
-| `map.md` | Implementation map and decisions log. |
+| `map.md` | Implementation map, decisions log, and plan drift sections. |
+| `drift.json` | Plan-vs-diff drift check results (`summary`, `drift` items, and `error`). |
 | `run.json`, `events.jsonl` | Run state and the event stream. |
 | `tickets/<id>/` | Per-ticket state and every attempt's prompts, commands and outputs. |
 | `usage.json` | Tokens and cost by stage, ticket, agent and model. |

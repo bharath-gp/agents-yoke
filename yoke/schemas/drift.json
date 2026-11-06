@@ -1,0 +1,24 @@
+{
+  "type": "object",
+  "required": ["drift", "summary"],
+  "additionalProperties": false,
+  "properties": {
+    "drift": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["work_item", "kind", "detail"],
+        "additionalProperties": false,
+        "properties": {
+          "work_item": {"type": "string"},
+          "kind": {
+            "type": "string",
+            "enum": ["missing", "divergent", "unplanned"]
+          },
+          "detail": {"type": "string"}
+        }
+      }
+    },
+    "summary": {"type": "string"}
+  }
+}
