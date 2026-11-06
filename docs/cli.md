@@ -30,6 +30,7 @@ The skills run these commands for you. Use them directly for scripting and debug
 | Command | What it does |
 |---|---|
 | `yoke init --requirements FILE [--repo PATH]` | Create a run and print its id. Write `plan.md` into the run directory next. |
+| `yoke shootdown` | Run one read-only requirements shootdown review per configured lens on `requirements.md`. |
 | `yoke review-plan` | Run one read-only review round on `plan.md`. Prints the verdict, debate summary (including any escalated findings needing user input), and warnings for missing paths or a broken `## Contents` list. |
 | `yoke approve plan` | Record plan approval. |
 | `yoke tickets chart [--feedback "NOTE"]` | Chart the approved plan into milestones and tickets. |

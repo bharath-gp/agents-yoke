@@ -145,6 +145,8 @@ Answering a `review_escalate` escalation via `yoke unblock T-001 --note "RULING"
 
 Each review round saves a copy of `plan.md` to `plan-review/round-<n>/plan.md`. The rubric for each lens is in [`yoke/standards/`](../yoke/standards/).
 
+When `shootdown_lenses` is configured, `yoke shootdown` executes one read-only review per configured lens (`zoom_out`, `feasibility`, `ergonomics`) over `requirements.md` before writing the plan. Results are saved to `shootdown/round-1/<lens>.json`.
+
 When `review_samples` is 2, each configured plan review lens runs twice. Second sample calls are labeled `lens-<name>-b`, routing audit artifacts to `plan-review/round-<n>/lens-<name>-b` and recording per-instance status in `result.json["lenses"]`. Findings are merged across samples via `merge_findings` (retaining plain lens tags for duplicate issues), and paraphrases from the `comprehension` lens are captured from the first successful instance.
 
 Merged plan findings track their source lenses. In adversarial plan debate, blocker and major findings tagged with the `comprehension` lens bypass rebuttal and judge ruling, and are upheld directly (a reader's comprehension difficulty cannot be argued away). If all blocking findings come from the `comprehension` lens, the rebuttal and judge calls are skipped entirely.
