@@ -498,9 +498,11 @@ class TestLookAhead(PipeBase):
         doc = {"milestones": self.two_ms(),
                "tickets": [ms_ticket(1, milestone="MS-01", type_="feature"), t2]}
         script = {
-            "code": [resp(CODE, "c1", write={"f1.txt": "x\n"}),
+            # Both tickets share this queue and the first caller wins, so every write stays inside
+            # T-002's files (f2.txt); otherwise a T-001 write to f1.txt trips T-002's write boundary.
+            "code": [resp(CODE, "c1", write={"f2.txt": "x\n"}),
                      resp(CODE, "c2", write={"f2.txt": "x\n"}),
-                     resp(CODE, "c1_retry", write={"f1.txt": "x\n"})],
+                     resp(CODE, "c1_retry", write={"f2.txt": "x\n"})],
             "review": [resp(REV)] * 3,
             "qa": [resp(qa("true", status="fail", failures=["boom"]))],
             "validate": [resp(val())],
