@@ -118,6 +118,8 @@ The `review` stage reviews each ticket's diff, then sends blocking findings back
 
 Findings the judge overruled, or that were fixed, are remembered for the ticket. A lens that raises the same finding again is ignored. Findings still open at the round cap do not fail the ticket. They are recorded and listed in the pull request under "Unresolved review findings".
 
+When `review_samples` is 2 (or higher), each lens in `review_lenses` runs twice per round. The second instance is labelled with a `-b` suffix (for example `review-security-b` or `review-tests-r1-b`). Findings from both sample instances are merged and deduplicated against the settled and fixed ledgers. When `review_lenses` is empty (`[]`), `review_samples` is ignored and a single general review runs.
+
 If a blocking finding re-emerges at a location modified in an earlier revision (within 3 lines of an earlier fix and falling inside that revision's changed hunks), yoke detects review churn. The review loop stops revising early, records remaining blocking findings as unresolved, posts a comment on the tracker, and emits a `review_churn` event.
 
 When `zoom_out_after_fix` is enabled and at least one revision was made, yoke runs a read-only zoom-out review across the entire revision diff (against the tree before the first revision). The zoom-out reviewer inspects the accumulated changes for defensive bloat, duplicated guards, scope creep, and architectural drift, ignoring findings already fixed. If blocking findings are upheld in debate (`tag="z0"`), at most one revision (`code-z1`) runs, followed by a re-review round (`suffix="z1"`). Any remaining blocking findings are recorded as unresolved.
