@@ -1359,6 +1359,187 @@ class TestPlanLenses(Base):
         self.assertTrue(pr_events[0]["ok"])
         self.assertEqual(pr_events[0]["lenses"], ["zoom_out", "critic"])
 
+    def test_samples_2_runs_each_lens_twice(self):
+        self.plan("the plan")
+        self.run_.update(config=dict(self.run_.cfg, parallel=1, plan_review_lenses=["zoom_out", "critic"], review_samples=2))
+        script = {
+            "lens-zoom_out": [{"structured_output": APPROVE, "session_id": "s1"}],
+            "lens-critic": [{"structured_output": APPROVE, "session_id": "s2"}],
+            "lens-zoom_out-b": [{"structured_output": APPROVE, "session_id": "s3"}],
+            "lens-critic-b": [{"structured_output": APPROVE, "session_id": "s4"}],
+        }
+        with open(self.script, "w") as f:
+            json.dump(script, f)
+        n, res = planreview.review_round(self.run_, adapters.FakeAdapter(FAKE_CLI), env={"FAKE_SCRIPT": self.script})
+        self.assertEqual(n, 1)
+        self.assertTrue(res.ok and res.schema_valid)
+        round_dir = self.run_.path("plan-review/round-1")
+        self.assertTrue(os.path.isdir(os.path.join(round_dir, "lens-zoom_out")))
+        self.assertTrue(os.path.isdir(os.path.join(round_dir, "lens-critic")))
+        self.assertTrue(os.path.isdir(os.path.join(round_dir, "lens-zoom_out-b")))
+        self.assertTrue(os.path.isdir(os.path.join(round_dir, "lens-critic-b")))
+        result_json = self.run_.read_json("plan-review/round-1/result.json")
+        lenses = result_json["lenses"]
+        self.assertEqual(len(lenses), 4)
+        self.assertEqual(sorted(lenses.keys()), ["critic", "critic-b", "zoom_out", "zoom_out-b"])
+        for name in lenses:
+            self.assertTrue(lenses[name]["ok"])
+
+    def test_samples_2_merges_same_finding(self):
+        self.plan("the plan")
+        self.run_.update(config=dict(self.run_.cfg, parallel=1, plan_review_lenses=["critic"], review_samples=2))
+        script = {
+            "lens-critic": [{
+                "structured_output": {
+                    "verdict": "changes_requested",
+                    "findings": [
+                        {"severity": "minor", "section": "Section 1", "issue": "Same issue", "suggestion": "Fix it"},
+                    ],
+                    "summary": "crit a",
+                },
+                "session_id": "s1",
+            }],
+            "lens-critic-b": [{
+                "structured_output": {
+                    "verdict": "changes_requested",
+                    "findings": [
+                        {"severity": "major", "section": "section 1", "issue": "same issue", "suggestion": "Fix it better"},
+                    ],
+                    "summary": "crit b",
+                },
+                "session_id": "s2",
+            }],
+        }
+        with open(self.script, "w") as f:
+            json.dump(script, f)
+        n, res = planreview.review_round(self.run_, adapters.FakeAdapter(FAKE_CLI), env={"FAKE_SCRIPT": self.script})
+        self.assertEqual(n, 1)
+        self.assertTrue(res.ok and res.schema_valid)
+        result_json = self.run_.read_json("plan-review/round-1/result.json")
+        findings = result_json["findings"]
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["issue"], "Same issue")
+        self.assertEqual(findings[0]["severity"], "major")
+        self.assertEqual(findings[0]["lenses"], ["critic"])
+        self.assertNotIn("lens", findings[0])
+
+    def test_samples_2_distinct_findings_union(self):
+        self.plan("the plan")
+        self.run_.update(config=dict(self.run_.cfg, parallel=1, plan_review_lenses=["critic"], review_samples=2))
+        script = {
+            "lens-critic": [{
+                "structured_output": {
+                    "verdict": "changes_requested",
+                    "findings": [
+                        {"severity": "minor", "section": "Section 1", "issue": "Issue A", "suggestion": "Fix A"},
+                    ],
+                    "summary": "crit a",
+                },
+                "session_id": "s1",
+            }],
+            "lens-critic-b": [{
+                "structured_output": {
+                    "verdict": "changes_requested",
+                    "findings": [
+                        {"severity": "minor", "section": "Section 2", "issue": "Issue B", "suggestion": "Fix B"},
+                    ],
+                    "summary": "crit b",
+                },
+                "session_id": "s2",
+            }],
+        }
+        with open(self.script, "w") as f:
+            json.dump(script, f)
+        n, res = planreview.review_round(self.run_, adapters.FakeAdapter(FAKE_CLI), env={"FAKE_SCRIPT": self.script})
+        self.assertEqual(n, 1)
+        self.assertTrue(res.ok and res.schema_valid)
+        result_json = self.run_.read_json("plan-review/round-1/result.json")
+        findings = result_json["findings"]
+        self.assertEqual(len(findings), 2)
+        issues = [f["issue"] for f in findings]
+        self.assertEqual(issues, ["Issue A", "Issue B"])
+        for f in findings:
+            self.assertEqual(f["lenses"], ["critic"])
+            self.assertNotIn("lens", f)
+
+    def test_samples_2_paraphrase_once(self):
+        self.plan("the plan")
+        self.run_.update(config=dict(self.run_.cfg, parallel=1, plan_review_lenses=["comprehension"], review_samples=2))
+        para_a = {"proposes": "Proposal A", "existing_system": "System A"}
+        para_b = {"proposes": "Proposal B", "existing_system": "System B"}
+        script = {
+            "lens-comprehension": [{
+                "structured_output": {
+                    "verdict": "approve",
+                    "findings": [],
+                    "summary": "comp a",
+                    "paraphrase": para_a,
+                },
+                "session_id": "s1",
+            }],
+            "lens-comprehension-b": [{
+                "structured_output": {
+                    "verdict": "approve",
+                    "findings": [],
+                    "summary": "comp b",
+                    "paraphrase": para_b,
+                },
+                "session_id": "s2",
+            }],
+        }
+        with open(self.script, "w") as f:
+            json.dump(script, f)
+        n, res = planreview.review_round(self.run_, adapters.FakeAdapter(FAKE_CLI), env={"FAKE_SCRIPT": self.script})
+        self.assertEqual(n, 1)
+        self.assertTrue(res.ok and res.schema_valid)
+        saved_para = self.run_.read_json("plan-review/round-1/paraphrase.json")
+        self.assertEqual(saved_para, para_a)
+        result_json = self.run_.read_json("plan-review/round-1/result.json")
+        self.assertEqual(result_json["paraphrase"], para_a)
+
+    def test_samples_2_b_failure_tolerated(self):
+        self.plan("the plan")
+        self.run_.update(config=dict(self.run_.cfg, parallel=1, plan_review_lenses=["critic"], review_samples=2))
+        script = {
+            "lens-critic": [{
+                "structured_output": APPROVE,
+                "session_id": "s1",
+            }],
+            "lens-critic-b": [{
+                "exit": 1,
+                "stderr": "critic-b crashed",
+            }],
+        }
+        with open(self.script, "w") as f:
+            json.dump(script, f)
+        n, res = planreview.review_round(self.run_, adapters.FakeAdapter(FAKE_CLI), env={"FAKE_SCRIPT": self.script})
+        self.assertEqual(n, 1)
+        self.assertTrue(res.ok and res.schema_valid)
+        result_json = self.run_.read_json("plan-review/round-1/result.json")
+        lenses = result_json["lenses"]
+        self.assertTrue(lenses["critic"]["ok"])
+        self.assertFalse(lenses["critic-b"]["ok"])
+
+    def test_samples_1_no_b(self):
+        self.plan("the plan")
+        self.run_.update(config=dict(self.run_.cfg, parallel=1, plan_review_lenses=["zoom_out", "critic"]))
+        script = {
+            "lens-zoom_out": [{"structured_output": APPROVE, "session_id": "s1"}],
+            "lens-critic": [{"structured_output": APPROVE, "session_id": "s2"}],
+        }
+        with open(self.script, "w") as f:
+            json.dump(script, f)
+        n, res = planreview.review_round(self.run_, adapters.FakeAdapter(FAKE_CLI), env={"FAKE_SCRIPT": self.script})
+        self.assertEqual(n, 1)
+        self.assertTrue(res.ok and res.schema_valid)
+        round_dir = self.run_.path("plan-review/round-1")
+        audit_dirs = [d for d in os.listdir(round_dir) if os.path.isdir(os.path.join(round_dir, d))]
+        for d in audit_dirs:
+            self.assertFalse(d.endswith("-b"), "unexpected -b audit directory: %s" % d)
+        result_json = self.run_.read_json("plan-review/round-1/result.json")
+        for key in result_json["lenses"]:
+            self.assertFalse(key.endswith("-b"), "unexpected -b key in lenses: %s" % key)
+
 
 class TestPlanDiff(Base):
     def test_round_dir_saves_plan(self):

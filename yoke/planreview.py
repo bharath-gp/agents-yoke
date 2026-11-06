@@ -419,10 +419,10 @@ def debate_round(run, n, res, adapter_for=None, env=None):
 def _lens_round(run, n, lenses, plan, requirements, prior, adapter, env):
     """Execute multi-lens plan review round, merging findings and writing paraphrase/result artifacts.
 
-    Runs one read-only call per lens in parallel or sequential mode, merging findings via merge_findings
-    and recording per-lens health metadata. When zoom_out_after_fix is enabled and n > 1, provides the
-    zoom_out lens with a unified diff against the previous round's copy of plan.md. Returns a synthetic
-    CallResult wrapping the merged output.
+    Runs one or two read-only calls per lens (governed by review_samples) in parallel or sequential mode,
+    merging findings via merge_findings and recording per-lens health metadata. When zoom_out_after_fix is
+    enabled and n > 1, provides the zoom_out lens with a unified diff against the previous round's copy of
+    plan.md. Returns a synthetic CallResult wrapping the merged output.
     """
     cfg = run.cfg
     role = "plan_review"
@@ -435,7 +435,9 @@ def _lens_round(run, n, lenses, plan, requirements, prior, adapter, env):
     with open(os.path.join(PKG, "prompts", "plan_lens.md")) as f:
         template = string.Template(f.read())
 
+    samples = config.review_samples(cfg)
     specs = []
+    b_specs = []
     for lens in lenses:
         requirements_block = ("## Requirements\n\n" + requirements + "\n\n") if lens == "critic" else ""
         standard = load_standard(lens)
@@ -468,7 +470,10 @@ def _lens_round(run, n, lenses, plan, requirements, prior, adapter, env):
             env=env or {},
             setting_sources=setting_sources,
         )
-        specs.append((lens, spec))
+        specs.append((lens, lens, spec))
+        if samples >= 2:
+            b_specs.append((lens, lens + "-b", spec))
+    specs.extend(b_specs)
 
     try:
         parallel = int(cfg.get("parallel", 1))
@@ -476,8 +481,8 @@ def _lens_round(run, n, lenses, plan, requirements, prior, adapter, env):
         parallel = 1
 
     def _call(item):
-        lens_name, call_spec = item
-        return calls.run_call(run, adapter, call_spec, stage="plan_review", attempt=n, label="lens-" + lens_name)
+        lens_name, name, call_spec = item
+        return calls.run_call(run, adapter, call_spec, stage="plan_review", attempt=n, label="lens-" + name)
 
     if parallel > 1 and len(specs) > 1:
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(specs), parallel)) as pool:
@@ -492,7 +497,7 @@ def _lens_round(run, n, lenses, plan, requirements, prior, adapter, env):
     summaries = []
     paraphrase = None
 
-    for (lens, _), res in zip(specs, results):
+    for (lens, name, _), res in zip(specs, results):
         is_ok = res.ok and res.schema_valid is not False and isinstance(res.structured_output, dict)
         if is_ok:
             out = res.structured_output
@@ -500,19 +505,19 @@ def _lens_round(run, n, lenses, plan, requirements, prior, adapter, env):
             f_list = [f for f in raw_findings if isinstance(f, dict)] if isinstance(raw_findings, list) else []
             tagged = [dict(f, lens=lens) for f in f_list]
             per_lens_findings.append(tagged)
-            lens_meta[lens] = {"ok": True, "error": None, "findings": len(f_list)}
+            lens_meta[name] = {"ok": True, "error": None, "findings": len(f_list)}
             summary = str(out.get("summary") or "").strip()
-            summaries.append("%s: %s" % (lens, summary))
-            if lens == "comprehension" and isinstance(out.get("paraphrase"), dict):
+            summaries.append("%s: %s" % (name, summary))
+            if lens == "comprehension" and paraphrase is None and isinstance(out.get("paraphrase"), dict):
                 paraphrase = out["paraphrase"]
         else:
             per_lens_findings.append([])
             err = res.error or "schema invalid"
-            lens_meta[lens] = {"ok": False, "error": err, "findings": 0}
-            errs_by_lens[lens] = err
+            lens_meta[name] = {"ok": False, "error": err, "findings": 0}
+            errs_by_lens[name] = err
 
     if not any(m["ok"] for m in lens_meta.values()):
-        err_msg = "all plan lenses failed: " + "; ".join("%s: %s" % (l, errs_by_lens[l]) for l in lenses)
+        err_msg = "all plan lenses failed: " + "; ".join("%s: %s" % (name, errs_by_lens[name]) for (_, name, _) in specs)
         return adapters.CallResult(error=err_msg)
 
     merged_findings = merge_findings(per_lens_findings)

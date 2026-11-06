@@ -132,6 +132,7 @@ Answering a `review_escalate` escalation via `yoke unblock T-001 --note "RULING"
 |---|---|---|
 | `max_plan_review_rounds` | `3` | Review rounds per plan. |
 | `plan_review_lenses` | `[]` | One review per lens: `zoom_out` (simpler, reuse), `comprehension` (can a new reader restate it), `critic` (failure modes, requirements), `readiness` (no decisions left to the coder). `[]` runs a single review. |
+| `review_samples` | `1` | Number of review samples (1 or 2). Values >= 2 run each plan lens twice (second call labeled `lens-<name>-b`), merging findings. |
 | `shootdown_lenses` | `[]` | Opt-in shootdown review lenses: `zoom_out`, `feasibility`, `ergonomics`. Duplicates dropped; unknown entries raise ValueError. `[]` disables shootdown review. |
 | `drift_check` | `false` | Opt-in flag to enable architectural drift checking against the plan. |
 | `zoom_out_after_fix` | `false` | When enabled, the `zoom_out` plan review lens from round 2 onward receives a unified diff against round `n-1`'s copy of `plan.md`. |
@@ -141,6 +142,8 @@ Answering a `review_escalate` escalation via `yoke unblock T-001 --note "RULING"
 | `escalate_findings` | `false` | Opt-in flag enabling plan and review rebuttals to escalate findings. |
 
 Each review round saves a copy of `plan.md` to `plan-review/round-<n>/plan.md`. The rubric for each lens is in [`yoke/standards/`](../yoke/standards/).
+
+When `review_samples` is 2, each configured plan review lens runs twice. Second sample calls are labeled `lens-<name>-b`, routing audit artifacts to `plan-review/round-<n>/lens-<name>-b` and recording per-instance status in `result.json["lenses"]`. Findings are merged across samples via `merge_findings` (retaining plain lens tags for duplicate issues), and paraphrases from the `comprehension` lens are captured from the first successful instance.
 
 Merged plan findings track their source lenses. In adversarial plan debate, blocker and major findings tagged with the `comprehension` lens bypass rebuttal and judge ruling, and are upheld directly (a reader's comprehension difficulty cannot be argued away). If all blocking findings come from the `comprehension` lens, the rebuttal and judge calls are skipped entirely.
 
