@@ -8,7 +8,7 @@ import re
 import subprocess
 import sys
 
-from . import gitops, planreview, prbody, state, ticketstate
+from . import drift, gitops, planreview, prbody, state, ticketstate
 
 LABEL = "yoke"
 
@@ -167,11 +167,12 @@ PR_FINDINGS_MAX = 50000
 
 
 def pr_body(run):
-    """Assemble PR body: prbody fill + blank line + Closes #N lines + Unresolved review findings section.
+    """Assemble PR body: prbody fill + blank line + Closes #N lines + Unresolved review findings + Plan drift.
 
     Extracts run facts and fills PR template via prbody.fill, falling back to deterministic
     fill if errors occur (logging event 'pr_fill_fallback'). Appends 'Closes #N' lines from
-    issues.json and an '## Unresolved review findings' section from the closed tickets' code review.
+    issues.json, an '## Unresolved review findings' section from the closed tickets' code review,
+    and a '## Plan drift' section from drift.json when present.
     """
     template = None
     facts = {}
@@ -222,6 +223,9 @@ def pr_body(run):
         if len(text) > PR_FINDINGS_MAX:  # GitHub rejects PR bodies over 65536 chars, after the push
             text = text[:PR_FINDINGS_MAX] + "\n... (truncated; see ticket issue comments)"
         body = body.rstrip() + "\n\n" + text
+    section = drift.pr_section(run, limit=PR_FINDINGS_MAX)
+    if section:
+        body = body.rstrip() + "\n\n" + section
     return body + "\n"
 
 
