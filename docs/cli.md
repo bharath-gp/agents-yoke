@@ -35,6 +35,7 @@ The skills run these commands for you. Use them directly for scripting and debug
 | `yoke tickets chart [--feedback "NOTE"]` | Chart the approved plan into milestones and tickets. |
 | `yoke tickets import FILE` | Validate and import a hand-written `tickets.json`. |
 | `yoke tickets show` | Show tickets grouped by milestone. |
+| `yoke shootdown` | Run one read-only requirements shootdown call per lens in `shootdown_lenses` and save results under `shootdown/round-1/`. |
 | `yoke review-tickets` | Run one read-only readiness review per ticket, when `ticket_review` is on. |
 | `yoke approve tickets [--accept-unready REASON]` | Record ticket approval. Creates GitHub milestones and issues when the tracker is on. |
 | `yoke route T-001` | Show the stages and agents for a ticket. |
@@ -67,6 +68,7 @@ Ticket ids continue after the highest GitHub issue or pull request number, so `T
 
 | Command | What it does |
 |---|---|
+| `yoke drift` | When `drift_check` is on, compare plan work items with the feature branch diff and write `drift.json`; advisory only. |
 | `yoke approve final` | Record final approval. |
 | `yoke pr` | Push the feature branch and open a pull request. Needs final approval. The only command that pushes. |
 | `yoke clean` | Remove the run's worktrees. Keeps branches and the audit trail. |

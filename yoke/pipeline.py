@@ -1060,6 +1060,8 @@ def _run_review_round(run, adapter_for, env, ticket, st, wt, base, results, feed
     """Run one review round across configured lenses (or single review when empty).
 
     Returns (findings, lens_of, error).
+    When config.review_samples(cfg) >= 2, runs each lens twice (the second instance
+    labelled with a '-b' suffix) and merges findings.
     Filters findings against settled and fixed ledgers via _apply_settled, deduplicates
     across lenses, records results['review'], and emits review_settled when findings are settled.
     """
@@ -1090,9 +1092,14 @@ def _run_review_round(run, adapter_for, env, ticket, st, wt, base, results, feed
     else:
         # Lenses never see each other's output
         lens_results = {k: v for k, v in results.items() if k != "review" and not k.startswith("review-")}
+        samples = config.review_samples(cfg)
+        jobs = [(lens, "") for lens in lenses] + ([(lens, "b") for lens in lenses] if samples >= 2 else [])
 
-        def _run_lens(lens):
+        def _run_lens(job):
+            lens, sample = job
             label = ("review-%s-%s" % (lens, suffix)) if suffix else (("review-%s" % lens) if n == 0 else ("review-%s-r%d" % (lens, n)))
+            if sample:
+                label += "-" + sample
             pname = "review_%s" % lens
             prompt_name = pname if os.path.isfile(os.path.join(PKG, "prompts", pname + ".md")) else "review"
             extra_vars = {"settled": _settled_text(st, lens)}
@@ -1100,30 +1107,31 @@ def _run_review_round(run, adapter_for, env, ticket, st, wt, base, results, feed
                 extra_vars["base_sha"] = base_override
             res = _call_retry(run, adapter_for, env, ticket, "review", attempt, wt, base, "read",
                               lens_results, feedback, label=label, prompt_name=prompt_name, extra_vars=extra_vars)
-            return lens, res
+            return job, res
 
         lens_outputs = {}
-        if parallel_n > 1 and len(lenses) > 1:
-            with ThreadPoolExecutor(max_workers=min(len(lenses), parallel_n)) as pool:
-                futs = [pool.submit(_run_lens, lens) for lens in lenses]
+        if parallel_n > 1 and len(jobs) > 1:
+            with ThreadPoolExecutor(max_workers=min(len(jobs), parallel_n)) as pool:
+                futs = [pool.submit(_run_lens, job) for job in jobs]
                 for fut in futs:
-                    lens, res = fut.result()
-                    lens_outputs[lens] = res
+                    job, res = fut.result()
+                    lens_outputs[job] = res
         else:
-            for lens in lenses:
-                lens, res = _run_lens(lens)
-                lens_outputs[lens] = res
+            for job in jobs:
+                job, res = _run_lens(job)
+                lens_outputs[job] = res
 
-        for lens in lenses:
-            res = lens_outputs[lens]
+        for job in jobs:
+            res = lens_outputs[job]
             if not res.ok:
                 return [], {}, "review call failed: %s" % res.error
 
         all_findings = []
         all_summaries = []
         lens_of = {}
-        for lens in lenses:
-            out = lens_outputs[lens].structured_output
+        for job in jobs:
+            lens, sample = job
+            out = lens_outputs[job].structured_output
             if isinstance(out, dict):
                 raw = out.get("findings", [])
                 if isinstance(raw, list):
@@ -1132,7 +1140,8 @@ def _run_review_round(run, adapter_for, env, ticket, st, wt, base, results, feed
                         all_findings.append(f)
                 s = out.get("summary")
                 if s:
-                    all_summaries.append("%s: %s" % (lens, s))
+                    prefix = lens if not sample else "%s-%s" % (lens, sample)
+                    all_summaries.append("%s: %s" % (prefix, s))
 
         kept_findings, dropped, reopened = _apply_settled(st, all_findings, lens_of)
         findings = _dedupe_findings(kept_findings)

@@ -104,6 +104,7 @@ def load(repo=None, home=None, overrides=None):
 AGENTS = ("claude", "agy")
 DEFAULT_REVIEW_LENSES = ["security", "performance", "tests"]
 PLAN_LENSES = ("zoom_out", "comprehension", "critic", "readiness")
+SHOOTDOWN_LENSES = ("zoom_out", "feasibility", "ergonomics")
 DEFAULT_WRITE_BOUNDARY_EXTRA = ["tests/**", "docs/**", "README.md"]
 
 
@@ -140,6 +141,43 @@ def ticket_review(cfg=None):
     if cfg is None:
         cfg = load()
     return cfg.get("ticket_review", False) is True
+
+
+def shootdown_lenses(cfg=None):
+    """Return configured shootdown lenses, duplicates removed keeping first-seen order."""
+    if cfg is None:
+        cfg = load()
+    val = cfg.get("shootdown_lenses")
+    if not isinstance(val, list):
+        return []
+    out = []
+    seen = set()
+    for entry in val:
+        if entry not in SHOOTDOWN_LENSES:
+            raise ValueError(
+                "unknown shootdown_lenses entry %r; allowed: zoom_out, feasibility, ergonomics" % entry
+            )
+        if entry not in seen:
+            seen.add(entry)
+            out.append(entry)
+    return out
+
+
+def review_samples(cfg=None):
+    """Return configured review samples count (1 or 2), defaulting to 1."""
+    if cfg is None:
+        cfg = load()
+    v = cfg.get("review_samples", 1)
+    if isinstance(v, int) and not isinstance(v, bool) and v >= 2:
+        return 2
+    return 1
+
+
+def drift_check(cfg=None):
+    """Return whether drift check is enabled, defaulting to False."""
+    if cfg is None:
+        cfg = load()
+    return cfg.get("drift_check") is True
 
 
 def review_mode(cfg=None):
@@ -275,7 +313,7 @@ def save_roles(path, primary=None, secondary=None, mapping=None):
     return out["roles"]
 
 
-PLAN_ROLES = ("requirements", "planner", "plan_review", "wayfinder", "readiness")
+PLAN_ROLES = ("requirements", "planner", "plan_review", "wayfinder", "readiness", "shootdown", "drift")
 
 
 def model_for(cfg, agent, role):

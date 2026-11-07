@@ -10,7 +10,7 @@ from unittest import mock
 
 from tests.test_gitops import ENV, git
 from tests.test_planreview import Base
-from yoke import cli, planreview, ticketstate, tracker
+from yoke import cli, drift, planreview, ticketstate, tracker
 
 os.environ.setdefault("YOKE_OLLAMA_URL", "http://127.0.0.1:9")
 
@@ -304,6 +304,90 @@ class TestPr(TrackerBase):
             "review": {"rounds": 2, "unresolved": [
                 {"file": "a.py", "line": 1, "severity": "major", "comment": "stale finding", "suggestion": ""}]}})
         self.assertNotIn("stale finding", tracker.pr_body(self.run_))
+
+    def test_pr_body_includes_plan_drift(self):
+        self.run_.write_json("tickets/T-001/state.json", {
+            "status": "closed",
+            "review": {
+                "rounds": 1,
+                "unresolved": [
+                    {"file": "yoke/foo.py", "line": 42, "severity": "major",
+                     "comment": "critical bug in parsing", "suggestion": "handle empty input"}
+                ]
+            }
+        })
+        self.run_.write_json("drift.json", {
+            "base_sha": "abc1234",
+            "branch": "feat-branch",
+            "created_at": "2026-01-01T00:00:00",
+            "summary": "drift found",
+            "drift": [
+                {"work_item": "W1", "kind": "missing", "detail": "W1 detail"},
+                {"work_item": "W2", "kind": "divergent", "detail": "W2 detail"},
+            ],
+            "error": None,
+        })
+        body = tracker.pr_body(self.run_)
+        self.assertIn("## Unresolved review findings", body)
+        self.assertIn("## Plan drift", body)
+        self.assertIn("- [missing] W1: W1 detail", body)
+        self.assertIn("- [divergent] W2: W2 detail", body)
+        self.assertTrue(body.index("## Unresolved review findings") < body.index("## Plan drift"))
+
+    def test_pr_body_no_drift_file_unchanged(self):
+        if os.path.exists(self.run_.path("drift.json")):
+            os.remove(self.run_.path("drift.json"))
+        body = tracker.pr_body(self.run_)
+        self.assertNotIn("## Plan drift", body)
+        with mock.patch("yoke.drift.pr_section", return_value=""):
+            expected = tracker.pr_body(self.run_)
+        self.assertEqual(body, expected)
+        self.assertTrue(body.endswith("\n"))
+        self.assertFalse(body.endswith("\n\n"))
+
+    def test_pr_body_drift_empty_list(self):
+        self.run_.write_json("drift.json", {
+            "base_sha": "abc1234",
+            "branch": "feat-branch",
+            "created_at": "2026-01-01T00:00:00",
+            "summary": "",
+            "drift": [],
+            "error": None,
+        })
+        body = tracker.pr_body(self.run_)
+        self.assertIn("## Plan drift", body)
+        self.assertIn("No drift found.", body)
+
+    def test_pr_body_drift_error_omitted(self):
+        self.run_.write_json("drift.json", {
+            "base_sha": "abc1234",
+            "branch": "feat-branch",
+            "created_at": "2026-01-01T00:00:00",
+            "summary": "",
+            "drift": [
+                {"work_item": "W1", "kind": "missing", "detail": "W1 detail"}
+            ],
+            "error": "some drift error",
+        })
+        body = tracker.pr_body(self.run_)
+        self.assertNotIn("## Plan drift", body)
+
+    def test_pr_body_drift_truncated(self):
+        self.run_.write_json("drift.json", {
+            "base_sha": "abc1234",
+            "branch": "feat-branch",
+            "created_at": "2026-01-01T00:00:00",
+            "summary": "",
+            "drift": [
+                {"work_item": "W1", "kind": "missing", "detail": "x" * 100}
+            ],
+            "error": None,
+        })
+        with mock.patch.object(tracker, "PR_FINDINGS_MAX", 20):
+            body = tracker.pr_body(self.run_)
+        self.assertIn("## Plan drift", body)
+        self.assertIn("... (truncated; see drift.json)", body)
+        self.assertNotIn("x" * 100, body)
 
 
 class TestMilestones(TrackerBase):

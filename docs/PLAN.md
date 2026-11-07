@@ -879,7 +879,7 @@ Files: `yoke/pipeline.py`, `yoke/planreview.py`, `yoke/ticketstate.py`, `yoke/co
 - Notes: Deviations: tree-sha diff base instead of `..HEAD`; churn check before debate; zoom-out failure advisory; plan diff gated by `zoom_out_after_fix`; escalation `kind` optional.
 
 <a id="m42"></a>
-### M42: Review sampling, plan drift, and requirements shootdown (0.20.0) `[ ]`
+### M42: Review sampling, plan drift, and requirements shootdown (0.20.0) `[x]`
 Files: `yoke/pipeline.py`, `yoke/planreview.py`, `yoke/cli.py`, `yoke/runcmds.py`, `yoke/tracker.py`, `yoke/config.py`, `yoke/defaults.json`, `yoke/prompts/{drift,shootdown}.md` (new), `yoke/schemas/{drift,shootdown}.json` (new), `skills/{grill,go,finish}/SKILL.md`, `.yoke.json`, `tests/test_{review,planreview,cli,tracker}.py`, `README.md`, `docs/PLAN.md`.
 - Why: the remaining EGM ideas trade extra calls for recall or catch gaps after the fact. All are off by default.
 - (G9) Review sampling, config `review_samples` (default `1`). Source: EGM `agents/synthesizer.md` (A/B reviewer instances). `2` runs every code-review lens and every plan lens twice, with the second instance labelled `-b` (for example `review-tests-b`). The existing dedupe merges both instances' findings. Every instance counts toward `max_agent_calls_total`.
@@ -887,7 +887,7 @@ Files: `yoke/pipeline.py`, `yoke/planreview.py`, `yoke/cli.py`, `yoke/runcmds.py
 - (G13) Requirements shootdown, `yoke shootdown`, config `shootdown_lenses` (default `[]`). Source: EGM `skills/egm-brainstorm/SKILL.md` and its six-lens swarm. This adds new role `shootdown` (default `secondary`). After `grill` (or `go`) writes `requirements.md`, the command makes one read-only call per lens (allowed values `zoom_out`, `feasibility`, `ergonomics`) over `requirements.md` and the repository, saved under `shootdown/round-1/`. The skill puts each blocker to the user one question at a time, then updates `requirements.md`.
 - Dogfood: this repo's `.yoke.json` sets `review_samples: 2`, `drift_check: true` and `shootdown_lenses` to all three lenses.
 - Exit criteria: `review_samples: 2` doubles lens calls and the findings stay deduplicated; `yoke drift` writes `drift.json`, the `map.md` section and the PR body section; `yoke shootdown` writes one result per lens; with default config, behaviour is byte-identical to 0.19.x; all unit tests pass.
-- Notes:
+- Notes: Deviations: new modules `drift.py`/`shootdown.py`, `runcmds.py` untouched, docs files instead of README, both roles plan tier, shootdown focus text in code, drift diff cap, sampling skips the no-lens path.
 
 
 ---

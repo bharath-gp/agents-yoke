@@ -501,6 +501,125 @@ class TestMultiLensReview(PipeBase):
             perf_prompt_r1 = f.read()
         self.assertNotIn("review-security", perf_prompt_r1)
 
+    def test_samples_2_doubles_lens_calls(self):
+        self.run_.update(config=dict(self.run_.cfg, review_lenses=["security", "tests"], review_samples=2))
+        self.setup_tickets(
+            [ticket(1)],
+            {"code": [resp(CODE, "c1", write={"f1.txt": "1"})],
+             "review-security": [resp(dict(REV_APPROVE, summary="sec a ok"))],
+             "review-security-b": [resp(dict(REV_APPROVE, summary="sec b ok"))],
+             "review-tests": [resp(dict(REV_APPROVE, summary="tests a ok"))],
+             "review-tests-b": [resp(dict(REV_APPROVE, summary="tests b ok"))],
+             "validate": [resp(val())],
+             "router": [{"exit": 1}]})
+        self.assertEqual(self.go(), "done")
+        with open(self.run_.path("events.jsonl")) as f:
+            rev_calls = [json.loads(l) for l in f
+                         if json.loads(l).get("kind") == "call_start" and json.loads(l).get("stage") == "review"]
+        self.assertEqual(len(rev_calls), 4)
+        labels = [c.get("dir", "").split("/")[-1] for c in rev_calls]
+        for expected in ("review-security", "review-security-b", "review-tests", "review-tests-b"):
+            self.assertIn(expected, labels)
+        with open(self.run_.path("tickets/T-001/attempt-1/validate/prompt.md")) as f:
+            val_prompt = f.read()
+        self.assertIn("security-b: sec b ok", val_prompt)
+        self.assertIn("tests-b: tests b ok", val_prompt)
+
+    def test_samples_2_dedupes_same_finding(self):
+        self.run_.update(config=dict(self.run_.cfg, review_lenses=["security"], review_samples=2))
+        dup_finding = finding(severity="major", file="f.py", line=10, comment="dup issue", suggestion="fix dup")
+        self.setup_tickets(
+            [ticket(1)],
+            {"code": [resp(CODE, "c1", write={"f1.txt": "1"}), resp(CODE, "c1", write={"f1.txt": "2"})],
+             "review-security": [resp(rev_changes([dup_finding]))],
+             "review-security-b": [resp(rev_changes([dup_finding]))],
+             "review-security-r1": [resp(REV_APPROVE)],
+             "review-security-r1-b": [resp(REV_APPROVE)],
+             "validate": [resp(val())],
+             "router": [{"exit": 1}]})
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+        cmd_r1 = self.run_.path("tickets/T-001/attempt-1/code-r1/prompt.md")
+        with open(cmd_r1) as f:
+            prompt_r1 = f.read()
+        self.assertEqual(prompt_r1.count("[major] f.py:10: dup issue"), 1)
+        st = self.tstate(1)
+        self.assertEqual(len(st["review"]["fixed"]), 1)
+        self.assertEqual(st["review"]["fixed"][0]["lens"], "security")
+
+    def test_samples_2_counts_against_budget(self):
+        self.run_.update(config=dict(self.run_.cfg, review_lenses=["security", "tests"], review_samples=2, max_agent_calls_total=4))
+        self.setup_tickets(
+            [ticket(1)],
+            {"code": [resp(CODE, "c1", write={"f1.txt": "1"})],
+             "review-security": [resp(REV_APPROVE)],
+             "review-security-b": [resp(REV_APPROVE)],
+             "review-tests": [resp(REV_APPROVE)],
+             "review-tests-b": [resp(REV_APPROVE)],
+             "validate": [resp(val())],
+             "router": [{"exit": 1}]})
+        self.assertEqual(self.go(), "needs_user")
+        esc = self.run_.read_json("escalations.json")
+        self.assertIn("budget", esc[0]["reason"])
+        with open(self.run_.path("events.jsonl")) as f:
+            rev_calls = [json.loads(l) for l in f
+                         if json.loads(l).get("kind") == "call_start" and json.loads(l).get("stage") == "review"]
+        labels = [c.get("dir", "").split("/")[-1] for c in rev_calls]
+        self.assertEqual(labels, ["review-security", "review-tests", "review-security-b"])
+        self.assertNotIn("review-tests-b", labels)
+
+    def test_samples_2_parallel(self):
+        self.run_.update(config=dict(self.run_.cfg, review_lenses=["security", "tests"], review_samples=2, parallel=4))
+        self.setup_tickets(
+            [ticket(1)],
+            {"code": [resp(CODE, "c1", write={"f1.txt": "1"})],
+             "review-security": [resp(REV_APPROVE)],
+             "review-security-b": [resp(REV_APPROVE)],
+             "review-tests": [resp(REV_APPROVE)],
+             "review-tests-b": [resp(REV_APPROVE)],
+             "validate": [resp(val())],
+             "router": [{"exit": 1}]})
+        self.assertEqual(self.go(), "done")
+        with open(self.run_.path("events.jsonl")) as f:
+            rev_calls = [json.loads(l) for l in f
+                         if json.loads(l).get("kind") == "call_start" and json.loads(l).get("stage") == "review"]
+        self.assertEqual(len(rev_calls), 4)
+        labels = {c.get("dir", "").split("/")[-1] for c in rev_calls}
+        self.assertEqual(labels, {"review-security", "review-security-b", "review-tests", "review-tests-b"})
+
+    def test_samples_1_unchanged(self):
+        self.run_.update(config=dict(self.run_.cfg, review_lenses=["security", "tests"]))
+        self.setup_tickets(
+            [ticket(1)],
+            {"code": [resp(CODE, "c1", write={"f1.txt": "1"})],
+             "review-security": [resp(REV_APPROVE)],
+             "review-tests": [resp(REV_APPROVE)],
+             "validate": [resp(val())],
+             "router": [{"exit": 1}]})
+        self.assertEqual(self.go(), "done")
+        with open(self.run_.path("events.jsonl")) as f:
+            rev_calls = [json.loads(l) for l in f
+                         if json.loads(l).get("kind") == "call_start" and json.loads(l).get("stage") == "review"]
+        self.assertEqual(len(rev_calls), 2)
+        labels = [c.get("dir", "").split("/")[-1] for c in rev_calls]
+        self.assertEqual(labels, ["review-security", "review-tests"])
+
+    def test_samples_ignored_without_lenses(self):
+        self.run_.update(config=dict(self.run_.cfg, review_lenses=[], review_samples=2))
+        self.setup_tickets(
+            [ticket(1)],
+            {"code": [resp(CODE, "c1", write={"f1.txt": "1"})],
+             "review": [resp(REV_APPROVE)],
+             "validate": [resp(val())],
+             "router": [{"exit": 1}]})
+        self.assertEqual(self.go(), "done")
+        self.assertEqual(self.tstate(1)["status"], "closed")
+        with open(self.run_.path("events.jsonl")) as f:
+            rev_calls = [json.loads(l) for l in f
+                         if json.loads(l).get("kind") == "call_start" and json.loads(l).get("stage") == "review"]
+        self.assertEqual(len(rev_calls), 1)
+        self.assertEqual(rev_calls[0].get("dir", "").split("/")[-1], "review")
+
 
 class TestAdversarialReview(PipeBase):
     def setUp(self):

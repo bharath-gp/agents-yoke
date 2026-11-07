@@ -207,5 +207,25 @@ class TestTicketsImportWarning(unittest.TestCase):
             self.assertIn("imported 1 tickets", stdout)
 
 
+class TestShootdownCLI(unittest.TestCase):
+    def test_shootdown_help(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            with self.assertRaises(SystemExit) as cm:
+                cli.main(["shootdown", "--help"])
+        self.assertEqual(cm.exception.code, 0)
+        self.assertIn("--run", out.getvalue())
+
+
+class TestDriftCLI(unittest.TestCase):
+    def test_drift_help(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            with self.assertRaises(SystemExit) as cm:
+                cli.main(["drift", "--help"])
+        self.assertEqual(cm.exception.code, 0)
+        self.assertIn("--run", out.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

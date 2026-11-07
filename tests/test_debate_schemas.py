@@ -233,6 +233,8 @@ class TestDebateSchemas(unittest.TestCase):
     def test_all_schemas_load(self):
         schema_files = glob.glob(os.path.join(schema.SCHEMA_DIR, "*.json"))
         self.assertTrue(len(schema_files) > 0)
+        schema_names = [os.path.splitext(os.path.basename(p))[0] for p in schema_files]
+        self.assertIn("drift", schema_names)
         for path in schema_files:
             with open(path) as f:
                 data = json.load(f)

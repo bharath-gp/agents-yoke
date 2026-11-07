@@ -60,12 +60,13 @@ yoke setup --primary claude --secondary agy --map code=claude --map review=auto
 | `pr_body` | primary | Fill the pull request template. |
 | `hypotheses` / `hypotheses_rank` | secondary / primary | Explain repeated failures. |
 | `e2e` | primary | Fallback for the browser stage. |
+| `drift`, `shootdown` | secondary | Check plan drift after a run and shoot down requirements. |
 
 `yoke setup` warns if you assign the same agent to `code` and `review`.
 
 ## Models and tiers
 
-Each agent has two tiers. The `plan` tier serves `requirements`, `planner`, `plan_review`, `wayfinder` and `readiness`. The `cheap` tier serves every other role.
+Each agent has two tiers. The `plan` tier serves `requirements`, `planner`, `plan_review`, `wayfinder`, `readiness`, `drift` and `shootdown`. The `cheap` tier serves every other role.
 
 ```json
 {
@@ -108,6 +109,7 @@ The `review` stage reviews each ticket's diff, then sends blocking findings back
 | Key | Default | Effect |
 |---|---|---|
 | `review_lenses` | `["security", "performance", "tests"]` | One read-only review per lens. Findings are merged by file and line. `[]` runs a single general review. |
+| `review_samples` | `1` | Run each code-review and plan-review lens this many times (e.g. 2 runs a second instance labeled `-b`), deduplicating findings. Also covers plan lenses. |
 | `review_mode` | `"adversarial"` | Blocker and major findings go to debate: the coder rebuts, and a plan-tier judge rules on disputes. Only upheld findings go back to the coder. `"independent"` skips the debate. |
 | `debate_rounds` | `1` | Above 1, the reviewer can reply to the rebuttal before the judge rules. |
 | `goldfish_context` | `true` | Reviewers, the judge and the validator do not see the coder's and QA's own reports. They see the diff, the runner's test evidence and the ticket. |
@@ -115,6 +117,8 @@ The `review` stage reviews each ticket's diff, then sends blocking findings back
 | `escalate_findings` | `false` | Opt-in flag enabling review rebuttals to escalate findings. |
 
 Findings the judge overruled, or that were fixed, are remembered for the ticket. A lens that raises the same finding again is ignored. Findings still open at the round cap do not fail the ticket. They are recorded and listed in the pull request under "Unresolved review findings".
+
+When `review_samples` is 2 (or higher), each lens in `review_lenses` runs twice per round. The second instance is labelled with a `-b` suffix (for example `review-security-b` or `review-tests-r1-b`). Findings from both sample instances are merged and deduplicated against the settled and fixed ledgers. When `review_lenses` is empty (`[]`), `review_samples` is ignored and a single general review runs.
 
 If a blocking finding re-emerges at a location modified in an earlier revision (within 3 lines of an earlier fix and falling inside that revision's changed hunks), yoke detects review churn. The review loop stops revising early, records remaining blocking findings as unresolved, posts a comment on the tracker, and emits a `review_churn` event.
 
@@ -135,12 +139,20 @@ Answering a `review_escalate` escalation via `yoke unblock T-001 --note "RULING"
 | `ticket_review_max` | `30` | Most tickets reviewed per round. |
 | `max_ticket_review_rounds` | `2` | Readiness review rounds. |
 | `escalate_findings` | `false` | Opt-in flag enabling plan and review rebuttals to escalate findings. |
+| `drift_check` | `false` | Check for plan drift against git diff before final approval and write `drift.json`. Advisory only. |
+| `shootdown_lenses` | `[]` | Lenses for requirements shootdown after requirements are written: `zoom_out`, `feasibility`, `ergonomics`. `[]` skips shootdown. |
 
 Each review round saves a copy of `plan.md` to `plan-review/round-<n>/plan.md`. The rubric for each lens is in [`yoke/standards/`](../yoke/standards/).
+
+When `shootdown_lenses` is configured, `yoke shootdown` executes one read-only review per configured lens (`zoom_out`, `feasibility`, `ergonomics`) over `requirements.md` before writing the plan. Results are saved to `shootdown/round-1/<lens>.json`.
+
+When `review_samples` is 2, each configured plan review lens runs twice. Second sample calls are labeled `lens-<name>-b`, routing audit artifacts to `plan-review/round-<n>/lens-<name>-b` and recording per-instance status in `result.json["lenses"]`. Findings are merged across samples via `merge_findings` (retaining plain lens tags for duplicate issues), and paraphrases from the `comprehension` lens are captured from the first successful instance.
 
 Merged plan findings track their source lenses. In adversarial plan debate, blocker and major findings tagged with the `comprehension` lens bypass rebuttal and judge ruling, and are upheld directly (a reader's comprehension difficulty cannot be argued away). If all blocking findings come from the `comprehension` lens, the rebuttal and judge calls are skipped entirely.
 
 When `escalate_findings` is enabled, the planner in an adversarial debate can respond to a finding with stance `escalate` when no code or plan text in reach can settle it and it needs outside knowledge from the user. Escalated findings skip the judge and are recorded in `plan-review/round-<n>/debate.json` under `escalated`. When `escalate_findings` is off, an `escalate` stance counts as a dispute and proceeds to the judge.
+
+When `drift_check` is enabled, `yoke drift` executes one read-only check comparing the plan work items against `git diff <base_sha>..<branch>`. It categorizes drift items as `missing` (planned item absent from diff), `divergent` (implemented differently), or `unplanned` (diff not covered by plan, ignoring tests, docs, and version bumps). Findings are saved to `drift.json` and appended to `map.md`.
 
 ## Retries and test fixes
 

@@ -173,6 +173,76 @@ class TestConfig(Tmp):
         self.assertEqual(cfg["timeouts_s"]["review"], 1200)
         self.assertEqual(cfg["max_review_rounds"], 2)
 
+    def test_m42_defaults(self):
+        cfg = config.load(home=self.tmp)
+        self.assertEqual(cfg["review_samples"], 1)
+        self.assertIs(cfg["drift_check"], False)
+        self.assertEqual(cfg["shootdown_lenses"], [])
+        self.assertEqual(cfg["roles"]["by_role"]["drift"], "secondary")
+        self.assertEqual(cfg["roles"]["by_role"]["shootdown"], "secondary")
+        self.assertEqual(cfg["timeouts_s"]["drift"], 900)
+        self.assertEqual(cfg["timeouts_s"]["shootdown"], 900)
+        self.assertIn("drift", config.PLAN_ROLES)
+        self.assertIn("shootdown", config.PLAN_ROLES)
+        cfg_with_models = config.deep_merge(cfg, {
+            "models": {
+                "claude": {
+                    "plan": {"model": "claude-opus-4", "effort": "high"},
+                    "cheap": {"model": "claude-haiku-5", "effort": "low"},
+                }
+            }
+        })
+        self.assertEqual(
+            config.model_for(cfg_with_models, "claude", "drift"),
+            config.model_for(cfg_with_models, "claude", "planner"),
+        )
+        self.assertEqual(
+            config.model_for(cfg_with_models, "claude", "shootdown"),
+            config.model_for(cfg_with_models, "claude", "planner"),
+        )
+        self.assertEqual(config.review_samples(cfg), 1)
+        self.assertIs(config.drift_check(cfg), False)
+        self.assertEqual(config.shootdown_lenses(cfg), [])
+
+    def test_review_samples_clamp(self):
+        cfg = config.load(home=self.tmp)
+        self.assertEqual(config.review_samples(config.deep_merge(cfg, {"review_samples": 2})), 2)
+        self.assertEqual(config.review_samples(config.deep_merge(cfg, {"review_samples": 3})), 2)
+        self.assertEqual(config.review_samples(config.deep_merge(cfg, {"review_samples": 0})), 1)
+        self.assertEqual(config.review_samples(config.deep_merge(cfg, {"review_samples": "x"})), 1)
+        self.assertEqual(config.review_samples(config.deep_merge(cfg, {"review_samples": None})), 1)
+        self.assertEqual(config.review_samples(config.deep_merge(cfg, {"review_samples": True})), 1)
+
+    def test_shootdown_lenses_validation(self):
+        self.assertEqual(
+            config.shootdown_lenses({"shootdown_lenses": ["feasibility", "zoom_out", "feasibility"]}),
+            ["feasibility", "zoom_out"],
+        )
+        with self.assertRaisesRegex(ValueError, "unknown shootdown_lenses entry"):
+            config.shootdown_lenses({"shootdown_lenses": ["nope"]})
+        self.assertEqual(config.shootdown_lenses({"shootdown_lenses": None}), [])
+        self.assertEqual(config.shootdown_lenses({"shootdown_lenses": "invalid"}), [])
+
+    def test_audit_rel_shootdown(self):
+        self.assertEqual(
+            calls.audit_rel("shootdown", None, 1, "x", "zoom_out"),
+            "shootdown/round-1/zoom_out",
+        )
+        self.assertEqual(
+            calls.audit_rel("shootdown", None, 2, "x", "feasibility"),
+            "shootdown/round-2/feasibility",
+        )
+        self.assertEqual(
+            calls.audit_rel("shootdown", None, None, "x", None),
+            "shootdown/round-1/lens",
+        )
+
+    def test_drift_check_strict(self):
+        self.assertTrue(config.drift_check({"drift_check": True}))
+        self.assertFalse(config.drift_check({"drift_check": "true"}))
+        self.assertFalse(config.drift_check({"drift_check": 1}))
+        self.assertFalse(config.drift_check({"drift_check": None}))
+
     def test_setup_review_output_and_warning(self):
         import contextlib
         import io

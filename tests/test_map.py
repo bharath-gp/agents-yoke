@@ -197,6 +197,14 @@ class TestMap(unittest.TestCase):
         self.assertIn("- T-001 Ticket with validate: All checks passed successfully", out)
         self.assertIn("- T-002 Ticket without validate", out)
 
+    def test_map_md_drift_section_renders(self):
+        with open(self.run_.path("map.md"), "a") as f:
+            f.write("\n## Plan drift (2026-11-06T20:00:00)\n- [missing] W1: item missing\n")
+        out = runcmds.render_map(self.run_)
+        self.assertIn("Decisions log:", out)
+        self.assertIn("## Plan drift (2026-11-06T20:00:00)", out)
+        self.assertIn("- [missing] W1: item missing", out)
+
 
 if __name__ == "__main__":
     unittest.main()
