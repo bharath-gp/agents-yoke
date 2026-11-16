@@ -1,10 +1,10 @@
 # CLAUDE.md
 
-## State of the repo
+<!-- Maintainers: milestone status lives in docs/PLAN.md section 3 (the [x] checkboxes). Don't add a milestone count here; it goes stale. Top-level sections use `#` so the `## Contents` rule below doesn't apply to this file. -->
 
-`yoke`: Claude plans and validates, Antigravity (`agy`) codes, runs QA and writes docs. Milestones M0-M16 are done. [docs/PLAN.md](docs/PLAN.md) is the source of truth for design; each milestone's "Notes" in section 3 records deviations from it. [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) is discovery output. Keep PLAN.md anchors (`#s2-8`, `#m4`, ...) stable. Usage lives in [README.md](README.md).
+`yoke`: Claude plans and validates, Antigravity (`agy`) codes, runs QA and writes docs. [docs/PLAN.md](docs/PLAN.md) is the source of truth for design; each milestone's "Notes" in section 3 records deviations from it. [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) is discovery output. Usage lives in [README.md](README.md).
 
-## Commands
+# Commands
 
 ```bash
 python3 -m unittest discover -s tests                 # all tests
@@ -14,29 +14,33 @@ uv tool install --editable .                          # put `yoke` on PATH
 tests/e2e.sh [normal|fallback]                        # manual, real agents, spends quota
 ```
 
-## Constraints that shape every file
+# Conventions
 
 - Python >= 3.9, stdlib only: no `tomllib` (config is JSON), no `match`, no `X | Y` runtime type unions. System python is 3.9.6.
-- Never pass `--dangerously-skip-permissions` to any agent CLI. The runner never pushes; only `yoke pr` pushes, after `approve final`.
-- Always read an agent's `structured_output` (agy and claude `--json-schema`), never parse the free-text `response`.
-- agy runs headless with no shell: code/qa/docs prompts say so; the runner runs tests and commits, never the agent.
 - Prompt templates use `string.Template` (`$ticket`, `$upstream`), not `{}`, to avoid JSON brace clashes.
 - State and audit records live under `$YOKE_HOME` (default `~/.yoke/runs/<run_id>/`), outside the target repo, written atomically.
 - Approvals are bound to sha256 of `plan.md` and canonical `tickets.json`; a changed hash invalidates them. GitHub issue numbers go in `issues.json` and milestone numbers go in `gh_milestones.json`, not in `tickets.json`.
 - Markdown docs with more than three `##` sections (repo docs, `plan.md`, agent-written docs) start with a `## Contents` list of `[title](#anchor)` links to every `##` section; keep it in sync. `planreview.toc_errors` is the checker, and `yoke approve plan` refuses a plan that fails it.
-- Bump the version in `.claude-plugin/plugin.json` and `pyproject.toml` (keep them equal) in any change to the plugin's core logic or behaviour (code, prompts, schemas, defaults, skills, hooks); installed copies only pull new versions when it changes. Docs-only changes need no bump.
+- Keep PLAN.md anchors (`#s2-8`, `#m4`, ...) stable.
+- Bump the version in `.claude-plugin/plugin.json` and `pyproject.toml` (keep them equal) in any change to the plugin's core logic or behaviour (code, prompts, schemas, defaults, skills, hooks); installed copies only pull new versions when it changes. Docs-only changes need no bump. Plugin files are `.claude-plugin/`, `hooks/`, `skills/`.
 
-## Architecture
+# Gotchas
 
-- `yoke run` is a detached runner walking a per-ticket state machine (`scheduler.py`, `pipeline.py`), resumable from disk (`scheduler.recover`). The chat session only calls `yoke wait` and reads short summaries; the plugin's SessionStart hook injects `yoke status --brief --active`.
-- `ticketstate.py` owns the ticket record: `tickets/<tid>/state.json`, its status transitions (`start`, `close`, `await_gate`, `block`, `unblock`) and `escalations.json`. No other module writes ticket status or escalations.
-- Agent CLIs sit behind `adapters.py`. Every call goes through `calls.run_call`: audit dir, process-group timeout kill, schema validation, one re-ask, and with `budget=True` the call budget check (`calls.check_budget`). `pipeline.build_spec` builds a stage's `CallSpec` (prompt, tools, tier/effort) without running it; `pause.py` is the only writer of rate-limit pause state (`RunPauseState`, `run.json` `waiting_limit`/`limit_waits`). `FakeAdapter` plus `tests/fake_cli.py` replay scripted responses so the loop is testable offline.
+- Never pass `--dangerously-skip-permissions` to any agent CLI. The runner never pushes; only `yoke pr` pushes, after `approve final`.
+- Always read an agent's `structured_output` (agy and claude `--json-schema`), never parse the free-text `response`.
+- agy runs headless with no shell: code/qa/docs prompts say so; the runner runs tests and commits, never the agent.
+- Every agent call goes through `calls.run_call`: audit dir, process-group timeout kill, schema validation, one re-ask, and with `budget=True` the call budget check (`calls.check_budget`).
+- Single writers: `ticketstate.py` owns the ticket record (`tickets/<tid>/state.json`, its status transitions `start`, `close`, `await_gate`, `block`, `unblock`, and `escalations.json`); no other module writes ticket status or escalations. `pause.py` is the only writer of rate-limit pause state (`RunPauseState`, `run.json` `waiting_limit`/`limit_waits`). `set_milestone_state` writes milestone gate state.
+- The milestone gate rule and `evaluate_gate` verdict live in `milestones.py`; `scheduler._gate_step` applies it.
+- `router.py` never blocks: Ollama, then a small Claude call, then a deterministic default.
+- `dashboard.py` is a local read-only HTTP server on 127.0.0.1.
+- `screen.py` screening and `yoke drift` are advisory.
+
+# Architecture
+
+- `yoke run` is a detached runner walking a per-ticket state machine (`scheduler.py`, `pipeline.py`), resumable from disk (`scheduler.recover`). The chat session only calls `yoke wait` and reads short summaries.
+- Agent CLIs sit behind `adapters.py`. `pipeline.build_spec` builds a stage's `CallSpec` (prompt, tools, tier/effort) without running it. `FakeAdapter` plus `tests/fake_cli.py` replay scripted responses so the loop is testable offline.
 - Ticket type picks stages from the `routing` config (code, review, qa, validate, docs). Close gate: coder `done`, QA `pass`, runner re-run of QA's `test_command` exits 0, validator `approve` with all exit criteria met, docs done. Failures retry with feedback (coder session resumed by ID) up to `max_attempts_per_ticket`, then escalate.
-- Milestones and charting: wayfinder maps plan to destination, milestones, and tickets (`chart.py`); runner enforces sequential milestone gates with integration exit checks and auto-generates fix tickets (`F-xxx`) on failure (the gate rule and `evaluate_gate` verdict live in `milestones.py`, `scheduler._gate_step` applies it, `set_milestone_state` writes gate state); `yoke map` renders destination, out-of-scope boundaries, gate status, frontier, and decisions log.
+- The runner enforces sequential milestone gates with integration exit checks and auto-generates fix tickets (`F-xxx`) on failure.
 - Git (`gitops.py`): feature branch `yoke/<run_id>`, one worktree and branch `yoke/<run_id>-T-001` per ticket, runner commits, rebase then `--ff-only` merge under a merge lock; a rebase conflict is re-applied with `cherry-pick -n` for the coder to resolve.
-- `router.py` (Ollama, then small Claude call, then deterministic default; never blocks) is imported by the runner and exposed over stdio MCP by `mcp_server.py` (`.mcp.json`).
-- `tracker.py`: GitHub milestones and issues on `approve tickets`, gate close/fix tracking, `yoke pr`; plugin files are `.claude-plugin/`, `hooks/`, `skills/`.
-- `dashboard.py`: local read-only HTTP server and JSON API (`/api/runs`, `/api/runs/<id>`) serving single-file UI (`dashboard.html`) on 127.0.0.1; run picker, stage strip, milestone gate status, ticket table, usage & cost summary card with top spenders, and live polling.
-- `usage.py`: per-run usage ledger (`usage.json`) walking `meta.json` files to aggregate token usage and costs across stages, tickets, agents, and models, written atomically at ticket close and run end; formatted into status, wait summaries, and dashboard.
-- `screen.py`: advisory screening of research sources and claims via `router.decide`, with deterministic heuristics, threshold overrides, Ollama-down short circuit, and synthetic factcheck generation.
-- `drift.py`, `shootdown.py` and review sampling (`review_samples`): `yoke drift` provides advisory diff-to-plan comparison before final approval; `yoke shootdown` performs per-lens requirements critique; review sampling runs code and plan review lenses multiple times and deduplicates findings.
+- `router.py` is imported by the runner and exposed over stdio MCP by `mcp_server.py` (`.mcp.json`).
